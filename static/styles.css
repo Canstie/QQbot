@@ -1,0 +1,208 @@
+:root {
+  color-scheme: light;
+  font-family: Inter, "Segoe UI", system-ui, sans-serif;
+  color: #17212f;
+  background: #f4f7fb;
+  --border: #d7dfeb;
+  --muted: #66758a;
+  --panel: #ffffff;
+  --primary: #1463ff;
+  --primary-hover: #0d50d8;
+  --danger: #b42318;
+  --ok: #067647;
+  --soft: #f8fafc;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; background: #f4f7fb; }
+main { width: min(1240px, calc(100% - 32px)); margin: 0 auto; padding: 24px 0 36px; }
+header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+h1, h2, h3 { margin: 0; letter-spacing: 0; }
+h1 { font-size: 26px; line-height: 1.2; }
+h2 { font-size: 16px; line-height: 1.25; }
+h3 { font-size: 14px; line-height: 1.25; }
+
+.status-pill {
+  min-width: 96px;
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 6px 12px;
+  background: #eef6ff;
+  color: #1849a9;
+  font-size: 13px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.layout { display: grid; grid-template-columns: 360px 1fr; gap: 18px; align-items: start; }
+.stack { display: grid; gap: 14px; }
+
+section {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 16px;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+}
+
+label { display: grid; gap: 7px; color: #344054; font-size: 13px; font-weight: 650; }
+input, select, textarea, button { font: inherit; letter-spacing: 0; border-radius: 7px; }
+input, select, textarea {
+  width: 100%;
+  border: 1px solid #c8d3e1;
+  background: #fff;
+  color: #17212f;
+  padding: 9px 10px;
+  outline: none;
+}
+textarea { resize: vertical; min-height: 38px; line-height: 1.45; }
+input:focus, select:focus, textarea:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(20, 99, 255, 0.14);
+}
+
+button {
+  min-height: 38px;
+  border: 1px solid transparent;
+  padding: 8px 12px;
+  background: var(--primary);
+  color: #fff;
+  cursor: pointer;
+  font-weight: 650;
+  white-space: nowrap;
+}
+button:hover { background: var(--primary-hover); }
+button.secondary { background: #fff; border-color: #c8d3e1; color: #26364a; }
+button.secondary:hover { background: #f6f8fb; }
+button.danger { background: #fff; border-color: #f2b8b5; color: var(--danger); }
+button.danger:hover { background: #fff4f3; }
+.file-button {
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #c8d3e1;
+  border-radius: 7px;
+  padding: 8px 12px;
+  background: #fff;
+  color: #26364a;
+  cursor: pointer;
+  font-weight: 650;
+}
+.file-button input { display: none; }
+
+.row { display: flex; gap: 9px; flex-wrap: wrap; align-items: end; }
+.row > label { flex: 1 1 180px; }
+.group-actions { margin-top: 10px; }
+.section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.split-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.rules-head { margin-top: 18px; }
+
+.notice {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 8px 10px;
+  background: var(--soft);
+  color: var(--muted);
+  font-size: 13px;
+  margin-top: 12px;
+}
+.notice.ok { border-color: #abefc6; background: #ecfdf3; color: var(--ok); }
+.notice.error { border-color: #fecdca; background: #fff1f0; color: var(--danger); }
+
+.metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 14px; }
+.metric { border: 1px solid var(--border); border-radius: 7px; padding: 10px; background: var(--soft); }
+.metric span { display: block; color: var(--muted); font-size: 12px; }
+.metric strong { display: block; margin-top: 5px; font-size: 18px; line-height: 1; }
+
+pre {
+  min-height: 220px;
+  max-height: 360px;
+  overflow: auto;
+  margin: 0;
+  padding: 13px;
+  background: #0f1728;
+  color: #e6edf8;
+  border-radius: 7px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.form-grid { display: grid; gap: 12px; }
+.rule-list { display: grid; gap: 10px; margin-top: 12px; }
+.rule-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--soft);
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+}
+.rule-fields {
+  display: grid;
+  grid-template-columns: 132px minmax(160px, 1fr) minmax(220px, 1.5fr) auto;
+  gap: 9px;
+  align-items: end;
+}
+.empty-list { border: 1px dashed #c8d3e1; border-radius: 8px; padding: 18px; color: var(--muted); background: #fff; }
+.hint { color: var(--muted); font-size: 13px; line-height: 1.45; margin: -4px 0 0; }
+
+.lua-panel { grid-column: 2; }
+.lua-grid { display: grid; grid-template-columns: minmax(360px, 1.2fr) minmax(300px, 0.8fr); gap: 16px; align-items: start; }
+.lua-editor-wrap { display: grid; gap: 10px; }
+.code-editor {
+  min-height: 560px;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.55;
+  tab-size: 2;
+}
+.docs-panel {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--soft);
+  padding: 14px;
+  display: grid;
+  gap: 12px;
+}
+.docs-code {
+  min-height: 0;
+  max-height: none;
+  background: #101828;
+}
+.docs-list {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 7px;
+  color: #344054;
+  font-size: 13px;
+}
+.docs-links { display: grid; gap: 8px; }
+.docs-links a { color: var(--primary); font-weight: 650; text-decoration: none; }
+.docs-links a:hover { text-decoration: underline; }
+code {
+  font-family: "Cascadia Code", Consolas, monospace;
+  background: #e9eef8;
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+
+@media (max-width: 980px) {
+  main { width: min(100% - 20px, 1240px); padding-top: 16px; }
+  header { align-items: flex-start; flex-direction: column; }
+      .layout { grid-template-columns: 1fr; }
+      .metrics { grid-template-columns: 1fr; }
+      .rule-fields { grid-template-columns: 1fr; }
+      .lua-panel { grid-column: auto; }
+      .lua-grid { grid-template-columns: 1fr; }
+      .code-editor { min-height: 420px; }
+      button { flex: 1 1 auto; }
+    }

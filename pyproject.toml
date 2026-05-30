@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qq-personal-bot"
+version = "0.1.0"
+description = "A policy-controlled personal QQ bot bridge built on NoneBot2 and OneBot v11."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "nonebot2[fastapi,httpx,websockets]>=2.4.0",
+  "nonebot-adapter-onebot>=2.4.0",
+  "lupa>=2.8",
+  "pydantic>=2.7.0",
+  "python-dotenv>=1.0.1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2.0",
+  "pytest-asyncio>=0.23.0",
+  "ruff>=0.6.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

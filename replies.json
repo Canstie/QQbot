@@ -1,0 +1,38 @@
+{
+  "empty": "Bot 已启用，请在触发词后输入内容。",
+  "fallback": "{message}",
+  "rules": [
+    {
+      "type": "exact",
+      "pattern": "菜单",
+      "reply": "可用命令：~菜单、~帮助、~状态"
+    },
+    {
+      "type": "contains",
+      "pattern": "你好",
+      "reply": "你好，我是群助手。"
+    },
+    {
+      "type": "prefix",
+      "pattern": "复读 ",
+      "reply": "{message}"
+    },
+    {
+      "type": "regex",
+      "pattern": "^状态$",
+      "reply": "Bot 在线。"
+    }
+  ],
+  "direct_rules": [
+    {
+      "type": "contains",
+      "pattern": "怪猎",
+      "reply": "哦耶~怪怪的猎~"
+    },
+    {
+      "type": "contains",
+      "pattern": "张雪峰",
+      "reply": "张雪峰老师~我还记得你~"
+    }
+  ]
+}

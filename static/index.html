@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>QQ Bot 控制台</title>
+  <link rel="stylesheet" href="./static/styles.css" />
+</head>
+<body>
+  <main>
+    <header>
+      <h1>QQ Bot 控制台</h1>
+      <div id="connectionStatus" class="status-pill">加载中</div>
+    </header>
+    <div class="layout">
+      <div class="stack">
+        <section>
+          <div class="section-head">
+            <h2>访问</h2>
+            <button class="secondary" data-action="refresh">刷新</button>
+          </div>
+          <label>Admin token <input id="token" type="password" autocomplete="off"></label>
+        </section>
+
+        <section>
+          <div class="section-head"><h2>策略</h2></div>
+          <div class="form-grid">
+            <div class="row">
+              <label>模式
+                <select id="mode">
+                  <option value="allowlist">allowlist</option>
+                  <option value="blocklist">blocklist</option>
+                </select>
+              </label>
+              <button data-action="set-mode">保存模式</button>
+            </div>
+            <label>触发前缀
+              <input id="prefixesInput" placeholder="~,#bot">
+            </label>
+            <p class="hint">多个前缀用英文逗号分隔；留空会自动使用 ~。</p>
+            <button data-action="save-prefixes">保存前缀</button>
+          </div>
+        </section>
+
+        <section>
+          <div class="section-head"><h2>群聊</h2></div>
+          <div class="row">
+            <label>Group ID <input id="groupId" inputmode="numeric" placeholder="123456789"></label>
+          </div>
+          <div class="row group-actions">
+            <button data-group-action="on">启用</button>
+            <button class="secondary" data-group-action="off">关闭</button>
+            <button class="danger" data-group-action="block">屏蔽</button>
+            <button class="secondary" data-group-action="unblock">解除屏蔽</button>
+          </div>
+        </section>
+
+        <section>
+          <div class="section-head"><h2>当前状态</h2></div>
+          <div class="metrics">
+            <div class="metric"><span>启用群</span><strong id="enabledCount">0</strong></div>
+            <div class="metric"><span>屏蔽群</span><strong id="blockedCount">0</strong></div>
+            <div class="metric"><span>管理员</span><strong id="adminCount">0</strong></div>
+          </div>
+          <pre id="state">Loading...</pre>
+        </section>
+      </div>
+
+      <section>
+        <div class="section-head">
+          <h2>回复规则</h2>
+          <div class="split-actions">
+            <button class="secondary" data-action="load-replies">重新读取</button>
+            <button data-action="save-replies">保存回复规则</button>
+          </div>
+        </div>
+        <div class="form-grid">
+          <label>空内容回复
+            <input id="emptyReply">
+          </label>
+          <label>默认回复
+            <input id="fallbackReply" placeholder="收到：{message}">
+          </label>
+        </div>
+
+        <div class="section-head rules-head">
+          <h3>前缀触发应答</h3>
+          <button class="secondary" data-add-rule="rules">添加</button>
+        </div>
+        <p class="hint">例如发 ~菜单，先去掉 ~，再用这里的规则匹配 菜单。</p>
+        <div id="rulesList" class="rule-list"></div>
+
+        <div class="section-head rules-head">
+          <h3>免前缀关键词应答</h3>
+          <button class="secondary" data-add-rule="direct_rules">添加</button>
+        </div>
+        <p class="hint">群消息不带 ~ 或 #bot 时，也会先检查这里的词语和回复。</p>
+        <div id="directRulesList" class="rule-list"></div>
+
+        <div id="editorNotice" class="notice">加载中</div>
+      </section>
+
+      <section class="lua-panel">
+        <div class="section-head">
+          <h2>Lua 脚本</h2>
+          <div class="split-actions">
+            <label class="file-button">
+              导入 Lua
+              <input id="luaImport" type="file" accept=".lua,text/plain">
+            </label>
+            <button class="secondary" data-action="load-lua">重新读取</button>
+            <button data-action="save-lua">保存 Lua</button>
+          </div>
+        </div>
+        <div class="lua-grid">
+          <div class="lua-editor-wrap">
+            <div class="hint" id="luaMeta">加载中</div>
+            <textarea id="luaEditor" class="code-editor" spellcheck="false" autocomplete="off"></textarea>
+            <div id="luaNotice" class="notice">加载中</div>
+          </div>
+          <aside class="docs-panel">
+            <h3>OneBot API 参考</h3>
+            <p class="hint">Lua 可用封装接口，也可以用原始 action 名通过 <code>api.call(action, params)</code> 调用。</p>
+            <pre class="docs-code">api.get_group_list()
+api.get_group_info(group_id)
+api.get_group_member_list(group_id)
+api.get_group_member_info(group_id, user_id)
+api.get_login_info()
+api.get_stranger_info(user_id)
+api.send_group_message(group_id, message)
+api.send_private_message(user_id, message)
+api.reply(message)
+api.call("send_group_msg", {
+  group_id = event.group_id,
+  message = "hello"
+})</pre>
+            <h3>常用原始 action</h3>
+            <ul class="docs-list">
+              <li><code>send_private_msg</code>：发送私聊消息</li>
+              <li><code>send_group_msg</code>：发送群消息</li>
+              <li><code>send_msg</code>：发送消息</li>
+              <li><code>delete_msg</code>：撤回消息</li>
+              <li><code>get_msg</code>：获取消息</li>
+              <li><code>get_login_info</code>：获取登录号信息</li>
+              <li><code>get_stranger_info</code>：获取陌生人信息</li>
+              <li><code>get_friend_list</code>：获取好友列表</li>
+              <li><code>get_group_list</code>：获取群列表</li>
+              <li><code>get_group_info</code>：获取群信息</li>
+              <li><code>get_group_member_info</code>：获取群成员信息</li>
+              <li><code>get_group_member_list</code>：获取群成员列表</li>
+              <li><code>set_group_kick</code>：群组踢人</li>
+              <li><code>set_group_ban</code>：群组禁言</li>
+              <li><code>set_group_card</code>：设置群名片</li>
+            </ul>
+            <div class="docs-links">
+              <a href="https://onebots.pages.dev/v11/action" target="_blank" rel="noreferrer">OneBot v11 Action 原始文档</a>
+              <a href="https://llonebot.com/develop/api" target="_blank" rel="noreferrer">LLOneBot API 支持列表</a>
+              <a href="https://github.com/botuniverse/onebot-v11" target="_blank" rel="noreferrer">OneBot v11 GitHub</a>
+            </div>
+          </aside>
+        </div>
+      </section>
+    </div>
+  </main>
+  <script src="./static/app.js"></script>
+</body>
+</html>
