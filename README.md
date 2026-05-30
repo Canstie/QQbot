@@ -50,6 +50,7 @@ ws://127.0.0.1:8080/onebot/v11/ws
 ```
 
 在 LLOneBot/NapCat 中配置这个地址，并使用和 `.env` 中一致的 access token。
+当前项目保持 OneBot 11；OneBot 12 需要协议端明确支持，LLBot/LLOneBot 当前推荐继续使用 OneBot 11 或其文档中明确支持的协议。
 
 也支持正向 WebSocket，配置如下：
 
