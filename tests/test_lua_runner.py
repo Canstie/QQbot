@@ -530,7 +530,7 @@ async def test_builtin_menu_translates_and_caches_api_results(tmp_path, monkeypa
         calls.append(request.full_url)
         if request.full_url.endswith("/search.php?s=%E7%81%AB%E9%94%85"):
             return FakeResponse(b'{"meals":null}')
-        if request.full_url.endswith("/filter.php?a=Chinese"):
+        if "themealdb.com/api/json/v1/1/filter.php?a=" in request.full_url:
             return FakeResponse(
                 b'{"meals":[{"idMeal":"cn1","strMeal":"Tomato Egg Stir Fry",'
                 b'"strMealThumb":"https://example.invalid/chinese-list-1.jpg",'
@@ -553,7 +553,7 @@ async def test_builtin_menu_translates_and_caches_api_results(tmp_path, monkeypa
     )
     default_second = await run_lua_message(
         RichFakeBot(),
-        make_event_at(2),
+        make_event(),
         PolicyDecision(True, "ok", handler="default", normalized_message="今日菜单"),
     )
     guangzhou = await run_lua_message(
@@ -586,7 +586,10 @@ async def test_builtin_menu_translates_and_caches_api_results(tmp_path, monkeypa
     assert "地区：" not in guangzhou.reply
     assert "[CQ:image,file=https://example.invalid/chinese-list-1.jpg]" in default_first.reply
     assert "[CQ:image,file=https://example.invalid/chinese-list-1.jpg]" in guangzhou.reply
-    assert calls.count("https://www.themealdb.com/api/json/v1/1/filter.php?a=Chinese") == 3
+    assert "稳定碳水" not in default_first.reply
+    assert "血糖" not in default_first.reply
+    assert sum("themealdb.com/api/json/v1/1/filter.php?a=" in call for call in calls) in {1, 2}
+    assert calls.count("https://www.themealdb.com/api/json/v1/1/search.php?s=%E7%81%AB%E9%94%85") == 1
     assert sum("api.mymemory.translated.net/get" in call for call in calls) == 1
 
 
@@ -611,7 +614,7 @@ async def test_builtin_menu_falls_back_to_english_when_translation_fails(tmp_pat
 
     def fake_urlopen(request, timeout):
         calls.append(request.full_url)
-        if request.full_url.endswith("/filter.php?a=Chinese"):
+        if "themealdb.com/api/json/v1/1/filter.php?a=" in request.full_url:
             return FakeResponse(
                 b'{"meals":[{"idMeal":"cn2","strMeal":"English Meal",'
                 b'"strMealThumb":"https://example.invalid/english.jpg"}]}'
@@ -629,7 +632,7 @@ async def test_builtin_menu_falls_back_to_english_when_translation_fails(tmp_pat
     )
     second = await run_lua_message(
         RichFakeBot(),
-        make_event_at(2),
+        make_event(),
         PolicyDecision(True, "ok", handler="default", normalized_message="今日菜单"),
     )
 
@@ -638,7 +641,67 @@ async def test_builtin_menu_falls_back_to_english_when_translation_fails(tmp_pat
     assert "推荐：English Meal" in first.reply
     assert "推荐：English Meal" in second.reply
     assert "[CQ:image,file=https://example.invalid/english.jpg]" in first.reply
-    assert calls.count("https://www.themealdb.com/api/json/v1/1/filter.php?a=Chinese") == 1
+    assert sum("themealdb.com/api/json/v1/1/filter.php?a=" in call for call in calls) == 1
+    assert sum("api.mymemory.translated.net/get" in call for call in calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_builtin_menu_uses_cache_when_external_api_is_down(tmp_path, monkeypatch):
+    configure_builtin_lua_dir(tmp_path, monkeypatch)
+
+    class FakeResponse:
+        def __init__(self, body: bytes):
+            self.body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self, size):
+            return self.body
+
+    calls = []
+    external_down = False
+
+    def fake_urlopen(request, timeout):
+        nonlocal external_down
+        calls.append(request.full_url)
+        if external_down:
+            raise OSError("external api unavailable")
+        if "themealdb.com/api/json/v1/1/filter.php?a=" in request.full_url:
+            return FakeResponse(
+                b'{"meals":[{"idMeal":"cached1","strMeal":"Cached Meal",'
+                b'"strMealThumb":"https://example.invalid/cached.jpg",'
+                b'"strCategory":"Beef"}]}'
+            )
+        if "api.mymemory.translated.net/get" in request.full_url:
+            return FakeResponse(
+                b'{"responseData":{"translatedText":"\\u7f13\\u5b58\\u83dc"}}'
+            )
+        raise AssertionError(f"Unexpected URL: {request.full_url}")
+
+    monkeypatch.setattr("qq_personal_bot.lua_runner.urlopen", fake_urlopen)
+
+    first = await run_lua_message(
+        RichFakeBot(),
+        make_event(),
+        PolicyDecision(True, "ok", handler="default", normalized_message="今日菜单"),
+    )
+    external_down = True
+    second = await run_lua_message(
+        RichFakeBot(),
+        make_event_at(2),
+        PolicyDecision(True, "ok", handler="default", normalized_message="今日菜单"),
+    )
+
+    assert first.reply is not None
+    assert second.reply is not None
+    assert "推荐：缓存菜" in first.reply
+    assert "推荐：缓存菜" in second.reply
+    assert "[CQ:image,file=https://example.invalid/cached.jpg]" in second.reply
+    assert sum("themealdb.com/api/json/v1/1/filter.php?a=" in call for call in calls) == 1
     assert sum("api.mymemory.translated.net/get" in call for call in calls) == 1
 
 

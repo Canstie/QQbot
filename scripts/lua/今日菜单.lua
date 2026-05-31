@@ -4,7 +4,38 @@
 
 local API_BASE = "https://www.themealdb.com/api/json/v1/1/"
 local TRANSLATE_BASE = "https://api.mymemory.translated.net/get"
-local CACHE_NAMESPACE = "今日菜单:cache:v1"
+local CACHE_NAMESPACE = "今日菜单:cache:v2"
+
+local world_areas = {
+  "American",
+  "British",
+  "Canadian",
+  "Chinese",
+  "Croatian",
+  "Dutch",
+  "Egyptian",
+  "Filipino",
+  "French",
+  "Greek",
+  "Indian",
+  "Irish",
+  "Italian",
+  "Jamaican",
+  "Japanese",
+  "Kenyan",
+  "Malaysian",
+  "Mexican",
+  "Moroccan",
+  "Polish",
+  "Portuguese",
+  "Russian",
+  "Spanish",
+  "Thai",
+  "Tunisian",
+  "Turkish",
+  "Ukrainian",
+  "Vietnamese",
+}
 
 local area_aliases = {
   ["中餐"] = "Chinese",
@@ -113,12 +144,14 @@ local fallback_drinks = {
 }
 
 local reasons = {
-  "理由：今天需要一点稳定碳水，先把心情垫起来。",
-  "理由：这顿吃完，下午的世界会稍微好沟通一点。",
-  "理由：不一定改变人生，但能改变接下来两小时的表情。",
-  "理由：今天不适合纠结，适合把选择权交给菜单。",
-  "理由：这组合有点离谱，但离谱得很有精神。",
-  "理由：吃饱再说，很多烦恼只是血糖在报警。",
+  "理由：它在菜单池里举手最快，今天就让它上桌。",
+  "理由：随机数刚才拍了拍锅盖，说就它了。",
+  "理由：这道菜看起来很会接梗，适合今天的群聊气质。",
+  "理由：命运把锅铲递过来了，先别问，吃了再评价。",
+  "理由：它和今天的心情有点像，离谱但合理。",
+  "理由：菜单占卜显示，它今天比较想认识你。",
+  "理由：这不是推荐，这是来自厨房宇宙的临时通知。",
+  "理由：它被抽中的时候很淡定，说明有点东西。",
 }
 
 local function quote_reply(message)
@@ -185,22 +218,27 @@ local function save_json(api, key, value)
   end
 end
 
-local function endpoint_for_target(target, api)
+local function area_endpoint(area, api)
+  return API_BASE .. "filter.php?a=" .. api.url_encode(area)
+end
+
+local function route_for_target(target, api)
   if target == "默认" then
-    return API_BASE .. "filter.php?a=Chinese"
+    local area = pick(world_areas)
+    return "world:" .. area, area_endpoint(area, api)
   end
 
   local area = area_aliases[target]
   if area ~= nil then
-    return API_BASE .. "filter.php?a=" .. api.url_encode(area)
+    return "area:" .. area, area_endpoint(area, api)
   end
 
   local category = category_aliases[target]
   if category ~= nil then
-    return API_BASE .. "filter.php?c=" .. api.url_encode(category)
+    return "category:" .. category, API_BASE .. "filter.php?c=" .. api.url_encode(category)
   end
 
-  return API_BASE .. "search.php?s=" .. api.url_encode(target)
+  return "search:" .. target, API_BASE .. "search.php?s=" .. api.url_encode(target)
 end
 
 local function normalize_meal(row)
@@ -238,24 +276,101 @@ local function load_cached_list(api, target)
   return nil
 end
 
-local function fetch_list(api, target)
-  local endpoint = endpoint_for_target(target, api)
+local function fetch_list_by_route(api, route_key, endpoint)
   local ok, data = pcall(api.http_get_json, endpoint)
   local meals = ok and normalize_meal_list(data) or {}
-  if #meals == 0 and target ~= "默认" then
-    local fallback_ok, fallback_data =
-      pcall(api.http_get_json, API_BASE .. "filter.php?a=Chinese")
-    meals = fallback_ok and normalize_meal_list(fallback_data) or {}
-  end
   if #meals > 0 then
-    save_json(api, list_key(target), meals)
+    save_json(api, list_key(route_key), meals)
     return meals
   end
   return nil
 end
 
+local function fetch_world_fallback_list(api)
+  local area = pick(world_areas)
+  local route_key = "world:" .. area
+  local cached = load_cached_list(api, route_key)
+  if cached ~= nil then
+    return cached
+  end
+  return fetch_list_by_route(api, route_key, area_endpoint(area, api))
+end
+
+local function cached_route_candidates(target)
+  local candidates = {}
+
+  if target ~= "默认" then
+    local area = area_aliases[target]
+    if area ~= nil then
+      table.insert(candidates, "area:" .. area)
+      table.insert(candidates, "world:" .. area)
+    end
+
+    local category = category_aliases[target]
+    if category ~= nil then
+      table.insert(candidates, "category:" .. category)
+    end
+
+    table.insert(candidates, "search:" .. target)
+  end
+
+  for i = 1, #world_areas do
+    table.insert(candidates, "world:" .. world_areas[i])
+  end
+
+  for _, area in pairs(area_aliases) do
+    table.insert(candidates, "area:" .. area)
+    table.insert(candidates, "world:" .. area)
+  end
+
+  for _, category in pairs(category_aliases) do
+    table.insert(candidates, "category:" .. category)
+  end
+
+  return candidates
+end
+
+local function load_any_cached_list(api, target)
+  local candidates = cached_route_candidates(target)
+  local start = math.random(#candidates)
+  for offset = 0, #candidates - 1 do
+    local index = ((start + offset - 1) % #candidates) + 1
+    local cached = load_cached_list(api, candidates[index])
+    if cached ~= nil then
+      return cached
+    end
+  end
+  return nil
+end
+
 local function load_or_fetch_list(api, target)
-  return load_cached_list(api, target) or fetch_list(api, target)
+  local route_key, endpoint = route_for_target(target, api)
+  local cached = load_cached_list(api, route_key)
+  if cached ~= nil then
+    return cached
+  end
+
+  if target == "默认" then
+    local any_cached = load_any_cached_list(api, target)
+    if any_cached ~= nil then
+      return any_cached
+    end
+  end
+
+  local meals = fetch_list_by_route(api, route_key, endpoint)
+  if meals ~= nil then
+    return meals
+  end
+
+  local any_cached = load_any_cached_list(api, target)
+  if any_cached ~= nil then
+    return any_cached
+  end
+
+  if target ~= "默认" then
+    return fetch_world_fallback_list(api)
+  end
+  return nil
 end
 
 local function contains_chinese(value)
