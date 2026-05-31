@@ -6,7 +6,7 @@ from collections.abc import Callable
 
 from qq_personal_bot.core.models import MessageEvent, PolicyDecision
 from qq_personal_bot.core.store import PolicyStore
-from qq_personal_bot.replies import has_direct_reply
+from qq_personal_bot.replies import direct_lua_command, has_direct_reply
 
 
 class RateLimiter:
@@ -94,6 +94,10 @@ class PolicyEngine:
 
         if self.store.get_trigger_mention() and event.is_at_bot:
             return raw_message.strip(), "mention"
+
+        lua_command = direct_lua_command(raw_message)
+        if lua_command is not None:
+            return lua_command, "lua"
 
         if has_direct_reply(raw_message):
             return raw_message, "direct"

@@ -7,6 +7,13 @@ local function as_number(value)
   return tonumber(value) or 0
 end
 
+local function seed_from_event(event)
+  local seed = math.floor(as_number(event.timestamp)) +
+    math.floor(as_number(event.message_id)) +
+    math.floor(as_number(event.user_id))
+  return seed % 2147483647
+end
+
 local function display_name(member)
   if member.card ~= nil and member.card ~= "" then
     return member.card
@@ -14,11 +21,20 @@ local function display_name(member)
   if member.nickname ~= nil and member.nickname ~= "" then
     return member.nickname
   end
-  return tostring(member.user_id)
+  return "未知成员"
+end
+
+local function avatar_message(user_id)
+  local url = "https://q1.qlogo.cn/g?b=qq&amp;nk=" .. tostring(user_id) .. "&amp;s=640"
+  return "[CQ:image,file=" .. url .. "]"
 end
 
 local function quote_reply(message)
   return {quote = true, reply = message}
+end
+
+local function wife_reply(member)
+  return quote_reply("你今天亲爱的群老婆是\n" .. avatar_message(member.user_id) .. "\n" .. display_name(member))
 end
 
 local function state_key(event)
@@ -60,13 +76,8 @@ function on_command(event, api)
     return quote_reply("没有可重新抽取的群老婆。")
   end
 
-  math.randomseed(as_number(event.timestamp) + as_number(event.message_id) + as_number(event.user_id))
+  math.randomseed(seed_from_event(event))
   local picked = candidates[math.random(#candidates)]
   api.set_state(key, tostring(picked.user_id), NAMESPACE)
-
-  if old_user_id == nil or old_user_id == "" then
-    return quote_reply("你之前还没有群老婆，已为你抽取：" .. display_name(picked) .. "（" .. tostring(picked.user_id) .. "）")
-  end
-
-  return quote_reply("已重新抽取！你的新群老婆是：" .. display_name(picked) .. "（" .. tostring(picked.user_id) .. "）")
+  return wife_reply(picked)
 end

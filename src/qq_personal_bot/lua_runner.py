@@ -133,6 +133,12 @@ class LuaApi:
             body = response.read(1_000_000)
         return _to_lua(self._lua, json.loads(body.decode("utf-8")))
 
+    def json_encode(self, value: Any) -> str:
+        return json.dumps(_from_lua(value), ensure_ascii=False, separators=(",", ":"))
+
+    def json_decode(self, value: str) -> Any:
+        return _to_lua(self._lua, json.loads(str(value)))
+
     def _call_api(self, action: str, **params: Any) -> Any:
         future = asyncio.run_coroutine_threadsafe(
             self._bot.call_api(action, **params),

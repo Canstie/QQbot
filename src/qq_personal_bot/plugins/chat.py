@@ -34,7 +34,7 @@ async def handle_group_message(bot: Bot, event: GroupMessageEvent):
     if lua_result.stop:
         return
 
-    if decision.handler == "mention":
+    if decision.handler in {"mention", "lua"}:
         return
 
     if decision.handler == "default":

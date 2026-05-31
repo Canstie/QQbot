@@ -41,6 +41,23 @@ Copy-Item .env.example .env
 python bot.py
 ```
 
+也可以构建一个无终端窗口的启动器 exe：
+
+```powershell
+.\tools\build_launcher.ps1
+```
+
+构建后双击 `dist\QQBotLauncher.exe` 即可后台启动 Bot。启动器会使用本项目的
+`.venv\Scripts\python.exe` 运行 `bot.py`，日志按天写入
+`logs\qqbot-YYYY-MM-DD.log`。启动器会在后台驻留，跨天时重启 Bot 切换到新日志，
+并清理过期日志；默认保留最近 7 天。若只想保留当天日志，可在启动前设置：
+
+```powershell
+$env:QQBOT_LOG_RETENTION_DAYS = "1"
+```
+
+如果 `127.0.0.1:8080` 已经被其他进程占用，启动器会提示原因，避免重复启动。
+
 ## OneBot 连接
 
 推荐使用反向 WebSocket：
@@ -154,13 +171,24 @@ scripts/lua
 scripts/lua/抽群老婆.lua
 ```
 
+当前内置脚本示例：
+
+- `~抽群老婆`：每天为当前用户抽取一个固定群成员。
+- `~换个老婆`：当天重新抽取一次群老婆。
+- `~今日天气 北京`：查询指定地点天气。
+- `~今日人品`：每天固定生成 0-100 的人品值和一句短评。
+- `~今日宜忌`：每天固定生成“宜/忌/签语”。
+- `~今日菜单` 或 `~今日菜单 广州`：调用 TheMealDB 随机推荐菜单，菜名优先翻译成中文并附带图片；菜单池和已翻译菜品会缓存到 SQLite，接口失败时回退到本地菜单。
+  也可以直接在群里发送包含 `吃什么` 或 `csm` 的消息触发默认今日菜单，不需要前缀。
+- `~群排行` 或 `~群排行 摸鱼王`：每天按主题随机生成群成员 TOP3。
+
 默认启用，相关配置：
 
 ```env
 QQBOT_LUA_ENABLED=true
 QQBOT_LUA_DIR=scripts/lua
 QQBOT_LUA_SCRIPT=scripts/main.lua
-QQBOT_LUA_TIMEOUT_SECONDS=3
+QQBOT_LUA_TIMEOUT_SECONDS=10
 ```
 
 推荐脚本定义 `on_command(event, api)`；兼容旧的 `on_message(event, api)`。
@@ -202,6 +230,8 @@ end
 - `api.delete_state(key, namespace)`：删除 Lua 持久化状态
 - `api.url_encode(value)`：URL 编码文本
 - `api.http_get_json(url)`：请求 HTTP/HTTPS JSON 接口，返回 Lua table
+- `api.json_encode(value)`：把 Lua table 编码为 JSON 字符串，便于保存到状态
+- `api.json_decode(value)`：把 JSON 字符串解码为 Lua table
 - `api.call(action, params)`：调用其他 OneBot API
 
 ## 测试

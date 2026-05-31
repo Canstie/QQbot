@@ -103,6 +103,24 @@ def test_direct_reply_rule_allows_without_prefix(tmp_path, monkeypatch):
     assert decision.normalized_message == "hello keyword"
 
 
+def test_direct_lua_rule_routes_without_prefix(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "replies.json").write_text(
+        '{"direct_lua_rules":[{"type":"contains","pattern":"吃什么","command":"今日菜单"}]}',
+        encoding="utf-8",
+    )
+    reload_reply_config()
+    store = make_store(tmp_path)
+    store.set_group_enabled(123, True, actor_id=10000)
+    engine = PolicyEngine(store, RateLimiter(0, 0))
+
+    decision = engine.evaluate(make_event(raw_message="今天吃什么"), self_id=99999)
+
+    assert decision.allowed
+    assert decision.handler == "lua"
+    assert decision.normalized_message == "今日菜单"
+
+
 def test_prefix_trigger_takes_priority_over_direct_rule(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "replies.json").write_text(

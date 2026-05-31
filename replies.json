@@ -1,26 +1,17 @@
 {
   "empty": "Bot 已启用，请在触发词后输入内容。",
   "fallback": "{message}",
-  "rules": [
+  "rules": [],
+  "direct_lua_rules": [
     {
-      "type": "exact",
-      "pattern": "菜单",
-      "reply": "可用命令：~菜单、~帮助、~状态"
+      "type": "contains",
+      "pattern": "吃什么",
+      "command": "今日菜单"
     },
     {
       "type": "contains",
-      "pattern": "你好",
-      "reply": "你好，我是群助手。"
-    },
-    {
-      "type": "prefix",
-      "pattern": "复读 ",
-      "reply": "{message}"
-    },
-    {
-      "type": "regex",
-      "pattern": "^状态$",
-      "reply": "Bot 在线。"
+      "pattern": "csm",
+      "command": "今日菜单"
     }
   ],
   "direct_rules": [
@@ -56,8 +47,13 @@
     },
     {
       "type": "contains",
-      "pattern": "哈!",
+      "pattern": "哈！",
       "reply": "哦耶~哈哈的气~"
+    },
+    {
+      "type": "contains",
+      "pattern": "有没有星",
+      "reply": "哦耶~⭐⭐的星~"
     }
   ]
 }

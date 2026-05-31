@@ -3,7 +3,13 @@ from __future__ import annotations
 import json
 import re
 
-from qq_personal_bot.replies import build_reply, has_direct_reply, parse_reply_config, reload_reply_config
+from qq_personal_bot.replies import (
+    build_reply,
+    direct_lua_command,
+    has_direct_reply,
+    parse_reply_config,
+    reload_reply_config,
+)
 
 
 def write_config(tmp_path, payload):
@@ -82,6 +88,20 @@ def test_direct_rules_are_separate_from_prefixed_rules(tmp_path):
     assert build_reply("this has keyword", path) == "fallback this has keyword"
 
 
+def test_direct_lua_rule_resolves_command(tmp_path):
+    path = write_config(
+        tmp_path,
+        {
+            "direct_lua_rules": [
+                {"type": "contains", "pattern": "吃什么", "command": "今日菜单"}
+            ],
+        },
+    )
+
+    assert direct_lua_command("今天吃什么", path) == "今日菜单"
+    assert direct_lua_command("今天喝什么", path) is None
+
+
 def test_invalid_regex_fails_fast():
     try:
         parse_reply_config({"rules": [{"type": "regex", "pattern": "[", "reply": "bad"}]})
@@ -89,4 +109,3 @@ def test_invalid_regex_fails_fast():
         pass
     else:
         raise AssertionError("Expected invalid regex to raise")
-

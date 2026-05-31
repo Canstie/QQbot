@@ -149,6 +149,8 @@ api.set_state(key, value, namespace)
 api.delete_state(key, namespace)
 api.url_encode(value)
 api.http_get_json(url)
+api.json_encode(value)
+api.json_decode(value)
 api.call("send_group_msg", {
   group_id = event.group_id,
   message = "hello"

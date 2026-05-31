@@ -7,6 +7,13 @@ local function as_number(value)
   return tonumber(value) or 0
 end
 
+local function seed_from_event(event)
+  local seed = math.floor(as_number(event.timestamp)) +
+    math.floor(as_number(event.message_id)) +
+    math.floor(as_number(event.user_id))
+  return seed % 2147483647
+end
+
 local function display_name(member)
   if member.card ~= nil and member.card ~= "" then
     return member.card
@@ -76,7 +83,7 @@ local function pick_wife(event, api, exclude_user_id)
     return nil
   end
 
-  math.randomseed(as_number(event.timestamp) + as_number(event.message_id) + as_number(event.user_id))
+  math.randomseed(seed_from_event(event))
   return candidates[math.random(#candidates)]
 end
 

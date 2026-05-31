@@ -18,11 +18,19 @@ class ReplyRule:
 
 
 @dataclass(frozen=True)
+class DirectLuaRule:
+    type: RuleType
+    pattern: str
+    command: str
+
+
+@dataclass(frozen=True)
 class ReplyConfig:
     empty: str
     fallback: str
     rules: tuple[ReplyRule, ...]
     direct_rules: tuple[ReplyRule, ...] = ()
+    direct_lua_rules: tuple[DirectLuaRule, ...] = ()
 
 
 DEFAULT_CONFIG = ReplyConfig(
@@ -62,12 +70,17 @@ def load_reply_config(config_path: str | Path = "replies.json") -> ReplyConfig:
 def parse_reply_config(raw: dict[str, Any]) -> ReplyConfig:
     rules = _parse_rules(raw.get("rules", []), "rules")
     direct_rules = _parse_rules(raw.get("direct_rules", []), "direct_rules")
+    direct_lua_rules = _parse_direct_lua_rules(
+        raw.get("direct_lua_rules", []),
+        "direct_lua_rules",
+    )
 
     return ReplyConfig(
         empty=str(raw.get("empty", DEFAULT_CONFIG.empty)),
         fallback=str(raw.get("fallback", DEFAULT_CONFIG.fallback)),
         rules=tuple(rules),
         direct_rules=tuple(direct_rules),
+        direct_lua_rules=tuple(direct_lua_rules),
     )
 
 
@@ -80,13 +93,30 @@ def has_direct_reply(content: str, config_path: str | Path = "replies.json") -> 
     return any(_matches(rule, message) for rule in config.direct_rules)
 
 
+def direct_lua_command(content: str, config_path: str | Path = "replies.json") -> str | None:
+    message = content.strip()
+    if not message:
+        return None
+
+    config = load_reply_config(config_path)
+    for rule in config.direct_lua_rules:
+        if _matches(rule, message):
+            return rule.command
+    return None
+
+
 def reply_config_to_dict(config: ReplyConfig) -> dict[str, Any]:
-    return {
+    data = {
         "empty": config.empty,
         "fallback": config.fallback,
         "rules": [_rule_to_dict(rule) for rule in config.rules],
         "direct_rules": [_rule_to_dict(rule) for rule in config.direct_rules],
     }
+    if config.direct_lua_rules:
+        data["direct_lua_rules"] = [
+            _direct_lua_rule_to_dict(rule) for rule in config.direct_lua_rules
+        ]
+    return data
 
 
 def _parse_rules(items: Any, field_name: str) -> list[ReplyRule]:
@@ -119,8 +149,42 @@ def _parse_rules(items: Any, field_name: str) -> list[ReplyRule]:
     return rules
 
 
+def _parse_direct_lua_rules(items: Any, field_name: str) -> list[DirectLuaRule]:
+    if items is None:
+        return []
+    if not isinstance(items, list):
+        raise ValueError(f"{field_name} must be a list")
+
+    rules = []
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise ValueError(f"{field_name}[{index}] must be an object")
+
+        rule_type = item.get("type")
+        if rule_type not in {"exact", "contains", "prefix", "regex"}:
+            raise ValueError(f"{field_name}[{index}].type must be exact, contains, prefix, or regex")
+
+        pattern = str(item.get("pattern", ""))
+        command = str(item.get("command", ""))
+        if not pattern:
+            raise ValueError(f"{field_name}[{index}].pattern cannot be empty")
+        if not command:
+            raise ValueError(f"{field_name}[{index}].command cannot be empty")
+
+        if rule_type == "regex":
+            re.compile(pattern)
+
+        rules.append(DirectLuaRule(type=rule_type, pattern=pattern, command=command))
+
+    return rules
+
+
 def _rule_to_dict(rule: ReplyRule) -> dict[str, str]:
     return {"type": rule.type, "pattern": rule.pattern, "reply": rule.reply}
+
+
+def _direct_lua_rule_to_dict(rule: DirectLuaRule) -> dict[str, str]:
+    return {"type": rule.type, "pattern": rule.pattern, "command": rule.command}
 
 
 def reload_reply_config() -> None:
