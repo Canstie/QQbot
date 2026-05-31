@@ -93,7 +93,7 @@ class PolicyEngine:
                 return raw_message[len(prefix) :].strip(), "default"
 
         if self.store.get_trigger_mention() and event.is_at_bot:
-            return raw_message.strip(), "default"
+            return raw_message.strip(), "mention"
 
         if has_direct_reply(raw_message):
             return raw_message, "direct"

@@ -45,6 +45,7 @@ def test_index_serves_static_frontend(tmp_path, monkeypatch):
     assert "QQ Bot" in response.text
     assert "static/app.js" in response.text
     assert "luaImport" in response.text
+    assert "luaCommandList" in response.text
 
 
 def test_replies_api_still_accepts_raw_json(tmp_path, monkeypatch):
@@ -141,3 +142,80 @@ def test_lua_api_rejects_invalid_script(tmp_path, monkeypatch):
 
     assert response.status_code == 400
     assert "on_message" in response.json()["detail"]
+
+
+def test_lua_commands_api_lists_saves_reads_and_deletes(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("QQBOT_WEB_TOKEN", raising=False)
+    lua_dir = tmp_path / "scripts" / "lua"
+    monkeypatch.setenv("QQBOT_LUA_DIR", str(lua_dir))
+    reset_runtime()
+    client = TestClient(create_app())
+
+    content = 'function on_command(event, api)\n  return event.command\nend\n'
+    response = client.post("/api/lua/commands/hello", json={"content": content})
+
+    assert response.status_code == 200
+    assert response.json()["command"] == "hello"
+    assert response.json()["using_example"] is False
+    assert (lua_dir / "hello.lua").read_text(encoding="utf-8") == content
+
+    response = client.get("/api/lua/commands")
+
+    assert response.status_code == 200
+    assert response.json()["commands"][0]["command"] == "hello"
+
+    response = client.get("/api/lua/commands/hello")
+
+    assert response.status_code == 200
+    assert response.json()["content"] == content
+
+    response = client.delete("/api/lua/commands/hello")
+
+    assert response.status_code == 200
+    assert response.json()["deleted"] is True
+    assert not (lua_dir / "hello.lua").exists()
+
+
+def test_lua_command_api_returns_example_when_script_missing(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("QQBOT_WEB_TOKEN", raising=False)
+    monkeypatch.setenv("QQBOT_LUA_DIR", str(tmp_path / "scripts" / "lua"))
+    reset_runtime()
+    client = TestClient(create_app())
+
+    response = client.get("/api/lua/commands/抽群老婆")
+
+    assert response.status_code == 200
+    assert response.json()["exists"] is False
+    assert response.json()["using_example"] is True
+    assert "function on_command" in response.json()["content"]
+
+
+def test_lua_command_api_rejects_invalid_command(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("QQBOT_WEB_TOKEN", raising=False)
+    monkeypatch.setenv("QQBOT_LUA_DIR", str(tmp_path / "scripts" / "lua"))
+    reset_runtime()
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/lua/commands/bad.name",
+        json={"content": 'function on_command(event, api)\n  return "ok"\nend\n'},
+    )
+
+    assert response.status_code == 400
+    assert "command" in response.json()["detail"]
+
+
+def test_lua_command_api_rejects_invalid_script(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("QQBOT_WEB_TOKEN", raising=False)
+    monkeypatch.setenv("QQBOT_LUA_DIR", str(tmp_path / "scripts" / "lua"))
+    reset_runtime()
+    client = TestClient(create_app())
+
+    response = client.post("/api/lua/commands/hello", json={"content": "function nope() end"})
+
+    assert response.status_code == 400
+    assert "on_command" in response.json()["detail"]

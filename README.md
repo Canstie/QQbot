@@ -136,33 +136,53 @@ static/app.js
 
 ## Lua 脚本
 
-Lua 脚本位于：
+Lua 支持多指令脚本，默认目录为：
 
 ```text
-scripts/main.lua
+scripts/lua
+```
+
+群里发送 `~指令 参数` 时，会自动执行 `scripts/lua/指令.lua`。例如：
+
+```text
+~抽群老婆
+```
+
+会执行：
+
+```text
+scripts/lua/抽群老婆.lua
 ```
 
 默认启用，相关配置：
 
 ```env
 QQBOT_LUA_ENABLED=true
+QQBOT_LUA_DIR=scripts/lua
 QQBOT_LUA_SCRIPT=scripts/main.lua
 QQBOT_LUA_TIMEOUT_SECONDS=3
 ```
 
-脚本需要定义 `on_message(event, api)`。返回字符串时会直接作为 bot 回复；返回
-`nil` 时继续走 Web 管理页里的回复规则。
+推荐脚本定义 `on_command(event, api)`；兼容旧的 `on_message(event, api)`。
+返回字符串时会直接作为 bot 回复；返回 `nil` 时继续走 Web 管理页里的 JSON 回复规则。
+
+`event` 中常用字段：
+
+- `event.command`：指令名，例如 `抽群老婆`
+- `event.args`：指令后的参数，例如 `北京`
+- `event.message`：同 `event.args`
+- `event.full_message`：去掉触发前缀后的完整内容，例如 `天气 北京`
 
 示例：
 
 ```lua
-function on_message(event, api)
-  if event.message == "群人数" and event.group_id ~= nil then
-    local members = api.get_group_member_list(event.group_id)
-    return "当前群成员数：" .. tostring(#members)
+function on_command(event, api)
+  if event.group_id == nil then
+    return "这个功能只能在群聊里使用。"
   end
 
-  return nil
+  local members = api.get_group_member_list(event.group_id)
+  return "当前群成员数：" .. tostring(#members)
 end
 ```
 
@@ -177,6 +197,11 @@ end
 - `api.send_group_message(group_id, message)`
 - `api.send_private_message(user_id, message)`
 - `api.reply(message)`
+- `api.get_state(key, namespace)`：读取 Lua 持久化状态；`namespace` 可省略，默认当前指令名
+- `api.set_state(key, value, namespace)`：保存 Lua 持久化状态
+- `api.delete_state(key, namespace)`：删除 Lua 持久化状态
+- `api.url_encode(value)`：URL 编码文本
+- `api.http_get_json(url)`：请求 HTTP/HTTPS JSON 接口，返回 Lua table
 - `api.call(action, params)`：调用其他 OneBot API
 
 ## 测试

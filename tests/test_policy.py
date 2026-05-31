@@ -58,6 +58,7 @@ def test_allowlist_allows_enabled_group_with_prefix(tmp_path):
     decision = engine.evaluate(make_event(raw_message="~hello"), self_id=99999)
 
     assert decision.allowed
+    assert decision.handler == "default"
     assert decision.normalized_message == "hello"
 
 
@@ -69,6 +70,7 @@ def test_mention_trigger_allows_when_enabled(tmp_path):
     decision = engine.evaluate(make_event(raw_message="hello", is_at_bot=True), self_id=99999)
 
     assert decision.allowed
+    assert decision.handler == "mention"
     assert decision.normalized_message == "hello"
 
 

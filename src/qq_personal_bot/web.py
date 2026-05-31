@@ -8,7 +8,14 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from qq_personal_bot.lua_runner import default_lua_script, validate_lua_script
+from qq_personal_bot.lua_runner import (
+    default_lua_command_script,
+    default_lua_script,
+    list_lua_command_scripts,
+    lua_command_path,
+    validate_lua_command,
+    validate_lua_script,
+)
 from qq_personal_bot.replies import (
     DEFAULT_CONFIG,
     parse_reply_config,
@@ -96,6 +103,46 @@ def create_app():
         path.write_text(payload.content, encoding="utf-8")
         return _load_lua_for_editor()
 
+    @app.get("/api/lua/commands")
+    async def get_lua_commands() -> dict:
+        return _load_lua_commands()
+
+    @app.get("/api/lua/commands/{command:path}")
+    async def get_lua_command(command: str) -> dict:
+        return _load_lua_command_for_editor(command)
+
+    @app.post("/api/lua/commands/{command:path}")
+    async def save_lua_command(command: str, payload: LuaPayload, request: Request) -> dict:
+        require_token(request)
+        try:
+            command = validate_lua_command(command)
+            validate_lua_script(payload.content)
+            path = lua_command_path(command)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(payload.content, encoding="utf-8")
+        return _load_lua_command_for_editor(command)
+
+    @app.delete("/api/lua/commands/{command:path}")
+    async def delete_lua_command(command: str, request: Request) -> dict:
+        require_token(request)
+        try:
+            command = validate_lua_command(command)
+            path = lua_command_path(command)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        deleted = False
+        if path.exists():
+            path.unlink()
+            deleted = True
+        data = _load_lua_commands()
+        data["deleted"] = deleted
+        data["command"] = command
+        return data
+
     @app.post("/api/groups/{group_id}/on")
     async def group_on(group_id: int, request: Request) -> dict:
         require_token(request)
@@ -154,6 +201,46 @@ def _load_lua_for_editor() -> dict:
     return {
         "enabled": settings.lua_enabled,
         "script_path": str(path),
+        "exists": exists,
+        "using_example": using_example,
+        "content": content,
+    }
+
+
+def _load_lua_commands() -> dict:
+    settings = get_settings()
+    return {
+        "enabled": settings.lua_enabled,
+        "lua_dir": str(settings.lua_dir),
+        "commands": [
+            {
+                "command": script.command,
+                "path": str(script.path),
+                "size": script.size,
+                "modified_at": script.modified_at,
+            }
+            for script in list_lua_command_scripts(settings.lua_dir)
+        ],
+    }
+
+
+def _load_lua_command_for_editor(command: str) -> dict:
+    try:
+        command = validate_lua_command(command)
+        path = lua_command_path(command)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    exists = path.exists()
+    content = path.read_text(encoding="utf-8") if exists else ""
+    using_example = not content.strip()
+    if using_example:
+        content = default_lua_command_script(command)
+
+    return {
+        "enabled": get_settings().lua_enabled,
+        "command": command,
+        "path": str(path),
         "exists": exists,
         "using_example": using_example,
         "content": content,

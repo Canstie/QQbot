@@ -1,4 +1,6 @@
 let replyConfig = { empty: "", fallback: "Received: {message}", rules: [], direct_rules: [] };
+let luaCommands = [];
+let currentLuaCommand = "";
 
 const ruleTypes = [
   ["exact", "完全匹配"],
@@ -197,27 +199,105 @@ async function saveReplies() {
   }
 }
 
-async function loadLua() {
+function encodedCommand(command) {
+  return encodeURIComponent(command);
+}
+
+function renderLuaCommandList() {
+  const list = byId("luaCommandList");
+  if (!luaCommands.length) {
+    list.innerHTML = '<div class="empty-list">暂无脚本，输入指令后点击打开</div>';
+    return;
+  }
+
+  list.innerHTML = luaCommands.map((item) => `
+    <button class="lua-command-item ${item.command === currentLuaCommand ? "active" : ""}" data-lua-open="${escapeHtml(item.command)}">
+      <span>${escapeHtml(item.command)}</span>
+      <small>${Math.max(1, Math.ceil((item.size || 0) / 1024))} KB</small>
+    </button>
+  `).join("");
+}
+
+async function loadLuaCommands(preferredCommand = currentLuaCommand) {
   try {
-    const data = await requestJson("./api/lua", { headers: headers() });
-    byId("luaEditor").value = data.content || "";
-    byId("luaMeta").textContent = `${data.script_path} · ${data.enabled ? "已启用" : "未启用"}${data.using_example ? " · 当前显示示例" : ""}`;
-    setNotice("luaNotice", data.using_example ? "脚本为空，已显示示例" : "Lua 脚本已加载", "ok");
+    const data = await requestJson("./api/lua/commands", { headers: headers() });
+    luaCommands = data.commands || [];
+    byId("luaListMeta").textContent = `${data.lua_dir} · ${data.enabled ? "已启用" : "未启用"} · ${luaCommands.length} 个脚本`;
+    renderLuaCommandList();
+
+    const nextCommand = preferredCommand || luaCommands[0]?.command || "抽群老婆";
+    await openLuaCommand(nextCommand, { refreshList: false });
   } catch (error) {
     setNotice("luaNotice", error.message, "error");
   }
 }
 
-async function saveLua() {
+async function openLuaCommand(command, options = {}) {
+  const value = String(command || "").trim();
+  if (!value) {
+    setNotice("luaNotice", "请输入指令名", "error");
+    return;
+  }
+
   try {
-    const data = await requestJson("./api/lua", {
+    const data = await requestJson(`./api/lua/commands/${encodedCommand(value)}`, { headers: headers() });
+    currentLuaCommand = data.command;
+    byId("luaCommandInput").value = data.command;
+    byId("luaCurrentCommand").value = data.command;
+    byId("luaEditor").value = data.content || "";
+    byId("luaMeta").textContent = `${data.path} · ${data.enabled ? "已启用" : "未启用"}${data.using_example ? " · 当前显示示例" : ""}`;
+    setNotice("luaNotice", data.using_example ? "脚本不存在或为空，已显示示例，保存后生效" : "Lua 脚本已加载", "ok");
+    renderLuaCommandList();
+    if (options.refreshList) await loadLuaCommands(data.command);
+  } catch (error) {
+    setNotice("luaNotice", error.message, "error");
+  }
+}
+
+async function createLuaCommand() {
+  await openLuaCommand(byId("luaCommandInput").value || "抽群老婆");
+}
+
+async function saveLua() {
+  if (!currentLuaCommand) {
+    setNotice("luaNotice", "请先选择或新建一个指令", "error");
+    return;
+  }
+
+  try {
+    const data = await requestJson(`./api/lua/commands/${encodedCommand(currentLuaCommand)}`, {
       method: "POST",
       headers: headers(),
       body: JSON.stringify({ content: byId("luaEditor").value }),
     });
+    currentLuaCommand = data.command;
     byId("luaEditor").value = data.content || "";
-    byId("luaMeta").textContent = `${data.script_path} · ${data.enabled ? "已启用" : "未启用"}`;
+    byId("luaMeta").textContent = `${data.path} · ${data.enabled ? "已启用" : "未启用"}`;
+    await loadLuaCommands(data.command);
     setNotice("luaNotice", "保存成功", "ok");
+  } catch (error) {
+    setNotice("luaNotice", error.message, "error");
+  }
+}
+
+async function deleteLua() {
+  if (!currentLuaCommand) {
+    setNotice("luaNotice", "请先选择一个指令", "error");
+    return;
+  }
+  if (!confirm(`删除 Lua 指令「${currentLuaCommand}」？`)) return;
+
+  try {
+    await requestJson(`./api/lua/commands/${encodedCommand(currentLuaCommand)}`, {
+      method: "DELETE",
+      headers: headers(),
+    });
+    const deletedCommand = currentLuaCommand;
+    currentLuaCommand = "";
+    byId("luaCurrentCommand").value = "";
+    byId("luaEditor").value = "";
+    setNotice("luaNotice", `已删除 ${deletedCommand}`, "ok");
+    await loadLuaCommands();
   } catch (error) {
     setNotice("luaNotice", error.message, "error");
   }
@@ -241,18 +321,26 @@ document.addEventListener("click", (event) => {
   if (action === "save-prefixes") savePrefixes();
   if (action === "load-replies") loadReplies();
   if (action === "save-replies") saveReplies();
-  if (action === "load-lua") loadLua();
+  if (action === "load-lua") loadLuaCommands();
   if (action === "save-lua") saveLua();
+  if (action === "delete-lua") deleteLua();
+  if (action === "create-lua-command") createLuaCommand();
 
   const groupActionName = event.target.dataset.groupAction;
   if (groupActionName) groupAction(groupActionName);
 
   const addRuleKind = event.target.dataset.addRule;
   if (addRuleKind) addRule(addRuleKind);
+
+  const luaCommand = event.target.closest("[data-lua-open]")?.dataset.luaOpen;
+  if (luaCommand) openLuaCommand(luaCommand);
 });
 
+byId("luaCommandInput").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") createLuaCommand();
+});
 byId("luaImport").addEventListener("change", (event) => importLuaFile(event.target.files?.[0]));
 
 refresh();
 loadReplies();
-loadLua();
+loadLuaCommands();

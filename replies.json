@@ -33,6 +33,31 @@
       "type": "contains",
       "pattern": "张雪峰",
       "reply": "张雪峰老师~我还记得你~"
+    },
+    {
+      "type": "contains",
+      "pattern": "锁",
+      "reply": "哦耶~丝丝的锁~"
+    },
+    {
+      "type": "contains",
+      "pattern": "🍬",
+      "reply": "你好糖"
+    },
+    {
+      "type": "contains",
+      "pattern": "老广滚吧",
+      "reply": "给我这个天天吃烧鹅、白切鸡、叉烧、虾饺、肠粉、例汤、青菜、煲仔饭的老广气笑了"
+    },
+    {
+      "type": "contains",
+      "pattern": "张旭",
+      "reply": "张旭工程师~我还记得你~"
+    },
+    {
+      "type": "contains",
+      "pattern": "哈!",
+      "reply": "哦耶~哈哈的气~"
     }
   ]
 }

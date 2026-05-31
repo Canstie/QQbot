@@ -102,25 +102,38 @@
 
       <section class="lua-panel">
         <div class="section-head">
-          <h2>Lua 脚本</h2>
+          <h2>Lua 指令脚本</h2>
           <div class="split-actions">
             <label class="file-button">
               导入 Lua
               <input id="luaImport" type="file" accept=".lua,text/plain">
             </label>
-            <button class="secondary" data-action="load-lua">重新读取</button>
-            <button data-action="save-lua">保存 Lua</button>
+            <button class="secondary" data-action="load-lua">刷新列表</button>
+            <button class="danger" data-action="delete-lua">删除</button>
+            <button data-action="save-lua">保存脚本</button>
           </div>
         </div>
         <div class="lua-grid">
+          <aside class="lua-command-panel">
+            <label>新建/打开指令
+              <input id="luaCommandInput" placeholder="抽群老婆">
+            </label>
+            <button data-action="create-lua-command">打开指令</button>
+            <div class="hint" id="luaListMeta">加载中</div>
+            <div id="luaCommandList" class="lua-command-list"></div>
+          </aside>
           <div class="lua-editor-wrap">
             <div class="hint" id="luaMeta">加载中</div>
+            <label>当前指令
+              <input id="luaCurrentCommand" readonly placeholder="请选择或新建一个指令">
+            </label>
             <textarea id="luaEditor" class="code-editor" spellcheck="false" autocomplete="off"></textarea>
             <div id="luaNotice" class="notice">加载中</div>
           </div>
           <aside class="docs-panel">
             <h3>OneBot 11 API 参考</h3>
             <p class="hint">当前项目保留 OneBot 11；OneBot 12 需要协议端明确支持，LLBot 当前链路建议继续使用 OneBot 11。</p>
+            <p class="hint">群里发送 <code>~指令 参数</code> 时，会执行 <code>scripts/lua/指令.lua</code>；Lua 里可读取 <code>event.command</code>、<code>event.args</code>、<code>event.full_message</code>。</p>
             <p class="hint">Lua 可用封装接口，也可以用原始 action 名通过 <code>api.call(action, params)</code> 调用。</p>
             <pre class="docs-code">api.get_group_list()
 api.get_group_info(group_id)
@@ -131,10 +144,19 @@ api.get_stranger_info(user_id)
 api.send_group_message(group_id, message)
 api.send_private_message(user_id, message)
 api.reply(message)
+api.get_state(key, namespace)
+api.set_state(key, value, namespace)
+api.delete_state(key, namespace)
+api.url_encode(value)
+api.http_get_json(url)
 api.call("send_group_msg", {
   group_id = event.group_id,
   message = "hello"
 })</pre>
+            <h3>脚本入口</h3>
+            <pre class="docs-code">function on_command(event, api)
+  return "收到参数：" .. event.args
+end</pre>
             <h3>常用原始 action</h3>
             <ul class="docs-list">
               <li><code>send_private_msg</code>：发送私聊消息</li>

@@ -63,6 +63,14 @@ class PolicyStore:
                 detail TEXT NOT NULL,
                 created_at REAL NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS lua_state (
+                namespace TEXT NOT NULL,
+                key TEXT NOT NULL,
+                value TEXT NOT NULL,
+                updated_at REAL NOT NULL,
+                PRIMARY KEY (namespace, key)
+            );
             """
         )
 
@@ -304,6 +312,35 @@ class PolicyStore:
                 "per_user_per_minute": self.get_per_user_per_minute(),
             },
         }
+
+    def get_lua_state(self, namespace: str, key: str) -> str | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT value FROM lua_state WHERE namespace = ? AND key = ?",
+                (namespace, key),
+            ).fetchone()
+            return str(row["value"]) if row else None
+
+    def set_lua_state(self, namespace: str, key: str, value: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO lua_state(namespace, key, value, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(namespace, key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+                """,
+                (namespace, key, value, time.time()),
+            )
+
+    def delete_lua_state(self, namespace: str, key: str) -> bool:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM lua_state WHERE namespace = ? AND key = ?",
+                (namespace, key),
+            )
+            return cursor.rowcount > 0
 
     def audit(
         self,

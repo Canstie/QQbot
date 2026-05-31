@@ -1,20 +1,44 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, urlparse
+from urllib.request import Request, urlopen
 
 from nonebot.adapters.onebot.v11 import Bot
 
 from qq_personal_bot.core.models import MessageEvent, PolicyDecision
-from qq_personal_bot.runtime import get_settings
+from qq_personal_bot.runtime import get_settings, get_store
 
 
 @dataclass(frozen=True)
 class LuaMessageResult:
     reply: str | None = None
     stop: bool = False
+    quote: bool = False
+
+
+@dataclass(frozen=True)
+class LuaCommandScript:
+    command: str
+    path: Path
+    size: int
+    modified_at: str
+
+
+_WINDOWS_RESERVED_NAMES = {
+    "con",
+    "prn",
+    "aux",
+    "nul",
+    *(f"com{index}" for index in range(1, 10)),
+    *(f"lpt{index}" for index in range(1, 10)),
+}
+_WINDOWS_INVALID_FILENAME_CHARS = set('/\\:*?"<>|')
 
 
 class LuaApi:
@@ -24,12 +48,14 @@ class LuaApi:
         bot: Bot,
         loop: asyncio.AbstractEventLoop,
         event: MessageEvent,
+        command: str,
         timeout_seconds: float,
     ):
         self._lua = lua
         self._bot = bot
         self._loop = loop
         self._event = event
+        self._command = command
         self._timeout_seconds = timeout_seconds
 
     def reply(self, message: str) -> bool:
@@ -83,12 +109,40 @@ class LuaApi:
             raise TypeError("api.call params must be a table/object")
         return self._call_api(str(action), **converted)
 
+    def get_state(self, key: str, namespace: str | None = None) -> str | None:
+        return get_store().get_lua_state(self._state_namespace(namespace), str(key))
+
+    def set_state(self, key: str, value: str, namespace: str | None = None) -> bool:
+        get_store().set_lua_state(self._state_namespace(namespace), str(key), str(value))
+        return True
+
+    def delete_state(self, key: str, namespace: str | None = None) -> bool:
+        return get_store().delete_lua_state(self._state_namespace(namespace), str(key))
+
+    def url_encode(self, value: str) -> str:
+        return quote(str(value), safe="")
+
+    def http_get_json(self, url: str) -> Any:
+        parsed = urlparse(str(url))
+        if parsed.scheme not in {"http", "https"}:
+            raise ValueError("api.http_get_json only supports http and https URLs")
+        request = Request(str(url), headers={"User-Agent": "qq-personal-bot/0.1"})
+        with urlopen(request, timeout=self._timeout_seconds) as response:
+            body = response.read(1_000_000)
+        return _to_lua(self._lua, json.loads(body.decode("utf-8")))
+
     def _call_api(self, action: str, **params: Any) -> Any:
         future = asyncio.run_coroutine_threadsafe(
             self._bot.call_api(action, **params),
             self._loop,
         )
         return _to_lua(self._lua, future.result(timeout=self._timeout_seconds))
+
+    def _state_namespace(self, namespace: str | None) -> str:
+        value = str(namespace).strip() if namespace is not None else self._command
+        if not value:
+            raise ValueError("Lua state namespace cannot be empty")
+        return value
 
 
 async def run_lua_message(
@@ -100,8 +154,20 @@ async def run_lua_message(
     if not settings.lua_enabled:
         return LuaMessageResult()
 
-    script_path = settings.lua_script
-    if not script_path.exists():
+    if decision.handler == "direct":
+        return LuaMessageResult()
+
+    command_parts = split_lua_command(decision.normalized_message)
+    if command_parts is None:
+        return LuaMessageResult()
+
+    command, args = command_parts
+    try:
+        script_path = lua_command_path(command)
+    except ValueError:
+        return LuaMessageResult()
+
+    if not script_path.is_file():
         return LuaMessageResult()
 
     loop = asyncio.get_running_loop()
@@ -113,6 +179,8 @@ async def run_lua_message(
                 bot,
                 event,
                 decision,
+                command,
+                args,
                 loop,
                 settings.lua_timeout_seconds,
             ),
@@ -127,6 +195,8 @@ def _run_lua_message_sync(
     bot: Bot,
     event: MessageEvent,
     decision: PolicyDecision,
+    command: str,
+    args: str,
     loop: asyncio.AbstractEventLoop,
     timeout_seconds: float,
 ) -> LuaMessageResult:
@@ -136,10 +206,12 @@ def _run_lua_message_sync(
     _sandbox(lua)
     lua.execute(script_path.read_text(encoding="utf-8"))
 
-    handler = lua.globals()["on_message"]
+    handler = lua.globals()["on_command"] or lua.globals()["on_message"]
     if handler is None:
         return LuaMessageResult()
 
+    full_message = decision.normalized_message.strip()
+    date = datetime.fromtimestamp(event.timestamp, timezone(timedelta(hours=8))).date().isoformat()
     lua_event = _to_lua(
         lua,
         {
@@ -148,15 +220,82 @@ def _run_lua_message_sync(
             "group_id": event.group_id,
             "user_id": event.user_id,
             "raw_message": event.raw_message,
-            "message": decision.normalized_message,
+            "message": args,
+            "full_message": full_message,
+            "command": command,
+            "args": args,
             "handler": decision.handler,
             "is_direct": decision.handler == "direct",
             "is_at_bot": event.is_at_bot,
             "timestamp": event.timestamp,
+            "date": date,
         },
     )
-    api = LuaApi(lua, bot, loop, event, timeout_seconds)
+    api = LuaApi(lua, bot, loop, event, command, timeout_seconds)
     return _normalize_lua_result(handler(lua_event, api))
+
+
+def validate_lua_command(command: str) -> str:
+    normalized = command.strip()
+    if not normalized:
+        raise ValueError("Lua command cannot be empty")
+    if normalized in {".", ".."} or "." in normalized:
+        raise ValueError("Lua command cannot contain dots")
+    if any(char in _WINDOWS_INVALID_FILENAME_CHARS for char in normalized):
+        raise ValueError("Lua command cannot contain path or filename separators")
+    if any(ord(char) < 32 for char in normalized):
+        raise ValueError("Lua command cannot contain control characters")
+    if normalized.casefold() in _WINDOWS_RESERVED_NAMES:
+        raise ValueError("Lua command cannot use a Windows reserved filename")
+    return normalized
+
+
+def split_lua_command(message: str) -> tuple[str, str] | None:
+    parts = message.strip().split(maxsplit=1)
+    if not parts:
+        return None
+    try:
+        command = validate_lua_command(parts[0])
+    except ValueError:
+        return None
+    args = parts[1].strip() if len(parts) > 1 else ""
+    return command, args
+
+
+def lua_command_path(command: str, lua_dir: Path | None = None) -> Path:
+    command = validate_lua_command(command)
+    root = lua_dir or get_settings().lua_dir
+    path = root / f"{command}.lua"
+    root_resolved = root.resolve(strict=False)
+    path_resolved = path.resolve(strict=False)
+    try:
+        path_resolved.relative_to(root_resolved)
+    except ValueError as exc:
+        raise ValueError("Lua command path escaped lua directory") from exc
+    return path
+
+
+def list_lua_command_scripts(lua_dir: Path | None = None) -> list[LuaCommandScript]:
+    root = lua_dir or get_settings().lua_dir
+    if not root.exists():
+        return []
+
+    scripts: list[LuaCommandScript] = []
+    for path in sorted(root.glob("*.lua"), key=lambda item: item.stem.casefold()):
+        try:
+            command = validate_lua_command(path.stem)
+        except ValueError:
+            continue
+        stat = path.stat()
+        scripts.append(
+            LuaCommandScript(
+                command=command,
+                path=path,
+                size=stat.st_size,
+                modified_at=datetime.fromtimestamp(stat.st_mtime, UTC).isoformat(),
+            )
+        )
+    return scripts
 
 
 def _sandbox(lua: Any) -> None:
@@ -193,15 +332,76 @@ end
 """
 
 
+def default_lua_command_script(command: str) -> str:
+    command = validate_lua_command(command)
+    if command == "抽群老婆":
+        return """-- Command: 抽群老婆
+-- Trigger: ~抽群老婆
+
+local function display_name(member)
+  if member.card ~= nil and member.card ~= "" then
+    return member.card
+  end
+  if member.nickname ~= nil and member.nickname ~= "" then
+    return member.nickname
+  end
+  return tostring(member.user_id)
+end
+
+function on_command(event, api)
+  if event.group_id == nil then
+    return "这个功能只能在群聊里使用。"
+  end
+
+  local members = api.get_group_member_list(event.group_id)
+  if members == nil or #members == 0 then
+    return "没有获取到群成员列表。"
+  end
+
+  local login = api.get_login_info()
+  local self_id = tostring(login.user_id)
+  local candidates = {}
+
+  for i = 1, #members do
+    local member = members[i]
+    if tostring(member.user_id) ~= self_id then
+      table.insert(candidates, member)
+    end
+  end
+
+  if #candidates == 0 then
+    return "没有可抽取的群老婆。"
+  end
+
+  math.randomseed(tonumber(event.timestamp) + tonumber(event.message_id or 0))
+  local picked = candidates[math.random(#candidates)]
+  return "抽取完成！你的群老婆是：" .. display_name(picked) .. "（" .. tostring(picked.user_id) .. "）"
+end
+"""
+
+    return f"""-- Command: {command}
+-- Trigger: ~{command} [args]
+-- event.args contains the text after the command.
+
+function on_command(event, api)
+  if event.args ~= "" then
+    return "已执行 " .. event.command .. "，参数：" .. event.args
+  end
+
+  return "已执行 " .. event.command
+end
+"""
+
+
 def validate_lua_script(script: str) -> None:
     from lupa import LuaRuntime
 
     lua = LuaRuntime(unpack_returned_tuples=True)
     _sandbox(lua)
     lua.execute(script)
-    handler = lua.globals()["on_message"]
+    handler = lua.globals()["on_command"] or lua.globals()["on_message"]
     if handler is None:
-        raise ValueError("Lua script must define on_message(event, api)")
+        raise ValueError("Lua script must define on_command(event, api) or on_message(event, api)")
 
 
 def _to_lua(lua: Any, value: Any) -> Any:
@@ -241,6 +441,7 @@ def _normalize_lua_result(value: Any) -> LuaMessageResult:
             return LuaMessageResult()
         reply = converted.get("reply")
         stop = bool(converted.get("stop", reply is not None))
-        return LuaMessageResult(reply=str(reply) if reply is not None else None, stop=stop)
+        quote = bool(converted.get("quote", False))
+        return LuaMessageResult(reply=str(reply) if reply is not None else None, stop=stop, quote=quote)
 
     return LuaMessageResult()

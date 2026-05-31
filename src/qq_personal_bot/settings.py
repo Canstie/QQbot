@@ -58,6 +58,7 @@ class AppSettings:
     per_user_per_minute: int = 5
     lua_enabled: bool = True
     lua_script: Path = Path("scripts/main.lua")
+    lua_dir: Path = Path("scripts/lua")
     lua_timeout_seconds: float = 3.0
     web_token: str | None = None
     nonebot_driver: str = "~fastapi"
@@ -83,6 +84,7 @@ class AppSettings:
             per_user_per_minute=_env_int(env.get("QQBOT_PER_USER_PER_MINUTE"), 5),
             lua_enabled=_env_bool(env.get("QQBOT_LUA_ENABLED"), True),
             lua_script=Path(env.get("QQBOT_LUA_SCRIPT", "scripts/main.lua")),
+            lua_dir=Path(env.get("QQBOT_LUA_DIR", "scripts/lua")),
             lua_timeout_seconds=_env_float(env.get("QQBOT_LUA_TIMEOUT_SECONDS"), 3.0),
             web_token=web_token,
             nonebot_driver=env.get("DRIVER", "~fastapi"),
