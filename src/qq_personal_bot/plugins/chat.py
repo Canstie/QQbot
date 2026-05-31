@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from nonebot import on_message
+from nonebot import on_message, logger
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message, MessageSegment
 
 from qq_personal_bot.adapters.onebot import onebot_to_internal
@@ -36,6 +36,12 @@ async def handle_group_message(bot: Bot, event: GroupMessageEvent):
 
     if decision.handler == "mention":
         return
+
+    if decision.handler == "default":
+        logger.debug(
+            f"Lua: no result for command from message {decision.normalized_message!r}, "
+            f"falling back to replies.json"
+        )
 
     await chat.finish(
         _build_default_response(decision.normalized_message, direct=decision.handler == "direct")

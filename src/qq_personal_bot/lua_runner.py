@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import traceback
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
@@ -9,6 +10,7 @@ from typing import Any
 from urllib.parse import quote, urlparse
 from urllib.request import Request, urlopen
 
+from nonebot import logger
 from nonebot.adapters.onebot.v11 import Bot
 
 from qq_personal_bot.core.models import MessageEvent, PolicyDecision
@@ -159,15 +161,18 @@ async def run_lua_message(
 
     command_parts = split_lua_command(decision.normalized_message)
     if command_parts is None:
+        logger.debug(f"Lua: not a valid command from message: {decision.normalized_message!r}")
         return LuaMessageResult()
 
     command, args = command_parts
     try:
         script_path = lua_command_path(command)
-    except ValueError:
+    except ValueError as exc:
+        logger.warning(f"Lua: invalid command path for {command!r}: {exc}")
         return LuaMessageResult()
 
     if not script_path.is_file():
+        logger.debug(f"Lua: script not found for command {command!r} at {script_path}")
         return LuaMessageResult()
 
     loop = asyncio.get_running_loop()
@@ -186,7 +191,17 @@ async def run_lua_message(
             ),
             timeout=settings.lua_timeout_seconds + 0.5,
         )
+    except asyncio.TimeoutError:
+        logger.warning(
+            f"Lua: command {command!r} timed out after "
+            f"{settings.lua_timeout_seconds + 0.5:.1f}s"
+        )
+        return LuaMessageResult()
     except Exception:
+        logger.warning(
+            f"Lua: command {command!r} failed with exception:\n"
+            f"{traceback.format_exc()}"
+        )
         return LuaMessageResult()
 
 
@@ -204,10 +219,18 @@ def _run_lua_message_sync(
 
     lua = LuaRuntime(unpack_returned_tuples=True)
     _sandbox(lua)
-    lua.execute(script_path.read_text(encoding="utf-8"))
+    try:
+        lua.execute(script_path.read_text(encoding="utf-8"))
+    except Exception:
+        logger.warning(
+            f"Lua: failed to execute script {script_path}:\n"
+            f"{traceback.format_exc()}"
+        )
+        return LuaMessageResult()
 
     handler = lua.globals()["on_command"] or lua.globals()["on_message"]
     if handler is None:
+        logger.debug(f"Lua: script {script_path} has no on_command or on_message handler")
         return LuaMessageResult()
 
     full_message = decision.normalized_message.strip()
@@ -232,7 +255,14 @@ def _run_lua_message_sync(
         },
     )
     api = LuaApi(lua, bot, loop, event, command, timeout_seconds)
-    return _normalize_lua_result(handler(lua_event, api))
+    try:
+        return _normalize_lua_result(handler(lua_event, api))
+    except Exception:
+        logger.warning(
+            f"Lua: command {command!r} handler raised an error (check script {script_path}):\n"
+            f"{traceback.format_exc()}"
+        )
+        return LuaMessageResult()
 
 
 def validate_lua_command(command: str) -> str:
