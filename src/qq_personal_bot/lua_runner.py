@@ -14,6 +14,7 @@ from nonebot import logger
 from nonebot.adapters.onebot.v11 import Bot
 
 from qq_personal_bot.core.models import MessageEvent, PolicyDecision
+from qq_personal_bot.menu_recipes import fetch_jisu_recipe, is_supported_image_file
 from qq_personal_bot.runtime import get_settings, get_store
 
 
@@ -138,6 +139,48 @@ class LuaApi:
 
     def json_decode(self, value: str) -> Any:
         return _to_lua(self._lua, json.loads(str(value)))
+
+    def pick_menu_recipe(self, target: str, seed: int) -> Any:
+        settings = get_settings()
+        if settings.menu_provider in {"auto", "jisu"} and settings.jisu_recipe_appkey:
+            try:
+                recipe = fetch_jisu_recipe(
+                    settings.jisu_recipe_appkey,
+                    str(target or ""),
+                    int(seed),
+                    settings.lua_timeout_seconds,
+                )
+            except Exception as exc:
+                logger.warning(f"Lua: Jisu recipe API failed, falling back to local menu: {exc}")
+            else:
+                if recipe is not None:
+                    return _to_lua(self._lua, recipe)
+
+        recipe = get_store().pick_menu_recipe(
+            str(target or ""),
+            int(seed),
+            seed_path=settings.menu_seed_path,
+            image_dir=settings.menu_image_dir,
+        )
+        return _to_lua(self._lua, recipe)
+
+    def local_image(self, relpath: str) -> str | None:
+        relative_path = str(relpath or "").strip()
+        if not relative_path:
+            return None
+
+        root = get_settings().menu_image_dir.resolve(strict=False)
+        image_path = (root / relative_path).resolve(strict=False)
+        try:
+            image_path.relative_to(root)
+        except ValueError:
+            return None
+        if not image_path.is_file():
+            return None
+        if not is_supported_image_file(image_path):
+            logger.warning(f"Lua: skipped unsupported local image file: {image_path}")
+            return None
+        return f"[CQ:image,file={image_path.as_uri()}]"
 
     def _call_api(self, action: str, **params: Any) -> Any:
         future = asyncio.run_coroutine_threadsafe(

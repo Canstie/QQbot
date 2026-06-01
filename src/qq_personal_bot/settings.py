@@ -60,6 +60,10 @@ class AppSettings:
     lua_script: Path = Path("scripts/main.lua")
     lua_dir: Path = Path("scripts/lua")
     lua_timeout_seconds: float = 3.0
+    menu_seed_path: Path = Path("data/recipes_seed.jsonl")
+    menu_image_dir: Path = Path("data/menu_images")
+    menu_provider: str = "auto"
+    jisu_recipe_appkey: str = ""
     web_token: str | None = None
     nonebot_driver: str = "~fastapi"
     host: str = "127.0.0.1"
@@ -86,6 +90,10 @@ class AppSettings:
             lua_script=Path(env.get("QQBOT_LUA_SCRIPT", "scripts/main.lua")),
             lua_dir=Path(env.get("QQBOT_LUA_DIR", "scripts/lua")),
             lua_timeout_seconds=_env_float(env.get("QQBOT_LUA_TIMEOUT_SECONDS"), 3.0),
+            menu_seed_path=Path(env.get("QQBOT_MENU_SEED_PATH", "data/recipes_seed.jsonl")),
+            menu_image_dir=Path(env.get("QQBOT_MENU_IMAGE_DIR", "data/menu_images")),
+            menu_provider=env.get("QQBOT_MENU_PROVIDER", "auto").strip().lower() or "auto",
+            jisu_recipe_appkey=env.get("QQBOT_JISU_RECIPE_APPKEY", "").strip(),
             web_token=web_token,
             nonebot_driver=env.get("DRIVER", "~fastapi"),
             host=env.get("HOST", "127.0.0.1"),
@@ -101,3 +109,5 @@ class AppSettings:
             raise ValueError("QQBOT_PER_USER_PER_MINUTE must be >= 0")
         if self.lua_timeout_seconds <= 0:
             raise ValueError("QQBOT_LUA_TIMEOUT_SECONDS must be > 0")
+        if self.menu_provider not in {"auto", "local", "jisu"}:
+            raise ValueError("QQBOT_MENU_PROVIDER must be auto, local, or jisu")

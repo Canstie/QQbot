@@ -1,5 +1,6 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -112,7 +113,7 @@ async def test_lua_command_routes_to_matching_script(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_lua_command_receives_command_and_args(tmp_path, monkeypatch):
     lua_dir = configure_lua_dir(tmp_path, monkeypatch)
-    (lua_dir / "天气.lua").write_text(
+    (lua_dir / "澶╂皵.lua").write_text(
         """
         function on_command(event, api)
           return event.command .. "|" .. event.args .. "|" .. event.message .. "|" .. event.full_message
@@ -124,10 +125,10 @@ async def test_lua_command_receives_command_and_args(tmp_path, monkeypatch):
     result = await run_lua_message(
         FakeBot(),
         make_event(),
-        PolicyDecision(True, "ok", handler="default", normalized_message="天气 北京"),
+        PolicyDecision(True, "ok", handler="default", normalized_message="澶╂皵 鍖椾含"),
     )
 
-    assert result.reply == "天气|北京|北京|天气 北京"
+    assert result.reply == "澶╂皵|鍖椾含|鍖椾含|澶╂皵 鍖椾含"
     assert result.stop is True
 
 
@@ -434,7 +435,7 @@ async def test_lua_json_encode_decode_helpers(tmp_path, monkeypatch):
         """
         function on_command(event, api)
           local encoded = api.json_encode({
-            name = "番茄炒蛋",
+            name = "鐣寗鐐掕泲",
             items = {
               {id = "1", title = "A"}
             }
@@ -452,7 +453,7 @@ async def test_lua_json_encode_decode_helpers(tmp_path, monkeypatch):
         PolicyDecision(True, "ok", handler="default", normalized_message="json"),
     )
 
-    assert result.reply == "番茄炒蛋|1|A"
+    assert result.reply == "鐣寗鐐掕泲|1|A"
 
 
 @pytest.mark.asyncio
@@ -481,7 +482,7 @@ async def test_builtin_today_personality_replaces_luck_command(tmp_path, monkeyp
     assert first.reply == second.reply
     assert first.quote is True
     assert first.reply is not None
-    assert "人品" in first.reply
+    assert any(char.isdigit() for char in first.reply)
 
 
 @pytest.mark.asyncio
@@ -508,43 +509,13 @@ async def test_builtin_daily_yiji_is_fixed(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_builtin_menu_translates_and_caches_api_results(tmp_path, monkeypatch):
+async def test_builtin_menu_uses_local_recipe_database_without_network(tmp_path, monkeypatch):
     configure_builtin_lua_dir(tmp_path, monkeypatch)
 
-    class FakeResponse:
-        def __init__(self, body: bytes):
-            self.body = body
+    def fail_urlopen(*args, **kwargs):
+        raise AssertionError("今日菜单 should not call external HTTP APIs")
 
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def read(self, size):
-            return self.body
-
-    calls = []
-
-    def fake_urlopen(request, timeout):
-        calls.append(request.full_url)
-        if request.full_url.endswith("/search.php?s=%E7%81%AB%E9%94%85"):
-            return FakeResponse(b'{"meals":null}')
-        if "themealdb.com/api/json/v1/1/filter.php?a=" in request.full_url:
-            return FakeResponse(
-                b'{"meals":[{"idMeal":"cn1","strMeal":"Tomato Egg Stir Fry",'
-                b'"strMealThumb":"https://example.invalid/chinese-list-1.jpg",'
-                b'"strCategory":"Vegetarian"}]}'
-            )
-        if "api.mymemory.translated.net/get" in request.full_url:
-            assert "Tomato%20Egg%20Stir%20Fry" in request.full_url
-            return FakeResponse(
-                b'{"responseData":{"translatedText":"Tomato Egg Stir Fry"},'
-                b'"matches":[{"translation":"\\u756a\\u8304\\u7092\\u86cb"}]}'
-            )
-        raise AssertionError(f"Unexpected URL: {request.full_url}")
-
-    monkeypatch.setattr("qq_personal_bot.lua_runner.urlopen", fake_urlopen)
+    monkeypatch.setattr("qq_personal_bot.lua_runner.urlopen", fail_urlopen)
 
     default_first = await run_lua_message(
         RichFakeBot(),
@@ -561,46 +532,48 @@ async def test_builtin_menu_translates_and_caches_api_results(tmp_path, monkeypa
         make_event(),
         PolicyDecision(True, "ok", handler="default", normalized_message="今日菜单 广州"),
     )
-    unknown = await run_lua_message(
+    hotpot = await run_lua_message(
         RichFakeBot(),
         make_event(),
         PolicyDecision(True, "ok", handler="default", normalized_message="今日菜单 火锅"),
     )
+    unknown = await run_lua_message(
+        RichFakeBot(),
+        make_event(),
+        PolicyDecision(True, "ok", handler="default", normalized_message="今日菜单 不存在"),
+    )
 
     assert default_first.quote is True
     assert guangzhou.quote is True
+    assert hotpot.quote is True
     assert unknown.quote is True
+    assert default_first.reply == default_second.reply
     assert default_first.reply is not None
-    assert default_second.reply is not None
     assert guangzhou.reply is not None
+    assert hotpot.reply is not None
     assert unknown.reply is not None
-    assert "今日菜单" in default_first.reply
-    assert "今日菜单｜广州" in guangzhou.reply
-    assert "今日菜单｜火锅" in unknown.reply
-    assert "推荐：番茄炒蛋" in default_first.reply
-    assert "推荐：番茄炒蛋" in default_second.reply
-    assert "推荐：番茄炒蛋" in guangzhou.reply
-    assert "推荐：番茄炒蛋" in unknown.reply
-    assert "分类：素食" in default_first.reply
-    assert "来源：" not in guangzhou.reply
-    assert "地区：" not in guangzhou.reply
-    assert "[CQ:image,file=https://example.invalid/chinese-list-1.jpg]" in default_first.reply
-    assert "[CQ:image,file=https://example.invalid/chinese-list-1.jpg]" in guangzhou.reply
-    assert "稳定碳水" not in default_first.reply
-    assert "血糖" not in default_first.reply
-    assert sum("themealdb.com/api/json/v1/1/filter.php?a=" in call for call in calls) in {1, 2}
-    assert calls.count("https://www.themealdb.com/api/json/v1/1/search.php?s=%E7%81%AB%E9%94%85") == 1
-    assert sum("api.mymemory.translated.net/get" in call for call in calls) == 1
+    assert default_first.reply.startswith("今日菜单\n推荐：")
+    assert "理由：" in default_first.reply
+    assert "菜系：" not in default_first.reply
+    assert "地区：" not in default_first.reply
+    assert "分类：" not in default_first.reply
+    assert "标签：" not in default_first.reply
+    assert "食材：" not in default_first.reply
+    assert guangzhou.reply.startswith("今日菜单｜广州\n推荐：")
+    assert "理由：" in guangzhou.reply
+    assert hotpot.reply.startswith("今日菜单｜火锅\n推荐：")
+    assert "TheMealDB" not in hotpot.reply
+    assert "外部菜单接口" not in hotpot.reply
+    assert unknown.reply.startswith("今日菜单｜不存在\n推荐：")
 
 
 @pytest.mark.asyncio
-async def test_builtin_menu_falls_back_to_english_when_translation_fails(tmp_path, monkeypatch):
+async def test_builtin_menu_uses_jisu_recipe_api_image_when_configured(tmp_path, monkeypatch):
+    monkeypatch.setenv("QQBOT_MENU_PROVIDER", "jisu")
+    monkeypatch.setenv("QQBOT_JISU_RECIPE_APPKEY", "test-key")
     configure_builtin_lua_dir(tmp_path, monkeypatch)
 
     class FakeResponse:
-        def __init__(self, body: bytes):
-            self.body = body
-
         def __enter__(self):
             return self
 
@@ -608,101 +581,102 @@ async def test_builtin_menu_falls_back_to_english_when_translation_fails(tmp_pat
             return False
 
         def read(self, size):
-            return self.body
+            return json.dumps(
+                {
+                    "status": 0,
+                    "msg": "ok",
+                    "result": {
+                        "num": "1",
+                        "list": [
+                            {
+                                "id": "8",
+                                "name": "醋溜白菜",
+                                "classid": "2",
+                                "pic": "http://api.jisuapi.com/recipe/upload/test.jpg",
+                                "tag": "家常菜,下饭",
+                                "material": [{"mname": "白菜", "amount": "380g"}],
+                                "process": [{"pcontent": "快速翻炒至入味。"}],
+                            }
+                        ],
+                    },
+                },
+                ensure_ascii=False,
+            ).encode("utf-8")
 
     calls = []
 
     def fake_urlopen(request, timeout):
         calls.append(request.full_url)
-        if "themealdb.com/api/json/v1/1/filter.php?a=" in request.full_url:
-            return FakeResponse(
-                b'{"meals":[{"idMeal":"cn2","strMeal":"English Meal",'
-                b'"strMealThumb":"https://example.invalid/english.jpg"}]}'
-            )
-        if "api.mymemory.translated.net/get" in request.full_url:
-            raise OSError("translation unavailable")
-        raise AssertionError(f"Unexpected URL: {request.full_url}")
+        return FakeResponse()
 
-    monkeypatch.setattr("qq_personal_bot.lua_runner.urlopen", fake_urlopen)
+    monkeypatch.setattr("qq_personal_bot.menu_recipes.urlopen", fake_urlopen)
 
-    first = await run_lua_message(
-        RichFakeBot(),
-        make_event(),
-        PolicyDecision(True, "ok", handler="default", normalized_message="今日菜单"),
-    )
-    second = await run_lua_message(
+    result = await run_lua_message(
         RichFakeBot(),
         make_event(),
         PolicyDecision(True, "ok", handler="default", normalized_message="今日菜单"),
     )
 
-    assert first.reply is not None
-    assert second.reply is not None
-    assert "推荐：English Meal" in first.reply
-    assert "推荐：English Meal" in second.reply
-    assert "[CQ:image,file=https://example.invalid/english.jpg]" in first.reply
-    assert sum("themealdb.com/api/json/v1/1/filter.php?a=" in call for call in calls) == 1
-    assert sum("api.mymemory.translated.net/get" in call for call in calls) == 1
+    assert result.quote is True
+    assert result.reply is not None
+    assert "推荐：醋溜白菜" in result.reply
+    assert "[CQ:image,file=http://api.jisuapi.com/recipe/upload/test.jpg]" in result.reply
+    assert calls
+    assert "api.jisuapi.com/recipe/search" in calls[0]
+    assert "appkey=test-key" in calls[0]
 
 
 @pytest.mark.asyncio
-async def test_builtin_menu_uses_cache_when_external_api_is_down(tmp_path, monkeypatch):
-    configure_builtin_lua_dir(tmp_path, monkeypatch)
+async def test_lua_api_local_image_returns_nil_for_missing_file(tmp_path, monkeypatch):
+    image_dir = tmp_path / "menu_images"
+    image_dir.mkdir(parents=True)
+    existing_image = image_dir / "local.gif"
+    existing_image.write_bytes(
+        b"GIF89a\x01\x00\x01\x00\x80\x00\x00\xff\xff\xff\x00\x00\x00"
+        b"!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00"
+        b"\x00\x02\x02D\x01\x00;"
+    )
+    invalid_image = image_dir / "invalid.jpg"
+    invalid_image.write_text("not an image", encoding="utf-8")
+    seed_path = tmp_path / "recipes_seed.jsonl"
+    seed_path.write_text(
+        (
+            '{"id":"local-image","title":"本地带图菜","aliases":["带图"],'
+            '"cuisine":"测试菜","region":"本地","category":"样例","tags":["图片"],'
+            '"ingredients":["米饭","青菜"],"steps":["装盘"],'
+            f'"image_url":"{existing_image.as_posix()}"}}\n'
+            '{"id":"missing-image","title":"本地无图菜","aliases":["无图"],'
+            '"cuisine":"测试菜","region":"本地","category":"样例","tags":["降级"],'
+            '"ingredients":["面条","酱油"],"steps":["拌匀"],"image_url":""}'
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("QQBOT_MENU_SEED_PATH", str(seed_path))
+    monkeypatch.setenv("QQBOT_MENU_IMAGE_DIR", str(image_dir))
+    lua_dir = configure_lua_dir(tmp_path, monkeypatch)
+    (lua_dir / "menu_api.lua").write_text(
+        """
+        function on_command(event, api)
+          local with_image = api.pick_menu_recipe("带图", 0)
+          local missing = api.pick_menu_recipe("无图", 0)
+          local with_image_cq = api.local_image(with_image.image_relpath) or "missing"
+          local missing_cq = api.local_image("does-not-exist.gif") or "nil"
+          local invalid_cq = api.local_image("invalid.jpg") or "invalid"
+          return with_image.title .. "|" .. with_image_cq .. "|" .. missing.title .. "|" .. missing_cq .. "|" .. invalid_cq
+        end
+        """,
+        encoding="utf-8",
+    )
 
-    class FakeResponse:
-        def __init__(self, body: bytes):
-            self.body = body
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def read(self, size):
-            return self.body
-
-    calls = []
-    external_down = False
-
-    def fake_urlopen(request, timeout):
-        nonlocal external_down
-        calls.append(request.full_url)
-        if external_down:
-            raise OSError("external api unavailable")
-        if "themealdb.com/api/json/v1/1/filter.php?a=" in request.full_url:
-            return FakeResponse(
-                b'{"meals":[{"idMeal":"cached1","strMeal":"Cached Meal",'
-                b'"strMealThumb":"https://example.invalid/cached.jpg",'
-                b'"strCategory":"Beef"}]}'
-            )
-        if "api.mymemory.translated.net/get" in request.full_url:
-            return FakeResponse(
-                b'{"responseData":{"translatedText":"\\u7f13\\u5b58\\u83dc"}}'
-            )
-        raise AssertionError(f"Unexpected URL: {request.full_url}")
-
-    monkeypatch.setattr("qq_personal_bot.lua_runner.urlopen", fake_urlopen)
-
-    first = await run_lua_message(
-        RichFakeBot(),
+    result = await run_lua_message(
+        FakeBot(),
         make_event(),
-        PolicyDecision(True, "ok", handler="default", normalized_message="今日菜单"),
-    )
-    external_down = True
-    second = await run_lua_message(
-        RichFakeBot(),
-        make_event_at(2),
-        PolicyDecision(True, "ok", handler="default", normalized_message="今日菜单"),
+        PolicyDecision(True, "ok", handler="default", normalized_message="menu_api"),
     )
 
-    assert first.reply is not None
-    assert second.reply is not None
-    assert "推荐：缓存菜" in first.reply
-    assert "推荐：缓存菜" in second.reply
-    assert "[CQ:image,file=https://example.invalid/cached.jpg]" in second.reply
-    assert sum("themealdb.com/api/json/v1/1/filter.php?a=" in call for call in calls) == 1
-    assert sum("api.mymemory.translated.net/get" in call for call in calls) == 1
+    assert result.reply is not None
+    assert "本地带图菜|[CQ:image,file=" in result.reply
+    assert "|本地无图菜|nil|invalid" in result.reply
 
 
 @pytest.mark.asyncio

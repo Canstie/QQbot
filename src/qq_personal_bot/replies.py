@@ -61,7 +61,7 @@ def load_reply_config(config_path: str | Path = "replies.json") -> ReplyConfig:
     if not path.exists():
         return DEFAULT_CONFIG
 
-    with path.open("r", encoding="utf-8") as file:
+    with path.open("r", encoding="utf-8-sig") as file:
         raw = json.load(file)
 
     return parse_reply_config(raw)

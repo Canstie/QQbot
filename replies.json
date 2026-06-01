@@ -2,18 +2,6 @@
   "empty": "Bot 已启用，请在触发词后输入内容。",
   "fallback": "{message}",
   "rules": [],
-  "direct_lua_rules": [
-    {
-      "type": "contains",
-      "pattern": "吃什么",
-      "command": "今日菜单"
-    },
-    {
-      "type": "contains",
-      "pattern": "csm",
-      "command": "今日菜单"
-    }
-  ],
   "direct_rules": [
     {
       "type": "contains",
@@ -54,6 +42,28 @@
       "type": "contains",
       "pattern": "有没有星",
       "reply": "哦耶~⭐⭐的星~"
+    },
+    {
+      "type": "contains",
+      "pattern": "闹麻",
+      "reply": "哦耶~闹闹的麻麻"
+    }
+  ],
+  "direct_lua_rules": [
+    {
+      "type": "exact",
+      "pattern": "吃什么",
+      "command": "今日菜单"
+    },
+    {
+      "type": "regex",
+      "pattern": "^[!！]?(?:(?:今|明|后)(?:天|日))?(?:(?:早上|上午|中午|下午|晚上|夜宵|早餐|午餐|晚餐|早|中|午|晚))?吃(?:什么|啥|点啥)[？?]?$",
+      "command": "今日菜单"
+    },
+    {
+      "type": "exact",
+      "pattern": "csm",
+      "command": "今日菜单"
     }
   ]
 }

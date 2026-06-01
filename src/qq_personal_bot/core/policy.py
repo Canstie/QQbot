@@ -56,9 +56,6 @@ class PolicyEngine:
         )
 
     def evaluate(self, event: MessageEvent, self_id: int | str) -> PolicyDecision:
-        if str(event.user_id) == str(self_id):
-            return PolicyDecision(False, "self_message")
-
         if event.group_id is None:
             return PolicyDecision(False, "private_message")
 
@@ -68,10 +65,19 @@ class PolicyEngine:
         if mode == "blocklist" and self.store.is_group_blocked(event.group_id):
             return PolicyDecision(False, "group_blocked")
 
-        trigger = self._extract_trigger_text(event)
+        is_self_message = str(event.user_id) == str(self_id)
+        trigger = (
+            self._extract_self_trigger_text(event)
+            if is_self_message
+            else self._extract_trigger_text(event)
+        )
         if trigger is None:
-            return PolicyDecision(False, "no_trigger")
+            reason = "self_message" if is_self_message else "no_trigger"
+            return PolicyDecision(False, reason)
         trigger_text, handler = trigger
+
+        if is_self_message:
+            return PolicyDecision(True, "ok", handler=handler, normalized_message=trigger_text)
 
         self.rate_limiter.update_limits(
             self.store.get_per_group_seconds(),
@@ -82,6 +88,21 @@ class PolicyEngine:
             return PolicyDecision(False, reason)
 
         return PolicyDecision(True, "ok", handler=handler, normalized_message=trigger_text)
+
+    def _extract_self_trigger_text(self, event: MessageEvent) -> tuple[str, str] | None:
+        raw_message = event.raw_message.strip()
+        if raw_message.startswith("/bot"):
+            return None
+
+        for prefix in self.store.prefixes():
+            if raw_message.startswith(prefix):
+                return raw_message[len(prefix) :].strip(), "default"
+
+        lua_command = direct_lua_command(raw_message)
+        if lua_command is not None:
+            return lua_command, "lua"
+
+        return None
 
     def _extract_trigger_text(self, event: MessageEvent) -> tuple[str, str] | None:
         raw_message = event.raw_message.strip()

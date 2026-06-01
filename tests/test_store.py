@@ -1,7 +1,24 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.settings import AppSettings
+
+
+GIF_1PX = (
+    b"GIF89a\x01\x00\x01\x00\x80\x00\x00\xff\xff\xff\x00\x00\x00"
+    b"!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00"
+    b"\x00\x02\x02D\x01\x00;"
+)
+
+
+def _write_seed(path: Path, *records: dict[str, object]) -> None:
+    path.write_text(
+        "\n".join(json.dumps(record, ensure_ascii=False) for record in records),
+        encoding="utf-8",
+    )
 
 
 def test_store_persists_policy_state(tmp_path):
@@ -49,3 +66,271 @@ def test_empty_prefixes_default_to_tilde(tmp_path):
     store.set_prefixes([], actor_id=10000)
 
     assert store.prefixes() == ["~"]
+
+
+def test_menu_recipe_import_and_pick(tmp_path):
+    db_path = tmp_path / "policy.sqlite3"
+    image_dir = tmp_path / "menu_images"
+    seed_image = tmp_path / "white-cut-chicken.gif"
+    seed_image.write_bytes(GIF_1PX)
+    seed_path = tmp_path / "recipes_seed.jsonl"
+    _write_seed(
+        seed_path,
+        {
+            "id": "white-cut-chicken",
+            "title": "白切鸡",
+            "aliases": ["广州白切鸡"],
+            "cuisine": "粤菜",
+            "region": "广州",
+            "category": "鸡肉",
+            "tags": ["宴客", "经典"],
+            "ingredients": ["三黄鸡", "姜", "葱", "盐"],
+            "steps": ["浸熟", "过冰水", "斩件装盘"],
+            "image_url": str(seed_image),
+        },
+        {
+            "id": "fatty-beef-hotpot",
+            "title": "肥牛火锅",
+            "aliases": ["牛肉火锅"],
+            "cuisine": "火锅",
+            "region": "成都",
+            "category": "锅物",
+            "tags": ["火锅", "聚餐"],
+            "ingredients": ["肥牛卷", "菌菇", "青菜", "底料"],
+            "steps": ["煮汤底", "涮肥牛", "搭配蘸料"],
+            "image_url": "",
+        },
+        {
+            "id": "scallion-noodle",
+            "title": "葱油拌面",
+            "aliases": ["上海葱油面"],
+            "cuisine": "面食",
+            "region": "上海",
+            "category": "主食",
+            "tags": ["夜宵"],
+            "ingredients": ["挂面", "小葱", "生抽", "白糖"],
+            "steps": ["炸葱油", "煮面", "拌匀"],
+            "image_url": "",
+        },
+    )
+
+    settings = AppSettings(
+        db_path=db_path,
+        admins=(10000,),
+        menu_seed_path=seed_path,
+        menu_image_dir=image_dir,
+    )
+    store = PolicyStore(db_path)
+    store.initialize(settings)
+
+    assert store.menu_recipe_count() == 0
+    assert store.import_menu_recipes(seed_path, image_dir) == 3
+    assert store.menu_recipe_count() == 3
+    assert (image_dir / "white-cut-chicken.gif").is_file()
+
+    assert store.pick_menu_recipe("", 0, seed_path, image_dir) is not None
+    assert store.pick_menu_recipe("广州", 0, seed_path, image_dir)["region"] == "广州"
+    assert store.pick_menu_recipe("火锅", 0, seed_path, image_dir)["title"] == "肥牛火锅"
+    assert store.pick_menu_recipe("鸡肉", 0, seed_path, image_dir)["category"] == "鸡肉"
+    assert store.pick_menu_recipe("不存在", 1, seed_path, image_dir) is not None
+
+
+def test_menu_recipe_prefers_region_matches(tmp_path):
+    db_path = tmp_path / "policy.sqlite3"
+    image_dir = tmp_path / "menu_images"
+    seed_path = tmp_path / "recipes_seed.jsonl"
+    _write_seed(
+        seed_path,
+        {
+            "id": "guangzhou-hotpot",
+            "title": "广州牛杂锅",
+            "aliases": ["广州火锅"],
+            "cuisine": "火锅",
+            "region": "广州",
+            "category": "锅物",
+            "tags": ["火锅"],
+            "ingredients": ["牛杂", "萝卜"],
+            "steps": ["炖煮", "调味"],
+            "image_url": "",
+        },
+        {
+            "id": "chengdu-hotpot",
+            "title": "成都火锅",
+            "aliases": ["四川火锅"],
+            "cuisine": "火锅",
+            "region": "成都",
+            "category": "锅物",
+            "tags": ["火锅"],
+            "ingredients": ["牛油", "毛肚"],
+            "steps": ["煮底料", "涮菜"],
+            "image_url": "",
+        },
+    )
+    settings = AppSettings(
+        db_path=db_path,
+        admins=(10000,),
+        menu_seed_path=seed_path,
+        menu_image_dir=image_dir,
+    )
+    store = PolicyStore(db_path)
+    store.initialize(settings)
+
+    assert store.import_menu_recipes(seed_path, image_dir) == 2
+
+    picked = store.pick_menu_recipe("广州", 1, seed_path, image_dir)
+    assert picked is not None
+    assert picked["region"] == "广州"
+
+
+def test_menu_recipe_prefers_image_candidates(tmp_path):
+    db_path = tmp_path / "policy.sqlite3"
+    image_dir = tmp_path / "menu_images"
+    pictured = tmp_path / "pictured.gif"
+    pictured.write_bytes(GIF_1PX)
+    seed_path = tmp_path / "recipes_seed.jsonl"
+    _write_seed(
+        seed_path,
+        {
+            "id": "with-image",
+            "title": "带图菜",
+            "aliases": ["有图"],
+            "cuisine": "家常菜",
+            "region": "广州",
+            "category": "热菜",
+            "tags": ["家常"],
+            "ingredients": ["鸡蛋", "番茄"],
+            "steps": ["切菜", "下锅"],
+            "image_url": str(pictured),
+        },
+        {
+            "id": "without-image",
+            "title": "无图菜",
+            "aliases": ["没图"],
+            "cuisine": "家常菜",
+            "region": "广州",
+            "category": "热菜",
+            "tags": ["家常"],
+            "ingredients": ["土豆", "青椒"],
+            "steps": ["切菜", "下锅"],
+            "image_url": "",
+        },
+    )
+    settings = AppSettings(
+        db_path=db_path,
+        admins=(10000,),
+        menu_seed_path=seed_path,
+        menu_image_dir=image_dir,
+    )
+    store = PolicyStore(db_path)
+    store.initialize(settings)
+
+    assert store.import_menu_recipes(seed_path, image_dir) == 2
+    assert store.pick_menu_recipe("", 1, seed_path, image_dir)["title"] == "带图菜"
+    assert store.pick_menu_recipe("广州", 1, seed_path, image_dir)["title"] == "带图菜"
+
+
+def test_menu_recipe_falls_back_when_no_image_candidate_exists(tmp_path):
+    db_path = tmp_path / "policy.sqlite3"
+    image_dir = tmp_path / "menu_images"
+    seed_path = tmp_path / "recipes_seed.jsonl"
+    _write_seed(
+        seed_path,
+        {
+            "id": "without-image",
+            "title": "无图菜",
+            "aliases": ["没图"],
+            "cuisine": "家常菜",
+            "region": "广州",
+            "category": "热菜",
+            "tags": ["家常"],
+            "ingredients": ["土豆", "青椒"],
+            "steps": ["切菜", "下锅"],
+            "image_url": "",
+        },
+    )
+    settings = AppSettings(
+        db_path=db_path,
+        admins=(10000,),
+        menu_seed_path=seed_path,
+        menu_image_dir=image_dir,
+    )
+    store = PolicyStore(db_path)
+    store.initialize(settings)
+
+    assert store.import_menu_recipes(seed_path, image_dir) == 1
+
+    picked = store.pick_menu_recipe("广州", 0, seed_path, image_dir)
+    assert picked is not None
+    assert picked["title"] == "无图菜"
+
+
+def test_store_purges_legacy_menu_cache_namespaces(tmp_path):
+    db_path = tmp_path / "policy.sqlite3"
+    settings = AppSettings(db_path=db_path, admins=(10000,))
+    store = PolicyStore(db_path)
+    store.initialize(settings)
+
+    store.set_lua_state("今日菜单:cache:v1", "list:world:Chinese", "old")
+    store.set_lua_state("今日菜单:cache:v2", "meal:1", "old")
+    store.set_lua_state("今日菜单:cachev2", "meal:2", "old")
+    store.set_lua_state("今日天气", "北京", "keep")
+
+    purged = store.purge_legacy_menu_caches()
+
+    assert purged == 3
+    assert store.get_lua_state("今日菜单:cache:v1", "list:world:Chinese") is None
+    assert store.get_lua_state("今日菜单:cache:v2", "meal:1") is None
+    assert store.get_lua_state("今日菜单:cachev2", "meal:2") is None
+    assert store.get_lua_state("今日天气", "北京") == "keep"
+
+
+def test_menu_recipe_import_upserts_existing_records(tmp_path):
+    db_path = tmp_path / "policy.sqlite3"
+    image_dir = tmp_path / "menu_images"
+    seed_path = tmp_path / "recipes_seed.jsonl"
+    settings = AppSettings(
+        db_path=db_path,
+        admins=(10000,),
+        menu_seed_path=seed_path,
+        menu_image_dir=image_dir,
+    )
+    store = PolicyStore(db_path)
+    store.initialize(settings)
+
+    _write_seed(
+        seed_path,
+        {
+            "id": "tomato-egg",
+            "title": "番茄炒蛋",
+            "aliases": ["西红柿炒鸡蛋"],
+            "cuisine": "家常菜",
+            "region": "广州",
+            "category": "热菜",
+            "tags": ["快手菜"],
+            "ingredients": ["番茄", "鸡蛋"],
+            "steps": ["切菜", "下锅"],
+            "image_url": "",
+        },
+    )
+    assert store.import_menu_recipes(seed_path, image_dir) == 1
+
+    _write_seed(
+        seed_path,
+        {
+            "id": "tomato-egg",
+            "title": "番茄滑蛋",
+            "aliases": ["西红柿炒鸡蛋"],
+            "cuisine": "家常菜",
+            "region": "广州",
+            "category": "热菜",
+            "tags": ["快手菜"],
+            "ingredients": ["番茄", "鸡蛋"],
+            "steps": ["切菜", "下锅"],
+            "image_url": "",
+        },
+    )
+    assert store.import_menu_recipes(seed_path, image_dir) == 1
+
+    picked = store.pick_menu_recipe("番茄", 0, seed_path, image_dir)
+    assert picked is not None
+    assert picked["title"] == "番茄滑蛋"

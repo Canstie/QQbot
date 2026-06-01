@@ -6,6 +6,12 @@ import time
 from pathlib import Path
 from typing import Any
 
+from qq_personal_bot.menu_recipes import (
+    decode_json_list,
+    is_supported_image_file,
+    load_howtocook_records,
+    load_seed_records,
+)
 from qq_personal_bot.settings import AppSettings
 
 
@@ -23,6 +29,7 @@ class PolicyStore:
                 self._seed_defaults(conn, settings)
             for admin_id in settings.admins:
                 self.add_admin(admin_id, actor_id=0, conn=conn)
+            self.purge_legacy_menu_caches(conn=conn)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path)
@@ -70,6 +77,23 @@ class PolicyStore:
                 value TEXT NOT NULL,
                 updated_at REAL NOT NULL,
                 PRIMARY KEY (namespace, key)
+            );
+
+            CREATE TABLE IF NOT EXISTS menu_recipes (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                aliases_json TEXT NOT NULL,
+                cuisine TEXT NOT NULL,
+                region TEXT NOT NULL,
+                category TEXT NOT NULL,
+                tags_json TEXT NOT NULL,
+                ingredients_json TEXT NOT NULL,
+                steps_json TEXT NOT NULL,
+                image_relpath TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                source TEXT NOT NULL DEFAULT 'local',
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
             );
             """
         )
@@ -341,6 +365,208 @@ class PolicyStore:
                 (namespace, key),
             )
             return cursor.rowcount > 0
+
+    def menu_recipe_count(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute("SELECT COUNT(*) AS count FROM menu_recipes").fetchone()
+            return int(row["count"]) if row else 0
+
+    def import_menu_recipes(self, seed_path: Path, image_dir: Path) -> int:
+        records = load_seed_records(seed_path, image_dir)
+        if not records:
+            return 0
+
+        with self._connect() as conn:
+            for record in records:
+                self._upsert_menu_recipe(conn, record)
+        return len(records)
+
+    def import_howtocook_recipes(self, image_dir: Path, limit: int | None = None) -> int:
+        records = load_howtocook_records(image_dir=image_dir, limit=limit)
+        if not records:
+            return 0
+
+        with self._connect() as conn:
+            for record in records:
+                self._upsert_menu_recipe(conn, record)
+        return len(records)
+
+    def ensure_menu_recipes(self, seed_path: Path, image_dir: Path) -> int:
+        if self.menu_recipe_count() > 0:
+            return 0
+        return self.import_menu_recipes(seed_path, image_dir)
+
+    def pick_menu_recipe(self, target: str, seed: int, seed_path: Path, image_dir: Path) -> dict[str, Any] | None:
+        self.ensure_menu_recipes(seed_path, image_dir)
+        recipes = self._enabled_menu_recipes()
+        if not recipes:
+            return None
+
+        normalized_target = target.strip().casefold()
+        candidates = recipes
+        if normalized_target:
+            region_matched = [recipe for recipe in recipes if self._menu_recipe_region_matches(recipe, normalized_target)]
+            if region_matched:
+                candidates = region_matched
+            else:
+                matched = [recipe for recipe in recipes if self._menu_recipe_matches(recipe, normalized_target)]
+                if matched:
+                    candidates = matched
+
+        imaged_candidates = [
+            recipe for recipe in candidates if self._menu_recipe_has_image(recipe, image_dir)
+        ]
+        if imaged_candidates:
+            candidates = imaged_candidates
+
+        index = abs(int(seed)) % len(candidates)
+        return candidates[index]
+
+    def purge_legacy_menu_caches(self, conn: sqlite3.Connection | None = None) -> int:
+        if conn is None:
+            with self._connect() as local_conn:
+                return self.purge_legacy_menu_caches(conn=local_conn)
+        cursor = conn.execute(
+            """
+            DELETE FROM lua_state
+            WHERE namespace IN (
+                '今日菜单:cache:v1',
+                '今日菜单:cache:v2',
+                '今日菜单:cachev1',
+                '今日菜单:cachev2'
+            )
+            OR namespace LIKE '今日菜单:cache:%'
+            OR namespace LIKE '今日菜单:cachev%'
+            """
+        )
+        return int(cursor.rowcount)
+
+    def _enabled_menu_recipes(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    id,
+                    title,
+                    aliases_json,
+                    cuisine,
+                    region,
+                    category,
+                    tags_json,
+                    ingredients_json,
+                    steps_json,
+                    image_relpath,
+                    enabled,
+                    source
+                FROM menu_recipes
+                WHERE enabled = 1
+                ORDER BY id
+                """
+            ).fetchall()
+        return [self._menu_recipe_from_row(row) for row in rows]
+
+    def _upsert_menu_recipe(self, conn: sqlite3.Connection, recipe: dict[str, Any]) -> None:
+        now = time.time()
+        conn.execute(
+            """
+            INSERT INTO menu_recipes(
+                id,
+                title,
+                aliases_json,
+                cuisine,
+                region,
+                category,
+                tags_json,
+                ingredients_json,
+                steps_json,
+                image_relpath,
+                enabled,
+                source,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                title = excluded.title,
+                aliases_json = excluded.aliases_json,
+                cuisine = excluded.cuisine,
+                region = excluded.region,
+                category = excluded.category,
+                tags_json = excluded.tags_json,
+                ingredients_json = excluded.ingredients_json,
+                steps_json = excluded.steps_json,
+                image_relpath = excluded.image_relpath,
+                enabled = excluded.enabled,
+                source = excluded.source,
+                updated_at = excluded.updated_at
+            """,
+            (
+                recipe["id"],
+                recipe["title"],
+                recipe["aliases_json"],
+                recipe["cuisine"],
+                recipe["region"],
+                recipe["category"],
+                recipe["tags_json"],
+                recipe["ingredients_json"],
+                recipe["steps_json"],
+                recipe["image_relpath"],
+                recipe["enabled"],
+                recipe["source"],
+                now,
+                now,
+            ),
+        )
+
+    def _menu_recipe_from_row(self, row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": str(row["id"]),
+            "title": str(row["title"]),
+            "aliases": decode_json_list(str(row["aliases_json"])),
+            "cuisine": str(row["cuisine"]),
+            "region": str(row["region"]),
+            "category": str(row["category"]),
+            "tags": decode_json_list(str(row["tags_json"])),
+            "ingredients": decode_json_list(str(row["ingredients_json"])),
+            "steps": decode_json_list(str(row["steps_json"])),
+            "image_relpath": str(row["image_relpath"]),
+            "enabled": bool(row["enabled"]),
+            "source": str(row["source"]),
+        }
+
+    def _menu_recipe_matches(self, recipe: dict[str, Any], target: str) -> bool:
+        fields = [
+            recipe["title"],
+            recipe["cuisine"],
+            recipe["region"],
+            recipe["category"],
+            *recipe["aliases"],
+            *recipe["tags"],
+        ]
+        for value in fields:
+            normalized_value = str(value).strip().casefold()
+            if normalized_value == target or target in normalized_value:
+                return True
+        return False
+
+    def _menu_recipe_region_matches(self, recipe: dict[str, Any], target: str) -> bool:
+        normalized_region = str(recipe["region"]).strip().casefold()
+        if not normalized_region:
+            return False
+        return normalized_region == target or target in normalized_region
+
+    def _menu_recipe_has_image(self, recipe: dict[str, Any], image_dir: Path) -> bool:
+        relative_path = str(recipe["image_relpath"]).strip()
+        if not relative_path:
+            return False
+
+        root = image_dir.resolve(strict=False)
+        image_path = (root / relative_path).resolve(strict=False)
+        try:
+            image_path.relative_to(root)
+        except ValueError:
+            return False
+        return is_supported_image_file(image_path)
 
     def audit(
         self,

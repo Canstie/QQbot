@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import re
@@ -93,13 +93,26 @@ def test_direct_lua_rule_resolves_command(tmp_path):
         tmp_path,
         {
             "direct_lua_rules": [
-                {"type": "contains", "pattern": "吃什么", "command": "今日菜单"}
+                {"type": "exact", "pattern": "吃什么", "command": "今日菜单"},
+                {
+                    "type": "regex",
+                    "pattern": "^[!！]?(?:(?:今|明|后)(?:天|日))?(?:(?:早上|上午|中午|下午|晚上|夜宵|早餐|午餐|晚餐|早|中|午|晚))?吃(?:什么|啥|点啥)[？?]?$",
+                    "command": "今日菜单",
+                },
+                {"type": "exact", "pattern": "csm", "command": "今日菜单"},
             ],
         },
     )
 
+    assert direct_lua_command("吃什么", path) == "今日菜单"
     assert direct_lua_command("今天吃什么", path) == "今日菜单"
-    assert direct_lua_command("今天喝什么", path) is None
+    assert direct_lua_command("中午吃什么", path) == "今日菜单"
+    assert direct_lua_command("晚上吃点啥", path) == "今日菜单"
+    assert direct_lua_command("!今天吃点啥", path) == "今日菜单"
+    assert direct_lua_command("csm", path) == "今日菜单"
+    assert direct_lua_command("吃什么都行", path) is None
+    assert direct_lua_command("你想吃什么", path) is None
+    assert direct_lua_command("附近吃什么好", path) is None
 
 
 def test_invalid_regex_fails_fast():
