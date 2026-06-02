@@ -22,8 +22,12 @@ local function quote_reply(message)
   return {quote = true, reply = message}
 end
 
-local function wife_reply(member)
-  return quote_reply("你今天亲爱的群老婆是\n" .. avatar_message(member.user_id) .. "\n" .. display_name(member))
+local function wife_reply(member, extra_line)
+  local message = "你今天亲爱的群老婆是\n" .. avatar_message(member.user_id) .. "\n" .. display_name(member) .. "\n强娶成功!"
+  if extra_line ~= nil and extra_line ~= "" then
+    message = message .. "\n" .. extra_line
+  end
+  return quote_reply(message)
 end
 
 local function state_key(event)
@@ -116,9 +120,7 @@ function on_command(event, api)
   end
 
   local login = api.get_login_info()
-  if tostring(target_id) == tostring(login.user_id) then
-    return quote_reply("不能强娶 bot 自己。")
-  end
+  local bot_warning = nil
 
   local caller_id = tostring(event.user_id)
   if tostring(target_id) == caller_id then
@@ -139,5 +141,9 @@ function on_command(event, api)
   claims[tostring(target_id)] = caller_id
   save_claims(event, api, claims)
 
-  return wife_reply(target_member)
+  if tostring(target_id) == tostring(login.user_id) then
+    bot_warning = "和我是没有好结果的"
+  end
+
+  return wife_reply(target_member, bot_warning)
 end

@@ -735,8 +735,29 @@ async def test_builtin_force_marry_rejects_already_claimed_wife(tmp_path, monkey
     assert first.quote is True
     assert first.reply is not None
     assert "Alpha" in first.reply
+    assert "强娶成功!" in first.reply
     assert second.quote is True
     assert second.reply == "ta已经是别人的群老婆"
+
+
+@pytest.mark.asyncio
+async def test_builtin_force_marry_bot_succeeds_with_warning(tmp_path, monkeypatch):
+    configure_builtin_lua_dir(tmp_path, monkeypatch)
+    target_at = ({"type": "at", "data": {"qq": "99999"}},)
+
+    result = await run_lua_message(
+        RichFakeBot(),
+        make_event(raw_message="~强娶 [CQ:at,qq=99999]", segments=target_at),
+        PolicyDecision(True, "ok", handler="default", normalized_message="强娶"),
+    )
+
+    assert result.quote is True
+    assert result.reply is not None
+    assert "Bot" in result.reply
+    assert "nk=99999" in result.reply
+    assert "强娶成功!" in result.reply
+    assert "和我是没有好结果的" in result.reply
+    assert "不能强娶 bot 自己" not in result.reply
 
 
 @pytest.mark.asyncio
