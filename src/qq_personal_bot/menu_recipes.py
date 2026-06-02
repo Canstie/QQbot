@@ -44,21 +44,21 @@ _HOWTOCOOK_CATEGORY_MAP = {
     "vegetable_dish": "素菜",
 }
 
-_REGION_RULES = (
-    (("粤", "广式", "白切", "烧腊", "煲仔"), "广州", "粤菜"),
-    (("川", "成都", "麻婆", "水煮", "回锅", "鱼香", "口水鸡"), "成都", "川菜"),
-    (("湘", "湖南", "剁椒", "小炒", "腊味"), "湖南", "湘菜"),
-    (("上海", "本帮", "葱油"), "上海", "本帮菜"),
-    (("北京", "老北京", "烤鸭", "炸酱"), "北京", "京菜"),
-    (("东北", "锅包肉", "地三鲜", "杀猪菜"), "东北", "东北菜"),
-    (("西安", "陕西", "肉夹馍", "油泼", "biang"), "西安", "陕西菜"),
-    (("福建", "福州", "佛跳墙", "沙茶"), "福建", "闽菜"),
-    (("淮扬", "扬州", "狮子头"), "扬州", "淮扬菜"),
-    (("武汉", "热干面"), "武汉", "湖北菜"),
-    (("云南", "过桥", "汽锅"), "云南", "滇菜"),
-    (("新疆", "大盘鸡", "馕", "孜然羊"), "新疆", "西北菜"),
-    (("泰", "冬阴功", "咖喱"), "泰国", "泰式"),
-    (("日式", "寿喜", "照烧"), "日本", "日式"),
+_CUISINE_RULES = (
+    (("粤", "广式", "白切", "烧腊", "煲仔"), "粤菜"),
+    (("麻婆", "水煮", "回锅", "鱼香", "口水鸡"), "川菜"),
+    (("湘", "湖南", "剁椒", "小炒", "腊味"), "湘菜"),
+    (("本帮", "葱油"), "本帮菜"),
+    (("老北京", "烤鸭", "炸酱"), "京菜"),
+    (("东北", "锅包肉", "地三鲜", "杀猪菜"), "东北菜"),
+    (("陕西", "肉夹馍", "油泼", "biang"), "陕西菜"),
+    (("佛跳墙", "沙茶"), "闽菜"),
+    (("淮扬", "狮子头"), "淮扬菜"),
+    (("热干面",), "湖北菜"),
+    (("过桥", "汽锅"), "滇菜"),
+    (("新疆", "大盘鸡", "馕", "孜然羊"), "西北菜"),
+    (("冬阴功", "咖喱"), "泰式"),
+    (("日式", "寿喜", "照烧"), "日式"),
 )
 
 _TOOLS_KEYWORDS = {
@@ -242,7 +242,7 @@ def _normalize_jisu_recipe(raw: dict[str, Any]) -> dict[str, Any] | None:
         "title": title,
         "aliases": [],
         "cuisine": "国内菜谱",
-        "region": "国内",
+        "region": "",
         "category": str(raw.get("classid") or "菜谱"),
         "tags": tags,
         "ingredients": ingredients,
@@ -279,7 +279,7 @@ def normalize_seed_record(raw: dict[str, Any], *, image_dir: Path) -> dict[str, 
         "title": normalize_text(raw.get("title"), "title"),
         "aliases_json": encode_json(optional_text_list(raw.get("aliases"))),
         "cuisine": normalize_text(raw.get("cuisine"), "cuisine"),
-        "region": normalize_text(raw.get("region"), "region"),
+        "region": "",
         "category": normalize_text(raw.get("category"), "category"),
         "tags_json": encode_json(optional_text_list(raw.get("tags"))),
         "ingredients_json": encode_json(normalize_text_list(raw.get("ingredients"), "ingredients")),
@@ -299,7 +299,7 @@ def parse_howtocook_markdown(markdown_path: Path, *, image_dir: Path) -> dict[st
     relative_parts = markdown_path.relative_to(markdown_path.parents[2]).parts
     category_key = relative_parts[1] if len(relative_parts) > 1 else "staple"
     category = _HOWTOCOOK_CATEGORY_MAP.get(category_key, "家常菜")
-    region, cuisine = detect_region_and_cuisine(title, text, category)
+    cuisine = detect_cuisine(title, text, category)
     ingredients = _extract_howtocook_ingredients(text)
     steps = _extract_howtocook_steps(text)
     if not ingredients or not steps:
@@ -330,7 +330,7 @@ def parse_howtocook_markdown(markdown_path: Path, *, image_dir: Path) -> dict[st
         "title": title,
         "aliases_json": encode_json(aliases),
         "cuisine": cuisine,
-        "region": region,
+        "region": "",
         "category": category,
         "tags_json": encode_json(tags),
         "ingredients_json": encode_json(ingredients),
@@ -368,6 +368,22 @@ def cache_image(image_url: Any, *, recipe_id: str, image_dir: Path) -> str:
     target_resolved = target_path.resolve(strict=False)
     if source_path != target_resolved:
         shutil.copyfile(source_path, target_path)
+    return relpath
+
+
+def cache_image_bytes(body: bytes, *, recipe_id: str, image_dir: Path, suffix: str = ".jpg") -> str:
+    if not body:
+        return ""
+    normalized_suffix = suffix.lower().strip()
+    if normalized_suffix not in _ALLOWED_IMAGE_SUFFIXES:
+        normalized_suffix = _DEFAULT_IMAGE_SUFFIX
+    relpath = f"{recipe_id}{normalized_suffix}"
+    image_dir.mkdir(parents=True, exist_ok=True)
+    target_path = image_dir / relpath
+    target_path.write_bytes(body)
+    if not is_supported_image_file(target_path):
+        target_path.unlink(missing_ok=True)
+        return ""
     return relpath
 
 
@@ -410,12 +426,12 @@ def resolve_local_source(source: str, *, parsed: Any | None = None) -> Path:
     return (Path.cwd() / local_path).resolve(strict=False)
 
 
-def detect_region_and_cuisine(title: str, text: str, category: str) -> tuple[str, str]:
+def detect_cuisine(title: str, text: str, category: str) -> str:
     haystack = f"{title}\n{text}".casefold()
-    for keywords, region, cuisine in _REGION_RULES:
+    for keywords, cuisine in _CUISINE_RULES:
         if any(keyword.casefold() in haystack for keyword in keywords):
-            return region, cuisine
-    return "家常", category
+            return cuisine
+    return category
 
 
 def _download_howtocook_repo(temp_dir: Path) -> Path:

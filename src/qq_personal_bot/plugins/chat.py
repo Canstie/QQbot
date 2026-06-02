@@ -7,6 +7,7 @@ from nonebot.adapters.onebot.v11 import Bot, Event, GroupMessageEvent, Message, 
 
 from qq_personal_bot.adapters.onebot import onebot_to_internal
 from qq_personal_bot.lua_runner import run_lua_message
+from qq_personal_bot.plugins.custom_flows import handle_custom_flow
 from qq_personal_bot.replies import build_reply
 from qq_personal_bot.runtime import get_policy_engine
 
@@ -49,6 +50,16 @@ async def _handle_onebot_message(
     explicit_group_send: bool = False,
 ) -> None:
     internal_event = onebot_to_internal(event, self_id=bot.self_id)
+    custom_flow_reply = handle_custom_flow(internal_event)
+    if custom_flow_reply:
+        await _finish_with_response(
+            matcher,
+            bot,
+            event,
+            custom_flow_reply,
+            explicit_group_send=explicit_group_send,
+        )
+
     decision = get_policy_engine().evaluate(internal_event, self_id=bot.self_id)
     if not decision.allowed:
         return

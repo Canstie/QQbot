@@ -1,5 +1,5 @@
 -- Command: 今日菜单
--- Trigger: ~今日菜单 [地点/口味]
+-- Trigger: ~今日菜单
 -- Uses a domestic recipe source when configured, then falls back to the local Chinese recipe database.
 
 local reasons = {
@@ -26,26 +26,18 @@ local function seed_from_event(event)
   return math.floor(timestamp + message_id + user_id) % 2147483647
 end
 
-local function title_for_target(target)
-  if target == "" then
-    return "今日菜单"
-  end
-  return "今日菜单｜" .. target
-end
-
 function on_command(event, api)
-  local target = trim(event.args)
   local seed = seed_from_event(event)
-  local recipe = api.pick_menu_recipe(target, seed)
+  local recipe = api.pick_menu_recipe("", seed)
   if recipe == nil then
     return quote_reply("今日菜单\n本地菜谱库还是空的，先导入一点菜单再来抽吧。")
   end
 
   math.randomseed(seed)
   local lines = {
-    title_for_target(target),
+    "今日菜单",
     "推荐：" .. tostring(recipe.title or "神秘料理"),
-    reasons[math.random(#reasons)],
+    reasons[math.random(1, #reasons)],
   }
 
   local image = api.local_image(recipe.image_relpath)

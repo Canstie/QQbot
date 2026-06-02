@@ -7,6 +7,11 @@ from fastapi.testclient import TestClient
 from qq_personal_bot.runtime import reset_runtime
 from qq_personal_bot.web import create_app
 
+GIF_DATA_URL = (
+    "data:image/gif;base64,"
+    "R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw=="
+)
+
 
 def test_replies_api_roundtrip(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
@@ -219,3 +224,102 @@ def test_lua_command_api_rejects_invalid_script(tmp_path, monkeypatch):
 
     assert response.status_code == 400
     assert "on_command" in response.json()["detail"]
+
+
+def test_menu_api_creates_lists_updates_deletes_and_prunes(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("QQBOT_WEB_TOKEN", raising=False)
+    monkeypatch.setenv("QQBOT_DB_PATH", str(tmp_path / "policy.sqlite3"))
+    monkeypatch.setenv("QQBOT_MENU_IMAGE_DIR", str(tmp_path / "menu_images"))
+    reset_runtime()
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/menus",
+        json={"title": "群友菜单", "image_data_url": GIF_DATA_URL, "enabled": True},
+    )
+
+    assert response.status_code == 200
+    menu_id = response.json()["id"]
+    assert response.json()["title"] == "群友菜单"
+    assert response.json()["image_url"]
+
+    response = client.get("/api/menus")
+
+    assert response.status_code == 200
+    assert response.json()["menus"][0]["title"] == "群友菜单"
+
+    response = client.put(
+        f"/api/menus/{menu_id}",
+        json={"title": "群友菜单2", "enabled": False},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["title"] == "群友菜单2"
+    assert response.json()["enabled"] is False
+
+    response = client.post("/api/menus/prune-howtocook-without-images")
+
+    assert response.status_code == 200
+    assert "deleted" in response.json()
+
+    response = client.delete(f"/api/menus/{menu_id}")
+
+    assert response.status_code == 200
+    assert response.json()["deleted"] is True
+
+
+def test_restaurant_api_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("QQBOT_WEB_TOKEN", raising=False)
+    monkeypatch.setenv("QQBOT_DB_PATH", str(tmp_path / "policy.sqlite3"))
+    reset_runtime()
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/restaurants",
+        json={"name": "楼下小馆", "dishes": ["红烧肉"], "group_id": 123, "enabled": True},
+    )
+
+    assert response.status_code == 200
+    restaurant_id = response.json()["id"]
+    assert response.json()["name"] == "楼下小馆"
+
+    response = client.put(
+        f"/api/restaurants/{restaurant_id}",
+        json={"name": "楼下小馆", "dishes": ["干锅牛蛙", "炒饭"], "group_id": 123, "enabled": False},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["dishes"] == ["干锅牛蛙", "炒饭"]
+    assert response.json()["enabled"] is False
+
+    response = client.get("/api/restaurants?group_id=123")
+
+    assert response.status_code == 200
+    assert response.json()["restaurants"][0]["name"] == "楼下小馆"
+
+    response = client.delete(f"/api/restaurants/{restaurant_id}")
+
+    assert response.status_code == 200
+    assert response.json()["deleted"] is True
+
+
+def test_menu_and_restaurant_write_apis_require_token_when_configured(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("QQBOT_WEB_TOKEN", "secret")
+    monkeypatch.setenv("QQBOT_DB_PATH", str(tmp_path / "policy.sqlite3"))
+    reset_runtime()
+    client = TestClient(create_app())
+
+    menu_response = client.post(
+        "/api/menus",
+        json={"title": "群友菜单", "image_data_url": GIF_DATA_URL, "enabled": True},
+    )
+    restaurant_response = client.post(
+        "/api/restaurants",
+        json={"name": "楼下小馆", "dishes": ["红烧肉"], "group_id": 123},
+    )
+
+    assert menu_response.status_code == 401
+    assert restaurant_response.status_code == 401

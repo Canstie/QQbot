@@ -8,32 +8,38 @@
 </head>
 <body>
   <main>
-    <header>
-      <h1>QQ Bot 控制台</h1>
-      <div id="connectionStatus" class="status-pill">加载中</div>
+    <header class="topbar">
+      <div>
+        <h1>QQ Bot 控制台</h1>
+        <p>策略、回复、Lua、菜单和饭店管理</p>
+      </div>
+      <div class="top-actions">
+        <label>Admin token <input id="token" type="password" autocomplete="off"></label>
+        <button class="secondary" data-action="refresh">刷新</button>
+        <div id="connectionStatus" class="status-pill">加载中</div>
+      </div>
     </header>
-    <div class="layout">
-      <div class="stack">
-        <section>
-          <div class="section-head">
-            <h2>访问</h2>
-            <button class="secondary" data-action="refresh">刷新</button>
-          </div>
-          <label>Admin token <input id="token" type="password" autocomplete="off"></label>
-        </section>
 
+    <nav class="tabs" aria-label="管理页签">
+      <button class="tab active" data-tab="policy">策略</button>
+      <button class="tab" data-tab="replies">回复规则</button>
+      <button class="tab" data-tab="lua">Lua</button>
+      <button class="tab" data-tab="menus">菜单</button>
+      <button class="tab" data-tab="restaurants">饭店</button>
+    </nav>
+
+    <section class="tab-panel active" data-panel="policy">
+      <div class="grid two">
         <section>
           <div class="section-head"><h2>策略</h2></div>
           <div class="form-grid">
-            <div class="row">
-              <label>模式
-                <select id="mode">
-                  <option value="allowlist">allowlist</option>
-                  <option value="blocklist">blocklist</option>
-                </select>
-              </label>
-              <button data-action="set-mode">保存模式</button>
-            </div>
+            <label>模式
+              <select id="mode">
+                <option value="allowlist">allowlist</option>
+                <option value="blocklist">blocklist</option>
+              </select>
+            </label>
+            <button data-action="set-mode">保存模式</button>
             <label>触发前缀
               <input id="prefixesInput" placeholder="~,#bot">
             </label>
@@ -44,148 +50,143 @@
 
         <section>
           <div class="section-head"><h2>群聊</h2></div>
-          <div class="row">
+          <div class="form-grid">
             <label>Group ID <input id="groupId" inputmode="numeric" placeholder="123456789"></label>
+            <div class="button-row">
+              <button data-group-action="on">启用</button>
+              <button class="secondary" data-group-action="off">关闭</button>
+              <button class="danger" data-group-action="block">屏蔽</button>
+              <button class="secondary" data-group-action="unblock">解除屏蔽</button>
+            </div>
           </div>
-          <div class="row group-actions">
-            <button data-group-action="on">启用</button>
-            <button class="secondary" data-group-action="off">关闭</button>
-            <button class="danger" data-group-action="block">屏蔽</button>
-            <button class="secondary" data-group-action="unblock">解除屏蔽</button>
-          </div>
-        </section>
-
-        <section>
-          <div class="section-head"><h2>当前状态</h2></div>
-          <div class="metrics">
-            <div class="metric"><span>启用群</span><strong id="enabledCount">0</strong></div>
-            <div class="metric"><span>屏蔽群</span><strong id="blockedCount">0</strong></div>
-            <div class="metric"><span>管理员</span><strong id="adminCount">0</strong></div>
-          </div>
-          <pre id="state">Loading...</pre>
         </section>
       </div>
 
       <section>
+        <div class="section-head"><h2>当前状态</h2></div>
+        <div class="metrics">
+          <div class="metric"><span>启用群</span><strong id="enabledCount">0</strong></div>
+          <div class="metric"><span>屏蔽群</span><strong id="blockedCount">0</strong></div>
+          <div class="metric"><span>管理员</span><strong id="adminCount">0</strong></div>
+        </div>
+        <pre id="state">Loading...</pre>
+      </section>
+    </section>
+
+    <section class="tab-panel" data-panel="replies">
+      <section>
         <div class="section-head">
           <h2>回复规则</h2>
-          <div class="split-actions">
+          <div class="button-row">
             <button class="secondary" data-action="load-replies">重新读取</button>
             <button data-action="save-replies">保存回复规则</button>
           </div>
         </div>
-        <div class="form-grid">
-          <label>空内容回复
-            <input id="emptyReply">
-          </label>
-          <label>默认回复
-            <input id="fallbackReply" placeholder="收到：{message}">
-          </label>
+        <div class="grid two">
+          <label>空内容回复 <input id="emptyReply"></label>
+          <label>默认回复 <input id="fallbackReply" placeholder="收到：{message}"></label>
         </div>
-
-        <div class="section-head rules-head">
+        <div class="section-head subhead">
           <h3>前缀触发应答</h3>
           <button class="secondary" data-add-rule="rules">添加</button>
         </div>
-        <p class="hint">例如发 ~菜单，先去掉 ~，再用这里的规则匹配 菜单。</p>
         <div id="rulesList" class="rule-list"></div>
-
-        <div class="section-head rules-head">
+        <div class="section-head subhead">
           <h3>免前缀关键词应答</h3>
           <button class="secondary" data-add-rule="direct_rules">添加</button>
         </div>
-        <p class="hint">群消息不带 ~ 或 #bot 时，也会先检查这里的词语和回复。</p>
         <div id="directRulesList" class="rule-list"></div>
-
         <div id="editorNotice" class="notice">加载中</div>
       </section>
+    </section>
 
-      <section class="lua-panel">
+    <section class="tab-panel" data-panel="lua">
+      <section>
         <div class="section-head">
           <h2>Lua 指令脚本</h2>
-          <div class="split-actions">
-            <label class="file-button">
-              导入 Lua
-              <input id="luaImport" type="file" accept=".lua,text/plain">
-            </label>
+          <div class="button-row">
+            <label class="file-button">导入 Lua <input id="luaImport" type="file" accept=".lua,text/plain"></label>
             <button class="secondary" data-action="load-lua">刷新列表</button>
             <button class="danger" data-action="delete-lua">删除</button>
             <button data-action="save-lua">保存脚本</button>
           </div>
         </div>
         <div class="lua-grid">
-          <aside class="lua-command-panel">
-            <label>新建/打开指令
-              <input id="luaCommandInput" placeholder="抽群老婆">
-            </label>
+          <aside class="side-panel">
+            <label>新建/打开指令 <input id="luaCommandInput" placeholder="抽群老婆"></label>
             <button data-action="create-lua-command">打开指令</button>
             <div class="hint" id="luaListMeta">加载中</div>
             <div id="luaCommandList" class="lua-command-list"></div>
           </aside>
-          <div class="lua-editor-wrap">
+          <div class="editor-panel">
             <div class="hint" id="luaMeta">加载中</div>
-            <label>当前指令
-              <input id="luaCurrentCommand" readonly placeholder="请选择或新建一个指令">
-            </label>
-            <textarea id="luaEditor" class="code-editor" spellcheck="false" autocomplete="off"></textarea>
+            <label>当前指令 <input id="luaCurrentCommand" readonly></label>
+            <textarea id="luaEditor" class="code-editor" spellcheck="false"></textarea>
             <div id="luaNotice" class="notice">加载中</div>
           </div>
-          <aside class="docs-panel">
-            <h3>OneBot 11 API 参考</h3>
-            <p class="hint">当前项目保留 OneBot 11；OneBot 12 需要协议端明确支持，LLBot 当前链路建议继续使用 OneBot 11。</p>
-            <p class="hint">群里发送 <code>~指令 参数</code> 时，会执行 <code>scripts/lua/指令.lua</code>；Lua 里可读取 <code>event.command</code>、<code>event.args</code>、<code>event.full_message</code>。</p>
-            <p class="hint">Lua 可用封装接口，也可以用原始 action 名通过 <code>api.call(action, params)</code> 调用。</p>
-            <pre class="docs-code">api.get_group_list()
-api.get_group_info(group_id)
-api.get_group_member_list(group_id)
-api.get_group_member_info(group_id, user_id)
+          <aside class="side-panel">
+            <h3>常用接口</h3>
+            <pre class="docs-code">api.get_group_member_list(group_id)
 api.get_login_info()
-api.get_stranger_info(user_id)
 api.send_group_message(group_id, message)
-api.send_private_message(user_id, message)
-api.reply(message)
 api.get_state(key, namespace)
 api.set_state(key, value, namespace)
-api.delete_state(key, namespace)
-api.url_encode(value)
-api.http_get_json(url)
-api.json_encode(value)
-api.json_decode(value)
-api.call("send_group_msg", {
-  group_id = event.group_id,
-  message = "hello"
-})</pre>
-            <h3>脚本入口</h3>
-            <pre class="docs-code">function on_command(event, api)
-  return "收到参数：" .. event.args
-end</pre>
-            <h3>常用原始 action</h3>
-            <ul class="docs-list">
-              <li><code>send_private_msg</code>：发送私聊消息</li>
-              <li><code>send_group_msg</code>：发送群消息</li>
-              <li><code>send_msg</code>：发送消息</li>
-              <li><code>delete_msg</code>：撤回消息</li>
-              <li><code>get_msg</code>：获取消息</li>
-              <li><code>get_login_info</code>：获取登录号信息</li>
-              <li><code>get_stranger_info</code>：获取陌生人信息</li>
-              <li><code>get_friend_list</code>：获取好友列表</li>
-              <li><code>get_group_list</code>：获取群列表</li>
-              <li><code>get_group_info</code>：获取群信息</li>
-              <li><code>get_group_member_info</code>：获取群成员信息</li>
-              <li><code>get_group_member_list</code>：获取群成员列表</li>
-              <li><code>set_group_kick</code>：群组踢人</li>
-              <li><code>set_group_ban</code>：群组禁言</li>
-              <li><code>set_group_card</code>：设置群名片</li>
-            </ul>
-            <div class="docs-links">
-              <a href="https://github.com/botuniverse/onebot-11/blob/master/api/public.md" target="_blank" rel="noreferrer">OneBot 11 公开 API 原始文档</a>
-              <a href="https://onebots.pages.dev/protocol/onebot-v11/action" target="_blank" rel="noreferrer">OneBot v11 Action 可读版</a>
-              <a href="https://api.luckylillia.com/" target="_blank" rel="noreferrer">LLOneBot 当前文档</a>
-            </div>
+api.call("send_group_msg", { group_id = event.group_id, message = "hello" })</pre>
           </aside>
         </div>
       </section>
-    </div>
+    </section>
+
+    <section class="tab-panel" data-panel="menus">
+      <section>
+        <div class="section-head">
+          <h2>菜单</h2>
+          <div class="button-row">
+            <button class="secondary" data-action="load-menus">刷新</button>
+            <button class="danger" data-action="prune-menus">清理无图 HowToCook</button>
+          </div>
+        </div>
+        <div class="grid two">
+          <label>搜索 <input id="menuSearch" placeholder="菜名/分类/标签"></label>
+          <label>菜单名 <input id="menuTitle" placeholder="番茄炒蛋"></label>
+        </div>
+        <div class="grid two">
+          <label>菜单图片 <input id="menuImage" type="file" accept="image/*"></label>
+          <label class="checkbox"><input id="menuEnabled" type="checkbox" checked> 启用</label>
+        </div>
+        <div class="button-row">
+          <button data-action="save-menu">保存菜单</button>
+          <button class="secondary" data-action="new-menu">新建</button>
+        </div>
+        <input id="menuCurrentId" type="hidden">
+        <div id="menuNotice" class="notice">加载中</div>
+        <div id="menuList" class="item-list"></div>
+      </section>
+    </section>
+
+    <section class="tab-panel" data-panel="restaurants">
+      <section>
+        <div class="section-head">
+          <h2>饭店</h2>
+          <button class="secondary" data-action="load-restaurants">刷新</button>
+        </div>
+        <div class="grid two">
+          <label>Group ID <input id="restaurantGroupId" inputmode="numeric" placeholder="123456789"></label>
+          <label>饭店名 <input id="restaurantName" placeholder="楼下小馆"></label>
+        </div>
+        <label>招牌菜，每行一道
+          <textarea id="restaurantDishes" placeholder="红烧肉&#10;干锅牛蛙"></textarea>
+        </label>
+        <label class="checkbox"><input id="restaurantEnabled" type="checkbox" checked> 启用</label>
+        <div class="button-row">
+          <button data-action="save-restaurant">保存饭店</button>
+          <button class="secondary" data-action="new-restaurant">新建</button>
+        </div>
+        <input id="restaurantCurrentId" type="hidden">
+        <div id="restaurantNotice" class="notice">加载中</div>
+        <div id="restaurantList" class="item-list"></div>
+      </section>
+    </section>
   </main>
   <script src="./static/app.js"></script>
 </body>

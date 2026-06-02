@@ -1,5 +1,6 @@
 import json
 import re
+import base64
 from pathlib import Path
 from typing import Any, Literal
 
@@ -35,6 +36,21 @@ class PrefixesPayload(BaseModel):
 
 class LuaPayload(BaseModel):
     content: str
+
+
+class MenuPayload(BaseModel):
+    title: str
+    enabled: bool = True
+    image_data_url: str | None = None
+    image_url: str | None = None
+
+
+class RestaurantPayload(BaseModel):
+    name: str
+    dishes: list[str]
+    group_id: int
+    created_by: int = 0
+    enabled: bool = True
 
 
 def create_app():
@@ -142,6 +158,125 @@ def create_app():
         data["deleted"] = deleted
         data["command"] = command
         return data
+
+    @app.get("/api/menus")
+    async def get_menus(search: str = "", limit: int = 200) -> dict:
+        settings = get_settings()
+        return {
+            "menus": [
+                _menu_for_api(menu, settings.menu_image_dir)
+                for menu in get_store().list_menu_recipes(search=search, limit=limit)
+            ]
+        }
+
+    @app.get("/api/menu-images/{image_path:path}")
+    async def get_menu_image(image_path: str) -> FileResponse:
+        root = get_settings().menu_image_dir.resolve(strict=False)
+        path = (root / image_path).resolve(strict=False)
+        try:
+            path.relative_to(root)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail="image not found") from exc
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="image not found")
+        return FileResponse(path)
+
+    @app.post("/api/menus")
+    async def create_menu(payload: MenuPayload, request: Request) -> dict:
+        require_token(request)
+        try:
+            image_body, image_suffix = _decode_image_payload(payload.image_data_url)
+            menu = get_store().save_custom_menu_recipe(
+                payload.title,
+                get_settings().menu_image_dir,
+                image_source=str(payload.image_url or ""),
+                image_body=image_body,
+                image_suffix=image_suffix,
+                enabled=payload.enabled,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return _menu_for_api(menu, get_settings().menu_image_dir)
+
+    @app.put("/api/menus/{menu_id}")
+    async def update_menu(menu_id: str, payload: MenuPayload, request: Request) -> dict:
+        require_token(request)
+        try:
+            image_body, image_suffix = _decode_image_payload(payload.image_data_url)
+            menu = get_store().update_menu_recipe(
+                menu_id,
+                get_settings().menu_image_dir,
+                title=payload.title,
+                enabled=payload.enabled,
+                image_source=str(payload.image_url or ""),
+                image_body=image_body,
+                image_suffix=image_suffix,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return _menu_for_api(menu, get_settings().menu_image_dir)
+
+    @app.delete("/api/menus/{menu_id}")
+    async def delete_menu(menu_id: str, request: Request) -> dict:
+        require_token(request)
+        return {"deleted": get_store().delete_menu_recipe(menu_id), "id": menu_id}
+
+    @app.post("/api/menus/prune-howtocook-without-images")
+    async def prune_howtocook_without_images(request: Request) -> dict:
+        require_token(request)
+        return {
+            "deleted": get_store().prune_howtocook_without_images(get_settings().menu_image_dir)
+        }
+
+    @app.get("/api/restaurants")
+    async def get_restaurants(group_id: int | None = None, search: str = "", limit: int = 200) -> dict:
+        return {
+            "restaurants": get_store().list_restaurants(
+                group_id=group_id,
+                search=search,
+                limit=limit,
+            )
+        }
+
+    @app.post("/api/restaurants")
+    async def create_restaurant(payload: RestaurantPayload, request: Request) -> dict:
+        require_token(request)
+        try:
+            return get_store().save_restaurant(
+                name=payload.name,
+                dishes=payload.dishes,
+                group_id=payload.group_id,
+                created_by=payload.created_by,
+                enabled=payload.enabled,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.put("/api/restaurants/{restaurant_id}")
+    async def update_restaurant(
+        restaurant_id: int,
+        payload: RestaurantPayload,
+        request: Request,
+    ) -> dict:
+        require_token(request)
+        try:
+            return get_store().update_restaurant(
+                restaurant_id,
+                name=payload.name,
+                dishes=payload.dishes,
+                enabled=payload.enabled,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.delete("/api/restaurants/{restaurant_id}")
+    async def delete_restaurant(restaurant_id: int, request: Request) -> dict:
+        require_token(request)
+        return {"deleted": get_store().delete_restaurant(restaurant_id), "id": restaurant_id}
 
     @app.post("/api/groups/{group_id}/on")
     async def group_on(group_id: int, request: Request) -> dict:
@@ -286,3 +421,26 @@ def _validate_replies_object(parsed: Any) -> str:
 
     config = parse_reply_config(parsed)
     return json.dumps(reply_config_to_dict(config), ensure_ascii=False, indent=2) + "\n"
+
+
+def _decode_image_payload(data_url: str | None) -> tuple[bytes | None, str]:
+    if not data_url:
+        return None, ".jpg"
+    header, sep, payload = data_url.partition(",")
+    if not sep or not header.startswith("data:image/"):
+        raise ValueError("image_data_url must be a data:image/* URL")
+    image_type = header.split(";", 1)[0].removeprefix("data:image/").lower()
+    suffix = ".jpg" if image_type == "jpeg" else f".{image_type}"
+    try:
+        return base64.b64decode(payload, validate=True), suffix
+    except ValueError as exc:
+        raise ValueError("image_data_url is not valid base64") from exc
+
+
+def _menu_for_api(menu: dict[str, Any], image_dir: Path) -> dict[str, Any]:
+    image_relpath = str(menu.get("image_relpath") or "")
+    image_url = ""
+    if image_relpath:
+        image_path = (image_dir / image_relpath).resolve(strict=False)
+        image_url = f"./api/menu-images/{image_relpath}" if image_path.is_file() else ""
+    return {**menu, "image_url": image_url}

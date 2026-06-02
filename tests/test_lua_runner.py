@@ -559,12 +559,12 @@ async def test_builtin_menu_uses_local_recipe_database_without_network(tmp_path,
     assert "分类：" not in default_first.reply
     assert "标签：" not in default_first.reply
     assert "食材：" not in default_first.reply
-    assert guangzhou.reply.startswith("今日菜单｜广州\n推荐：")
+    assert guangzhou.reply.startswith("今日菜单\n推荐：")
     assert "理由：" in guangzhou.reply
-    assert hotpot.reply.startswith("今日菜单｜火锅\n推荐：")
+    assert hotpot.reply.startswith("今日菜单\n推荐：")
     assert "TheMealDB" not in hotpot.reply
     assert "外部菜单接口" not in hotpot.reply
-    assert unknown.reply.startswith("今日菜单｜不存在\n推荐：")
+    assert unknown.reply.startswith("今日菜单\n推荐：")
 
 
 @pytest.mark.asyncio
@@ -574,6 +574,9 @@ async def test_builtin_menu_uses_jisu_recipe_api_image_when_configured(tmp_path,
     configure_builtin_lua_dir(tmp_path, monkeypatch)
 
     class FakeResponse:
+        def __init__(self, body: bytes):
+            self.body = body
+
         def __enter__(self):
             return self
 
@@ -581,33 +584,41 @@ async def test_builtin_menu_uses_jisu_recipe_api_image_when_configured(tmp_path,
             return False
 
         def read(self, size):
-            return json.dumps(
-                {
-                    "status": 0,
-                    "msg": "ok",
-                    "result": {
-                        "num": "1",
-                        "list": [
-                            {
-                                "id": "8",
-                                "name": "醋溜白菜",
-                                "classid": "2",
-                                "pic": "http://api.jisuapi.com/recipe/upload/test.jpg",
-                                "tag": "家常菜,下饭",
-                                "material": [{"mname": "白菜", "amount": "380g"}],
-                                "process": [{"pcontent": "快速翻炒至入味。"}],
-                            }
-                        ],
-                    },
-                },
-                ensure_ascii=False,
-            ).encode("utf-8")
+            return self.body
 
     calls = []
 
     def fake_urlopen(request, timeout):
         calls.append(request.full_url)
-        return FakeResponse()
+        if "api.jisuapi.com/recipe/search" in request.full_url:
+            return FakeResponse(
+                json.dumps(
+                    {
+                        "status": 0,
+                        "msg": "ok",
+                        "result": {
+                            "num": "1",
+                            "list": [
+                                {
+                                    "id": "8",
+                                    "name": "醋溜白菜",
+                                    "classid": "2",
+                                    "pic": "http://api.jisuapi.com/recipe/upload/test.jpg",
+                                    "tag": "家常菜,下饭",
+                                    "material": [{"mname": "白菜", "amount": "380g"}],
+                                    "process": [{"pcontent": "快速翻炒至入味。"}],
+                                }
+                            ],
+                        },
+                    },
+                    ensure_ascii=False,
+                ).encode("utf-8")
+            )
+        return FakeResponse(
+            b"GIF89a\x01\x00\x01\x00\x80\x00\x00\xff\xff\xff\x00\x00\x00"
+            b"!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00"
+            b"\x00\x02\x02D\x01\x00;"
+        )
 
     monkeypatch.setattr("qq_personal_bot.menu_recipes.urlopen", fake_urlopen)
 
@@ -620,10 +631,11 @@ async def test_builtin_menu_uses_jisu_recipe_api_image_when_configured(tmp_path,
     assert result.quote is True
     assert result.reply is not None
     assert "推荐：醋溜白菜" in result.reply
-    assert "[CQ:image,file=http://api.jisuapi.com/recipe/upload/test.jpg]" in result.reply
+    assert "[CQ:image,file=file:///" in result.reply
     assert calls
     assert "api.jisuapi.com/recipe/search" in calls[0]
     assert "appkey=test-key" in calls[0]
+    assert "api.jisuapi.com/recipe/upload/test.jpg" in calls[1]
 
 
 @pytest.mark.asyncio

@@ -15,31 +15,62 @@
 
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 320px; background: #f4f7fb; }
-main { width: min(1240px, calc(100% - 32px)); margin: 0 auto; padding: 24px 0 36px; }
-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
-h1, h2, h3 { margin: 0; letter-spacing: 0; }
+main { width: min(1280px, calc(100% - 32px)); margin: 0 auto; padding: 24px 0 36px; }
+h1, h2, h3, p { margin: 0; letter-spacing: 0; }
 h1 { font-size: 26px; line-height: 1.2; }
-h2 { font-size: 16px; line-height: 1.25; }
+h2 { font-size: 17px; line-height: 1.25; }
 h3 { font-size: 14px; line-height: 1.25; }
 
+.topbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 16px;
+}
+.topbar p { margin-top: 5px; color: var(--muted); font-size: 13px; }
+.top-actions { display: flex; align-items: end; gap: 10px; flex-wrap: wrap; }
+.top-actions label { min-width: 260px; }
+
 .status-pill {
-  min-width: 96px;
-  min-height: 32px;
+  min-width: 80px;
+  min-height: 38px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 6px 12px;
+  border-radius: 7px;
+  padding: 8px 12px;
   background: #eef6ff;
   color: #1849a9;
   font-size: 13px;
   font-weight: 650;
-  white-space: nowrap;
 }
 
-.layout { display: grid; grid-template-columns: 360px 1fr; gap: 18px; align-items: start; }
-.stack { display: grid; gap: 14px; }
+.tabs {
+  display: flex;
+  gap: 8px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
+  overflow-x: auto;
+}
+.tab {
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 7px 7px 0 0;
+  background: transparent;
+  color: #344054;
+}
+.tab.active {
+  background: var(--panel);
+  border-color: var(--border);
+  color: var(--primary);
+}
+
+.tab-panel { display: none; }
+.tab-panel.active { display: grid; gap: 16px; }
+.grid { display: grid; gap: 14px; }
+.grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 
 section {
   border: 1px solid var(--border);
@@ -59,7 +90,7 @@ input, select, textarea {
   padding: 9px 10px;
   outline: none;
 }
-textarea { resize: vertical; min-height: 38px; line-height: 1.45; }
+textarea { resize: vertical; min-height: 100px; line-height: 1.45; }
 input:focus, select:focus, textarea:focus {
   border-color: var(--primary);
   box-shadow: 0 0 0 3px rgba(20, 99, 255, 0.14);
@@ -80,6 +111,8 @@ button.secondary { background: #fff; border-color: #c8d3e1; color: #26364a; }
 button.secondary:hover { background: #f6f8fb; }
 button.danger { background: #fff; border-color: #f2b8b5; color: var(--danger); }
 button.danger:hover { background: #fff4f3; }
+.button-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
 .file-button {
   min-height: 38px;
   display: inline-flex;
@@ -94,13 +127,13 @@ button.danger:hover { background: #fff4f3; }
   font-weight: 650;
 }
 .file-button input { display: none; }
+.checkbox { display: flex; align-items: center; gap: 8px; }
+.checkbox input { width: auto; }
 
-.row { display: flex; gap: 9px; flex-wrap: wrap; align-items: end; }
-.row > label { flex: 1 1 180px; }
-.group-actions { margin-top: 10px; }
 .section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
-.split-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-.rules-head { margin-top: 18px; }
+.subhead { margin-top: 18px; }
+.form-grid { display: grid; gap: 12px; }
+.hint { color: var(--muted); font-size: 13px; line-height: 1.45; }
 
 .notice {
   min-height: 36px;
@@ -123,7 +156,7 @@ button.danger:hover { background: #fff4f3; }
 .metric strong { display: block; margin-top: 5px; font-size: 18px; line-height: 1; }
 
 pre {
-  min-height: 220px;
+  min-height: 180px;
   max-height: 360px;
   overflow: auto;
   margin: 0;
@@ -135,28 +168,21 @@ pre {
   line-height: 1.45;
 }
 
-.form-grid { display: grid; gap: 12px; }
-.rule-list { display: grid; gap: 10px; margin-top: 12px; }
+.rule-list, .item-list, .lua-command-list { display: grid; gap: 10px; margin-top: 12px; }
 .rule-card {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--soft);
   padding: 12px;
   display: grid;
+  grid-template-columns: 140px minmax(160px, 1fr) minmax(220px, 1.4fr) auto;
   gap: 10px;
-}
-.rule-fields {
-  display: grid;
-  grid-template-columns: 132px minmax(160px, 1fr) minmax(220px, 1.5fr) auto;
-  gap: 9px;
   align-items: end;
 }
 .empty-list { border: 1px dashed #c8d3e1; border-radius: 8px; padding: 18px; color: var(--muted); background: #fff; }
-.hint { color: var(--muted); font-size: 13px; line-height: 1.45; margin: -4px 0 0; }
 
-.lua-panel { grid-column: 2; }
-.lua-grid { display: grid; grid-template-columns: 220px minmax(360px, 1fr) minmax(300px, 0.8fr); gap: 16px; align-items: start; }
-.lua-command-panel {
+.lua-grid { display: grid; grid-template-columns: 240px minmax(360px, 1fr) 320px; gap: 16px; align-items: start; }
+.side-panel {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--soft);
@@ -164,26 +190,7 @@ pre {
   display: grid;
   gap: 12px;
 }
-.lua-command-list { display: grid; gap: 8px; }
-.lua-command-item {
-  min-height: 38px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  border: 1px solid #c8d3e1;
-  border-radius: 7px;
-  padding: 8px 10px;
-  background: #fff;
-  color: #26364a;
-  cursor: pointer;
-  text-align: left;
-}
-.lua-command-item:hover { background: #f6f8fb; }
-.lua-command-item.active { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(20, 99, 255, 0.12); }
-.lua-command-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.lua-command-item small { color: var(--muted); font-size: 11px; white-space: nowrap; }
-.lua-editor-wrap { display: grid; gap: 10px; }
+.editor-panel { display: grid; gap: 10px; }
 .code-editor {
   min-height: 560px;
   font-family: "Cascadia Code", Consolas, monospace;
@@ -191,45 +198,51 @@ pre {
   line-height: 1.55;
   tab-size: 2;
 }
-.docs-panel {
+.lua-command-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 1px solid #c8d3e1;
+  background: #fff;
+  color: #26364a;
+  text-align: left;
+}
+.lua-command-item.active { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(20, 99, 255, 0.12); }
+.docs-code { min-height: 0; max-height: none; background: #101828; }
+
+.item-card {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--soft);
-  padding: 14px;
+  padding: 12px;
+}
+.item-card img, .image-placeholder {
+  width: 84px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: #fff;
+}
+.image-placeholder {
   display: grid;
-  gap: 12px;
+  place-items: center;
+  color: var(--muted);
+  font-size: 12px;
 }
-.docs-code {
-  min-height: 0;
-  max-height: none;
-  background: #101828;
-}
-.docs-list {
-  margin: 0;
-  padding-left: 18px;
-  display: grid;
-  gap: 7px;
-  color: #344054;
-  font-size: 13px;
-}
-.docs-links { display: grid; gap: 8px; }
-.docs-links a { color: var(--primary); font-weight: 650; text-decoration: none; }
-.docs-links a:hover { text-decoration: underline; }
-code {
-  font-family: "Cascadia Code", Consolas, monospace;
-  background: #e9eef8;
-  border-radius: 4px;
-  padding: 1px 4px;
-}
+.item-card p { color: var(--muted); font-size: 13px; margin-top: 4px; }
 
 @media (max-width: 980px) {
-  main { width: min(100% - 20px, 1240px); padding-top: 16px; }
-  header { align-items: flex-start; flex-direction: column; }
-      .layout { grid-template-columns: 1fr; }
-      .metrics { grid-template-columns: 1fr; }
-      .rule-fields { grid-template-columns: 1fr; }
-      .lua-panel { grid-column: auto; }
-      .lua-grid { grid-template-columns: 1fr; }
-      .code-editor { min-height: 420px; }
-      button { flex: 1 1 auto; }
-    }
+  main { width: min(100% - 20px, 1280px); padding-top: 16px; }
+  .topbar { flex-direction: column; }
+  .top-actions, .top-actions label { width: 100%; }
+  .grid.two, .lua-grid, .rule-card, .item-card { grid-template-columns: 1fr; }
+  .metrics { grid-template-columns: 1fr; }
+  .code-editor { min-height: 420px; }
+  button { flex: 1 1 auto; }
+}

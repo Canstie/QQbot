@@ -154,6 +154,10 @@ class LuaApi:
                 logger.warning(f"Lua: Jisu recipe API failed, falling back to local menu: {exc}")
             else:
                 if recipe is not None:
+                    recipe = get_store().save_external_menu_recipe_if_new(
+                        recipe,
+                        image_dir=settings.menu_image_dir,
+                    )
                     return _to_lua(self._lua, recipe)
 
         recipe = get_store().pick_menu_recipe(
