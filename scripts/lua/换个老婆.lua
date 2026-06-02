@@ -41,7 +41,45 @@ local function state_key(event)
   return tostring(event.date) .. ":" .. tostring(event.group_id) .. ":" .. tostring(event.user_id)
 end
 
-local function candidate_members(event, api, exclude_user_id)
+local function claim_key(event)
+  return tostring(event.date) .. ":" .. tostring(event.group_id) .. ":claims"
+end
+
+local function load_claims(event, api)
+  local raw = api.get_state(claim_key(event), NAMESPACE)
+  if raw == nil or raw == "" then
+    return {}
+  end
+
+  local ok, decoded = pcall(function()
+    return api.json_decode(raw)
+  end)
+  if ok and decoded ~= nil then
+    return decoded
+  end
+
+  return {}
+end
+
+local function save_claims(event, api, claims)
+  api.set_state(claim_key(event), api.json_encode(claims), NAMESPACE)
+end
+
+local function claim_owner(claims, user_id)
+  return claims[tostring(user_id)]
+end
+
+local function release_claim(claims, wife_id, owner_id)
+  if wife_id ~= nil and wife_id ~= "" and tostring(claims[tostring(wife_id)] or "") == tostring(owner_id) then
+    claims[tostring(wife_id)] = nil
+  end
+end
+
+local function assign_claim(claims, wife_id, owner_id)
+  claims[tostring(wife_id)] = tostring(owner_id)
+end
+
+local function candidate_members(event, api, claims, exclude_user_id)
   local members = api.get_group_member_list(event.group_id)
   if members == nil then
     return {}
@@ -55,7 +93,11 @@ local function candidate_members(event, api, exclude_user_id)
 
   for i = 1, #members do
     local member_id = tostring(members[i].user_id)
-    if member_id ~= self_id and member_id ~= caller_id and member_id ~= exclude_id then
+    local owner_id = claim_owner(claims, member_id)
+    if member_id ~= self_id and
+        member_id ~= caller_id and
+        member_id ~= exclude_id and
+        (owner_id == nil or tostring(owner_id) == caller_id) then
       table.insert(candidates, members[i])
     end
   end
@@ -70,14 +112,24 @@ function on_command(event, api)
 
   local key = state_key(event)
   local old_user_id = api.get_state(key, NAMESPACE)
-  local candidates = candidate_members(event, api, old_user_id)
+  local claims = load_claims(event, api)
+  local caller_id = tostring(event.user_id)
+  release_claim(claims, old_user_id, caller_id)
+
+  local candidates = candidate_members(event, api, claims, old_user_id)
 
   if #candidates == 0 then
+    if old_user_id ~= nil and old_user_id ~= "" then
+      assign_claim(claims, old_user_id, caller_id)
+      save_claims(event, api, claims)
+    end
     return quote_reply("没有可重新抽取的群老婆。")
   end
 
   math.randomseed(seed_from_event(event))
   local picked = candidates[math.random(#candidates)]
   api.set_state(key, tostring(picked.user_id), NAMESPACE)
+  assign_claim(claims, picked.user_id, caller_id)
+  save_claims(event, api, claims)
   return wife_reply(picked)
 end

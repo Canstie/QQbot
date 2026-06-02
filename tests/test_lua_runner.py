@@ -45,15 +45,23 @@ class RichFakeBot:
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def make_event() -> MessageEvent:
+def make_event(
+    *,
+    user_id: int = 456,
+    message_id: int | str = 1,
+    raw_message: str = "~hello",
+    segments=(),
+    timestamp: float = 1,
+) -> MessageEvent:
     return MessageEvent(
         platform="onebot.v11",
-        message_id=1,
+        message_id=message_id,
         group_id=123,
-        user_id=456,
-        raw_message="~hello",
+        user_id=user_id,
+        raw_message=raw_message,
+        segments=segments,
         is_at_bot=False,
-        timestamp=1,
+        timestamp=timestamp,
     )
 
 
@@ -706,6 +714,58 @@ async def test_builtin_change_wife_reply_uses_avatar_and_name_only(tmp_path, mon
     assert result.reply.startswith("你今天亲爱的群老婆是\n[CQ:image,file=https://q1.qlogo.cn/")
     assert any(name in result.reply for name in {"Alpha", "BetaCard", "Gamma"})
     assert "（" not in result.reply
+
+
+@pytest.mark.asyncio
+async def test_builtin_force_marry_rejects_already_claimed_wife(tmp_path, monkeypatch):
+    configure_builtin_lua_dir(tmp_path, monkeypatch)
+    target_at = ({"type": "at", "data": {"qq": "1"}},)
+
+    first = await run_lua_message(
+        RichFakeBot(),
+        make_event(raw_message="~强娶 [CQ:at,qq=1]", segments=target_at),
+        PolicyDecision(True, "ok", handler="default", normalized_message="强娶"),
+    )
+    second = await run_lua_message(
+        RichFakeBot(),
+        make_event(user_id=789, raw_message="~强娶 [CQ:at,qq=1]", segments=target_at),
+        PolicyDecision(True, "ok", handler="default", normalized_message="强娶"),
+    )
+
+    assert first.quote is True
+    assert first.reply is not None
+    assert "Alpha" in first.reply
+    assert second.quote is True
+    assert second.reply == "ta已经是别人的群老婆"
+
+
+@pytest.mark.asyncio
+async def test_builtin_pick_and_change_wife_skip_claimed_members(tmp_path, monkeypatch):
+    configure_builtin_lua_dir(tmp_path, monkeypatch)
+    target_at = ({"type": "at", "data": {"qq": "1"}},)
+
+    claimed = await run_lua_message(
+        RichFakeBot(),
+        make_event(raw_message="~强娶 [CQ:at,qq=1]", segments=target_at),
+        PolicyDecision(True, "ok", handler="default", normalized_message="强娶"),
+    )
+    picked = await run_lua_message(
+        RichFakeBot(),
+        make_event(user_id=789, message_id=2, raw_message="~抽群老婆"),
+        PolicyDecision(True, "ok", handler="default", normalized_message="抽群老婆"),
+    )
+    changed = await run_lua_message(
+        RichFakeBot(),
+        make_event(user_id=789, message_id=3, raw_message="~换个老婆"),
+        PolicyDecision(True, "ok", handler="default", normalized_message="换个老婆"),
+    )
+
+    assert claimed.reply is not None
+    assert "Alpha" in claimed.reply
+    assert picked.reply is not None
+    assert "Alpha" not in picked.reply
+    assert changed.reply is not None
+    assert "Alpha" not in changed.reply
 
 
 @pytest.mark.asyncio
