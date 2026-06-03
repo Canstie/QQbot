@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from nonebot import on, on_command
-from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message, MessageEvent
+from nonebot.adapters.onebot.v11 import Bot, Event, GroupMessageEvent, Message, MessageEvent
 from nonebot.matcher import Matcher
 from nonebot.params import CommandArg
 
@@ -249,7 +249,7 @@ async def handle_bot_command(matcher: Matcher, event: MessageEvent, args: Messag
 
 
 @self_sent_control.handle()
-async def handle_self_sent_bot_command(matcher: Matcher, bot: Bot, event: Any):
+async def handle_self_sent_bot_command(matcher: Matcher, bot: Bot, event: Event):
     raw_message = str(getattr(event, "raw_message", "")).strip()
     for command in ("/bot", "/qqbot"):
         if raw_message == command or raw_message.startswith(f"{command} "):
