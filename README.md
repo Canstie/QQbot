@@ -139,9 +139,9 @@ static/app.js
 
 `rules` 用于带触发前缀的消息，例如 `~菜单` 会先去掉 `~` 再匹配 `菜单`。
 `direct_rules` 用于免前缀关键词回复，例如群里直接出现某个词就回复。
-免前缀关键词默认按 10% 概率触发，避免群聊太吵；可在 Web 管理页“策略”里调整，或设置
-`QQBOT_DIRECT_TRIGGER_PERCENT=10`。这个概率只影响 `direct_rules` 和 `direct_lua_rules`，
-不影响 `~`、`#bot` 等前缀指令，也不影响 @ 触发。
+免前缀关键词应答默认按 10% 概率触发，避免群聊太吵；可在 Web 管理页“策略”里调整，或设置
+`QQBOT_DIRECT_TRIGGER_PERCENT=10`。这个概率只影响 `direct_rules`，
+不影响 `direct_lua_rules`、`~`、`#bot` 等前缀指令，也不影响 @ 触发。
 
 规则从上到下匹配，命中第一条就回复。`type` 支持：
 

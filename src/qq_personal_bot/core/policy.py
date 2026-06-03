@@ -77,7 +77,7 @@ class PolicyEngine:
             return PolicyDecision(False, reason)
         trigger_text, handler = trigger
 
-        if handler in {"direct", "lua"} and not self._allow_direct_trigger(event):
+        if handler == "direct" and not self._allow_direct_trigger(event):
             return PolicyDecision(False, "direct_trigger_skipped")
 
         if is_self_message:

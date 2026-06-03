@@ -151,7 +151,7 @@ def test_direct_lua_rule_routes_without_prefix(tmp_path, monkeypatch):
     assert should_ignore.reason == "no_trigger"
 
 
-def test_direct_trigger_percent_zero_skips_direct_reply_and_lua(tmp_path, monkeypatch):
+def test_direct_trigger_percent_zero_skips_only_direct_reply(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "replies.json").write_text(
         json.dumps(
@@ -175,8 +175,9 @@ def test_direct_trigger_percent_zero_skips_direct_reply_and_lua(tmp_path, monkey
 
     assert not direct.allowed
     assert direct.reason == "direct_trigger_skipped"
-    assert not lua.allowed
-    assert lua.reason == "direct_trigger_skipped"
+    assert lua.allowed
+    assert lua.handler == "lua"
+    assert lua.normalized_message == "今日菜单"
 
 
 def test_prefix_trigger_takes_priority_over_direct_rule(tmp_path, monkeypatch):
