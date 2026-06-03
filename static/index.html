@@ -31,7 +31,10 @@
     <section class="tab-panel active" data-panel="policy">
       <div class="grid two">
         <section>
-          <div class="section-head"><h2>策略</h2></div>
+          <div class="section-head">
+            <h2>核心配置</h2>
+            <button data-action="save-core-config">保存核心配置</button>
+          </div>
           <div class="form-grid">
             <label>模式
               <select id="mode">
@@ -39,17 +42,39 @@
                 <option value="blocklist">blocklist</option>
               </select>
             </label>
-            <button data-action="set-mode">保存模式</button>
+            <p class="hint">allowlist：只有启用群响应；blocklist：除屏蔽群外都响应。</p>
             <label>触发前缀
               <input id="prefixesInput" placeholder="~,#bot">
             </label>
             <p class="hint">多个前缀用英文逗号分隔；留空会自动使用 ~。</p>
-            <button data-action="save-prefixes">保存前缀</button>
+            <label class="checkbox"><input id="mentionTrigger" type="checkbox"> 允许 @ bot 触发</label>
+            <p class="hint">开启后，群成员 @ bot 的消息会进入回复逻辑；关闭后只响应前缀和免前缀规则。</p>
             <label>免前缀关键词触发概率
               <input id="directTriggerPercent" type="number" min="0" max="100" step="1" placeholder="10">
             </label>
             <p class="hint">默认 10%；只影响免前缀关键词和免前缀 Lua，前缀指令、@ 触发不受影响。</p>
-            <button data-action="save-direct-trigger-percent">保存概率</button>
+            <div class="grid two">
+              <label>群限流秒数
+                <input id="perGroupSeconds" type="number" min="0" step="0.5" placeholder="5">
+              </label>
+              <label>用户每分钟上限
+                <input id="perUserPerMinute" type="number" min="0" step="1" placeholder="5">
+              </label>
+            </div>
+            <p class="hint">群限流控制同一群两次 bot 回复的最小间隔；用户上限控制单个用户每分钟最多触发次数。填 0 表示关闭对应限流。</p>
+            <label>启用群 ID
+              <textarea id="enabledGroupsInput" class="compact-textarea" placeholder="一行一个，或用逗号分隔"></textarea>
+            </label>
+            <p class="hint">allowlist 模式下，只有这些群会响应。</p>
+            <label>屏蔽群 ID
+              <textarea id="blockedGroupsInput" class="compact-textarea" placeholder="一行一个，或用逗号分隔"></textarea>
+            </label>
+            <p class="hint">blocklist 模式下，这些群会静默；allowlist 模式下也可用于显式屏蔽。</p>
+            <label>管理员 QQ
+              <textarea id="adminsInput" class="compact-textarea" placeholder="一行一个，或用逗号分隔"></textarea>
+            </label>
+            <p class="hint">管理员可以使用 /bot 控制命令；网页写操作仍由 Admin token 控制。</p>
+            <div id="configNotice" class="notice">加载中</div>
           </div>
         </section>
 

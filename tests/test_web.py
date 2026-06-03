@@ -124,6 +124,44 @@ def test_direct_trigger_percent_api_roundtrip(tmp_path, monkeypatch):
     assert "between 0 and 100" in response.json()["detail"]
 
 
+def test_core_policy_api_updates_full_config(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("QQBOT_WEB_TOKEN", raising=False)
+    monkeypatch.setenv("QQBOT_DB_PATH", str(tmp_path / "policy.sqlite3"))
+    reset_runtime()
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/policy/core",
+        json={
+            "mode": "blocklist",
+            "enabled_groups": [123, 456],
+            "blocked_groups": [789],
+            "admins": [20000],
+            "trigger": {
+                "mention": False,
+                "prefixes": ["!", "/"],
+                "direct_trigger_percent": 42,
+            },
+            "limits": {
+                "per_group_seconds": 2.5,
+                "per_user_per_minute": 8,
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["mode"] == "blocklist"
+    assert data["enabled_groups"] == [123, 456]
+    assert data["blocked_groups"] == [789]
+    assert data["admins"] == [20000]
+    assert data["trigger"]["mention"] is False
+    assert data["trigger"]["prefixes"] == ["!", "/"]
+    assert data["trigger"]["direct_trigger_percent"] == 42.0
+    assert data["limits"] == {"per_group_seconds": 2.5, "per_user_per_minute": 8}
+
+
 def test_lua_api_returns_example_when_script_missing(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("QQBOT_WEB_TOKEN", raising=False)

@@ -38,6 +38,15 @@ class DirectTriggerPercentPayload(BaseModel):
     percent: float
 
 
+class CoreConfigPayload(BaseModel):
+    mode: Literal["allowlist", "blocklist"]
+    enabled_groups: list[int]
+    blocked_groups: list[int]
+    admins: list[int]
+    trigger: dict[str, Any]
+    limits: dict[str, Any]
+
+
 class LuaPayload(BaseModel):
     content: str
 
@@ -99,6 +108,26 @@ def create_app():
         try:
             get_store().set_direct_trigger_percent(payload.percent, actor_id=0)
         except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return get_store().snapshot()
+
+    @app.post("/api/policy/core")
+    async def set_core_config(payload: CoreConfigPayload, request: Request) -> dict:
+        require_token(request)
+        try:
+            get_store().set_core_config(
+                mode=payload.mode,
+                enabled_groups=payload.enabled_groups,
+                blocked_groups=payload.blocked_groups,
+                admins=payload.admins,
+                trigger_mention=bool(payload.trigger.get("mention", True)),
+                prefixes=list(payload.trigger.get("prefixes", [])),
+                direct_trigger_percent=float(payload.trigger.get("direct_trigger_percent", 10)),
+                per_group_seconds=float(payload.limits.get("per_group_seconds", 5)),
+                per_user_per_minute=int(payload.limits.get("per_user_per_minute", 5)),
+                actor_id=0,
+            )
+        except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return get_store().snapshot()
 

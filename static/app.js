@@ -52,6 +52,18 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;");
 }
 
+function parseIdList(value) {
+  return String(value || "")
+    .split(/[,\s，、]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) => Number(item));
+}
+
+function formatIdList(values) {
+  return (values || []).join("\n");
+}
+
 function showTab(name) {
   document.querySelectorAll(".tab").forEach((tab) => {
     tab.classList.toggle("active", tab.dataset.tab === name);
@@ -120,10 +132,18 @@ async function refresh() {
     byId("connectionStatus").textContent = "在线";
     if (data.mode) byId("mode").value = data.mode;
     byId("prefixesInput").value = (data.trigger?.prefixes || ["~"]).join(",");
+    byId("mentionTrigger").checked = Boolean(data.trigger?.mention);
     byId("directTriggerPercent").value = data.trigger?.direct_trigger_percent ?? 10;
+    byId("perGroupSeconds").value = data.limits?.per_group_seconds ?? 5;
+    byId("perUserPerMinute").value = data.limits?.per_user_per_minute ?? 5;
+    byId("enabledGroupsInput").value = formatIdList(data.enabled_groups);
+    byId("blockedGroupsInput").value = formatIdList(data.blocked_groups);
+    byId("adminsInput").value = formatIdList(data.admins);
+    setNotice("configNotice", "核心配置已加载", "ok");
   } catch (error) {
     byId("connectionStatus").textContent = "异常";
     byId("state").textContent = error.message;
+    setNotice("configNotice", error.message, "error");
   }
 }
 
@@ -153,6 +173,33 @@ async function saveDirectTriggerPercent() {
     headers: headers(),
     body: JSON.stringify({ percent }),
   });
+  await refresh();
+}
+
+async function saveCoreConfig() {
+  const prefixes = byId("prefixesInput").value.split(",").map((item) => item.trim()).filter(Boolean);
+  const payload = {
+    mode: byId("mode").value,
+    enabled_groups: parseIdList(byId("enabledGroupsInput").value),
+    blocked_groups: parseIdList(byId("blockedGroupsInput").value),
+    admins: parseIdList(byId("adminsInput").value),
+    trigger: {
+      mention: byId("mentionTrigger").checked,
+      prefixes,
+      direct_trigger_percent: Number(byId("directTriggerPercent").value),
+    },
+    limits: {
+      per_group_seconds: Number(byId("perGroupSeconds").value),
+      per_user_per_minute: Number(byId("perUserPerMinute").value),
+    },
+  };
+  const data = await requestJson("./api/policy/core", {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify(payload),
+  });
+  byId("state").textContent = JSON.stringify(data, null, 2);
+  setNotice("configNotice", "核心配置已保存", "ok");
   await refresh();
 }
 
@@ -485,6 +532,7 @@ document.addEventListener("click", async (event) => {
     "set-mode": setMode,
     "save-prefixes": savePrefixes,
     "save-direct-trigger-percent": saveDirectTriggerPercent,
+    "save-core-config": saveCoreConfig,
     "load-replies": loadReplies,
     "save-replies": saveReplies,
     "load-lua": loadLuaCommands,

@@ -150,6 +150,89 @@ class PolicyStore:
             self.set_setting("policy_mode", mode, conn=conn)
             self.audit(actor_id, "set_mode", "policy", {"mode": mode}, conn=conn)
 
+    def set_core_config(
+        self,
+        *,
+        mode: str,
+        enabled_groups: list[int],
+        blocked_groups: list[int],
+        admins: list[int],
+        trigger_mention: bool,
+        prefixes: list[str],
+        direct_trigger_percent: float,
+        per_group_seconds: float,
+        per_user_per_minute: int,
+        actor_id: int,
+    ) -> None:
+        if mode not in {"allowlist", "blocklist"}:
+            raise ValueError("mode must be allowlist or blocklist")
+        if direct_trigger_percent < 0 or direct_trigger_percent > 100:
+            raise ValueError("direct trigger percent must be between 0 and 100")
+        if per_group_seconds < 0 or per_user_per_minute < 0:
+            raise ValueError("limits must be non-negative")
+
+        normalized_prefixes = self._normalize_prefixes(prefixes)
+        normalized_enabled_groups = self._normalize_int_ids(enabled_groups, "enabled_groups")
+        normalized_blocked_groups = self._normalize_int_ids(blocked_groups, "blocked_groups")
+        normalized_admins = self._normalize_int_ids(admins, "admins")
+
+        with self._connect() as conn:
+            self.set_setting("policy_mode", mode, conn=conn)
+            self.set_setting("trigger_mention", "true" if trigger_mention else "false", conn=conn)
+            self.set_setting("direct_trigger_percent", str(float(direct_trigger_percent)), conn=conn)
+            self.set_setting("per_group_seconds", str(float(per_group_seconds)), conn=conn)
+            self.set_setting("per_user_per_minute", str(int(per_user_per_minute)), conn=conn)
+
+            conn.execute("DELETE FROM trigger_prefixes")
+            for prefix in normalized_prefixes:
+                conn.execute("INSERT INTO trigger_prefixes(prefix) VALUES (?)", (prefix,))
+
+            now = time.time()
+            conn.execute("DELETE FROM groups")
+            group_ids = sorted(set(normalized_enabled_groups) | set(normalized_blocked_groups))
+            for group_id in group_ids:
+                conn.execute(
+                    """
+                    INSERT INTO groups(group_id, enabled, blocked, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        group_id,
+                        1 if group_id in normalized_enabled_groups else 0,
+                        1 if group_id in normalized_blocked_groups else 0,
+                        now,
+                    ),
+                )
+
+            conn.execute("DELETE FROM admins")
+            for admin_id in normalized_admins:
+                conn.execute(
+                    "INSERT INTO admins(user_id, created_at) VALUES (?, ?)",
+                    (admin_id, now),
+                )
+
+            self.audit(
+                actor_id,
+                "set_core_config",
+                "policy",
+                {
+                    "mode": mode,
+                    "enabled_groups": normalized_enabled_groups,
+                    "blocked_groups": normalized_blocked_groups,
+                    "admins": normalized_admins,
+                    "trigger": {
+                        "mention": trigger_mention,
+                        "prefixes": normalized_prefixes,
+                        "direct_trigger_percent": direct_trigger_percent,
+                    },
+                    "limits": {
+                        "per_group_seconds": per_group_seconds,
+                        "per_user_per_minute": per_user_per_minute,
+                    },
+                },
+                conn=conn,
+            )
+
     def get_setting(self, key: str, default: str) -> str:
         with self._connect() as conn:
             row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
@@ -332,16 +415,7 @@ class PolicyStore:
             return prefixes or ["~"]
 
     def set_prefixes(self, prefixes: list[str], actor_id: int) -> None:
-        normalized = []
-        seen = set()
-        for prefix in prefixes:
-            value = prefix.strip()
-            if not value or value in seen:
-                continue
-            seen.add(value)
-            normalized.append(value)
-        if not normalized:
-            normalized = ["~"]
+        normalized = self._normalize_prefixes(prefixes)
 
         with self._connect() as conn:
             conn.execute("DELETE FROM trigger_prefixes")
@@ -884,6 +958,30 @@ class PolicyStore:
             "enabled": 1 if enabled else 0,
             "source": "custom",
         }
+
+    def _normalize_prefixes(self, prefixes: list[str]) -> list[str]:
+        normalized = []
+        seen = set()
+        for prefix in prefixes:
+            value = str(prefix).strip()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            normalized.append(value)
+        return normalized or ["~"]
+
+    def _normalize_int_ids(self, values: list[int], field_name: str) -> list[int]:
+        normalized = []
+        seen = set()
+        for value in values:
+            item = int(value)
+            if item <= 0:
+                raise ValueError(f"{field_name} must contain positive integers")
+            if item in seen:
+                continue
+            seen.add(item)
+            normalized.append(item)
+        return normalized
 
     def _upsert_menu_recipe(self, conn: sqlite3.Connection, recipe: dict[str, Any]) -> None:
         now = time.time()

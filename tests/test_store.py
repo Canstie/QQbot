@@ -72,6 +72,38 @@ def test_direct_trigger_percent_is_clamped_and_persisted(tmp_path):
     assert reopened.get_direct_trigger_percent() == 25.0
 
 
+def test_core_config_replaces_policy_snapshot(tmp_path):
+    db_path = tmp_path / "policy.sqlite3"
+    store = PolicyStore(db_path)
+    store.initialize(AppSettings(db_path=db_path, admins=(10000,)))
+
+    store.set_core_config(
+        mode="blocklist",
+        enabled_groups=[123, 123, 456],
+        blocked_groups=[789],
+        admins=[20000],
+        trigger_mention=False,
+        prefixes=["!", "!", "/"],
+        direct_trigger_percent=35,
+        per_group_seconds=1.5,
+        per_user_per_minute=9,
+        actor_id=10000,
+    )
+
+    snapshot = store.snapshot()
+
+    assert snapshot["mode"] == "blocklist"
+    assert snapshot["enabled_groups"] == [123, 456]
+    assert snapshot["blocked_groups"] == [789]
+    assert snapshot["admins"] == [20000]
+    assert snapshot["trigger"] == {
+        "mention": False,
+        "prefixes": ["!", "/"],
+        "direct_trigger_percent": 35.0,
+    }
+    assert snapshot["limits"] == {"per_group_seconds": 1.5, "per_user_per_minute": 9}
+
+
 def test_empty_prefixes_default_to_tilde(tmp_path):
     db_path = tmp_path / "policy.sqlite3"
     store = PolicyStore(db_path)
