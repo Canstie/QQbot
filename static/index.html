@@ -120,10 +120,18 @@
           <h3>前缀触发应答</h3>
           <button class="secondary" data-add-rule="rules">添加</button>
         </div>
+        <div class="rule-toolbar">
+          <label>搜索前缀规则 <input id="rulesFilter" data-rule-filter="rules" placeholder="按触发内容或回复内容筛选"></label>
+          <span id="rulesMeta" class="hint">0 条</span>
+        </div>
         <div id="rulesList" class="rule-list"></div>
         <div class="section-head subhead">
           <h3>免前缀关键词应答</h3>
           <button class="secondary" data-add-rule="direct_rules">添加</button>
+        </div>
+        <div class="rule-toolbar">
+          <label>搜索免前缀规则 <input id="directRulesFilter" data-rule-filter="direct_rules" placeholder="按关键词或回复内容筛选"></label>
+          <span id="directRulesMeta" class="hint">0 条</span>
         </div>
         <div id="directRulesList" class="rule-list"></div>
         <div id="editorNotice" class="notice">加载中</div>

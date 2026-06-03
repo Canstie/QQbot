@@ -3,6 +3,7 @@ let luaCommands = [];
 let currentLuaCommand = "";
 let menus = [];
 let restaurants = [];
+let ruleFilters = { rules: "", direct_rules: "" };
 
 const ruleTypes = [
   ["exact", "完全匹配"],
@@ -75,14 +76,31 @@ function showTab(name) {
 
 function renderRules(kind) {
   const listId = kind === "rules" ? "rulesList" : "directRulesList";
+  const metaId = kind === "rules" ? "rulesMeta" : "directRulesMeta";
   const list = byId(listId);
   const rules = replyConfig[kind] || [];
+  const filter = (ruleFilters[kind] || "").trim().toLowerCase();
+  const visibleRules = rules
+    .map((rule, index) => ({ rule, index }))
+    .filter(({ rule }) => {
+      if (!filter) return true;
+      return [rule.type, rule.pattern, rule.reply]
+        .some((value) => String(value || "").toLowerCase().includes(filter));
+    });
+  byId(metaId).textContent = filter
+    ? `显示 ${visibleRules.length} / ${rules.length} 条`
+    : `${rules.length} 条`;
   if (!rules.length) {
     list.innerHTML = '<div class="empty-list">暂无规则</div>';
     return;
   }
-  list.innerHTML = rules.map((rule, index) => `
+  if (!visibleRules.length) {
+    list.innerHTML = '<div class="empty-list">没有匹配的规则</div>';
+    return;
+  }
+  list.innerHTML = visibleRules.map(({ rule, index }) => `
     <div class="rule-card">
+      <div class="rule-index">#${index + 1}</div>
       <label>匹配方式
         <select data-kind="${kind}" data-index="${index}" data-field="type">
           ${ruleTypes.map(([value, label]) => `<option value="${value}" ${rule.type === value ? "selected" : ""}>${label}</option>`).join("")}
@@ -113,8 +131,13 @@ function updateRuleFromInput(event) {
 
 function addRule(kind) {
   replyConfig[kind] = replyConfig[kind] || [];
-  replyConfig[kind].push({ type: "contains", pattern: "", reply: "" });
+  ruleFilters[kind] = "";
+  const filterId = kind === "rules" ? "rulesFilter" : "directRulesFilter";
+  byId(filterId).value = "";
+  replyConfig[kind].unshift({ type: "contains", pattern: "", reply: "" });
   renderRules(kind);
+  const listId = kind === "rules" ? "rulesList" : "directRulesList";
+  byId(listId).scrollTop = 0;
 }
 
 function removeRule(kind, index) {
@@ -556,6 +579,12 @@ document.addEventListener("click", async (event) => {
 
 byId("luaImport").addEventListener("change", (event) => importLuaFile(event.target.files[0]));
 byId("menuSearch").addEventListener("input", () => loadMenus());
+document.querySelectorAll("[data-rule-filter]").forEach((node) => {
+  node.addEventListener("input", () => {
+    ruleFilters[node.dataset.ruleFilter] = node.value;
+    renderRules(node.dataset.ruleFilter);
+  });
+});
 
 refresh();
 loadReplies();

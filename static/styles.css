@@ -170,15 +170,35 @@ pre {
 }
 
 .rule-list, .item-list, .lua-command-list { display: grid; gap: 10px; margin-top: 12px; }
+.rule-list {
+  max-height: 560px;
+  overflow: auto;
+  padding-right: 4px;
+}
+.rule-toolbar {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  margin-top: -4px;
+}
 .rule-card {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--soft);
   padding: 12px;
   display: grid;
-  grid-template-columns: 140px minmax(160px, 1fr) minmax(220px, 1.4fr) auto;
+  grid-template-columns: 48px 140px minmax(160px, 1fr) minmax(220px, 1.4fr) auto;
   gap: 10px;
   align-items: end;
+}
+.rule-index {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
 }
 .empty-list { border: 1px dashed #c8d3e1; border-radius: 8px; padding: 18px; color: var(--muted); background: #fff; }
 
@@ -242,7 +262,7 @@ pre {
   main { width: min(100% - 20px, 1280px); padding-top: 16px; }
   .topbar { flex-direction: column; }
   .top-actions, .top-actions label { width: 100%; }
-  .grid.two, .lua-grid, .rule-card, .item-card { grid-template-columns: 1fr; }
+  .grid.two, .lua-grid, .rule-card, .item-card, .rule-toolbar { grid-template-columns: 1fr; }
   .metrics { grid-template-columns: 1fr; }
   .code-editor { min-height: 420px; }
   button { flex: 1 1 auto; }

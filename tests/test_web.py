@@ -51,6 +51,8 @@ def test_index_serves_static_frontend(tmp_path, monkeypatch):
     assert "static/app.js" in response.text
     assert "luaImport" in response.text
     assert "luaCommandList" in response.text
+    assert "directRulesFilter" in response.text
+    assert "rulesMeta" in response.text
 
 
 def test_replies_api_still_accepts_raw_json(tmp_path, monkeypatch):
