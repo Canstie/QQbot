@@ -45,6 +45,11 @@
             </label>
             <p class="hint">多个前缀用英文逗号分隔；留空会自动使用 ~。</p>
             <button data-action="save-prefixes">保存前缀</button>
+            <label>免前缀关键词触发概率
+              <input id="directTriggerPercent" type="number" min="0" max="100" step="1" placeholder="10">
+            </label>
+            <p class="hint">默认 10%；只影响免前缀关键词和免前缀 Lua，前缀指令、@ 触发不受影响。</p>
+            <button data-action="save-direct-trigger-percent">保存概率</button>
           </div>
         </section>
 

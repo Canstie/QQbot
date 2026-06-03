@@ -54,6 +54,7 @@ class AppSettings:
     policy_mode: str = "allowlist"
     trigger_mention: bool = True
     trigger_prefixes: tuple[str, ...] = ("~", "#bot")
+    direct_trigger_percent: float = 10.0
     per_group_seconds: float = 5.0
     per_user_per_minute: int = 5
     lua_enabled: bool = True
@@ -84,6 +85,7 @@ class AppSettings:
             policy_mode=env.get("QQBOT_POLICY_MODE", "allowlist").strip() or "allowlist",
             trigger_mention=_env_bool(env.get("QQBOT_TRIGGER_MENTION"), True),
             trigger_prefixes=_split_strings(env.get("QQBOT_TRIGGER_PREFIXES"), ("~", "#bot")),
+            direct_trigger_percent=_env_float(env.get("QQBOT_DIRECT_TRIGGER_PERCENT"), 10.0),
             per_group_seconds=_env_float(env.get("QQBOT_PER_GROUP_SECONDS"), 5.0),
             per_user_per_minute=_env_int(env.get("QQBOT_PER_USER_PER_MINUTE"), 5),
             lua_enabled=_env_bool(env.get("QQBOT_LUA_ENABLED"), True),
@@ -105,6 +107,8 @@ class AppSettings:
             raise ValueError("QQBOT_POLICY_MODE must be allowlist or blocklist")
         if self.per_group_seconds < 0:
             raise ValueError("QQBOT_PER_GROUP_SECONDS must be >= 0")
+        if self.direct_trigger_percent < 0 or self.direct_trigger_percent > 100:
+            raise ValueError("QQBOT_DIRECT_TRIGGER_PERCENT must be between 0 and 100")
         if self.per_user_per_minute < 0:
             raise ValueError("QQBOT_PER_USER_PER_MINUTE must be >= 0")
         if self.lua_timeout_seconds <= 0:

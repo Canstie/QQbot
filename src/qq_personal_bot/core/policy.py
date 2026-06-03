@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import time
 from collections import defaultdict, deque
 from collections.abc import Callable
@@ -76,6 +77,9 @@ class PolicyEngine:
             return PolicyDecision(False, reason)
         trigger_text, handler = trigger
 
+        if handler in {"direct", "lua"} and not self._allow_direct_trigger(event):
+            return PolicyDecision(False, "direct_trigger_skipped")
+
         if is_self_message:
             return PolicyDecision(True, "ok", handler=handler, normalized_message=trigger_text)
 
@@ -88,6 +92,25 @@ class PolicyEngine:
             return PolicyDecision(False, reason)
 
         return PolicyDecision(True, "ok", handler=handler, normalized_message=trigger_text)
+
+    def _allow_direct_trigger(self, event: MessageEvent) -> bool:
+        percent = self.store.get_direct_trigger_percent()
+        if percent <= 0:
+            return False
+        if percent >= 100:
+            return True
+
+        source = "|".join(
+            [
+                str(event.group_id),
+                str(event.user_id),
+                str(event.message_id),
+                str(event.timestamp),
+                event.raw_message.strip(),
+            ]
+        )
+        bucket = int(hashlib.sha256(source.encode("utf-8")).hexdigest()[:8], 16) % 10000
+        return bucket < int(percent * 100)
 
     def _extract_self_trigger_text(self, event: MessageEvent) -> tuple[str, str] | None:
         raw_message = event.raw_message.strip()

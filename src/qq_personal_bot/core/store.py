@@ -121,6 +121,7 @@ class PolicyStore:
         defaults = {
             "policy_mode": settings.policy_mode,
             "trigger_mention": "true" if settings.trigger_mention else "false",
+            "direct_trigger_percent": str(settings.direct_trigger_percent),
             "per_group_seconds": str(settings.per_group_seconds),
             "per_user_per_minute": str(settings.per_user_per_minute),
         }
@@ -176,6 +177,27 @@ class PolicyStore:
         with self._connect() as conn:
             self.set_setting("trigger_mention", value, conn=conn)
             self.audit(actor_id, "set_trigger_mention", "policy", {"enabled": enabled}, conn=conn)
+
+    def get_direct_trigger_percent(self) -> float:
+        try:
+            value = float(self.get_setting("direct_trigger_percent", "10"))
+        except ValueError:
+            return 10.0
+        return max(0.0, min(value, 100.0))
+
+    def set_direct_trigger_percent(self, percent: float, actor_id: int) -> None:
+        percent = float(percent)
+        if percent < 0 or percent > 100:
+            raise ValueError("direct trigger percent must be between 0 and 100")
+        with self._connect() as conn:
+            self.set_setting("direct_trigger_percent", str(percent), conn=conn)
+            self.audit(
+                actor_id,
+                "set_direct_trigger_percent",
+                "policy",
+                {"percent": percent},
+                conn=conn,
+            )
 
     def get_per_group_seconds(self) -> float:
         return float(self.get_setting("per_group_seconds", "5"))
@@ -349,6 +371,7 @@ class PolicyStore:
             "trigger": {
                 "mention": self.get_trigger_mention(),
                 "prefixes": self.prefixes(),
+                "direct_trigger_percent": self.get_direct_trigger_percent(),
             },
             "limits": {
                 "per_group_seconds": self.get_per_group_seconds(),

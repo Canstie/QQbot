@@ -56,6 +56,20 @@ def test_snapshot_shape(tmp_path):
     assert snapshot["admins"] == [10000]
     assert snapshot["trigger"]["mention"] is True
     assert "~" in snapshot["trigger"]["prefixes"]
+    assert snapshot["trigger"]["direct_trigger_percent"] == 10.0
+
+
+def test_direct_trigger_percent_is_clamped_and_persisted(tmp_path):
+    db_path = tmp_path / "policy.sqlite3"
+    store = PolicyStore(db_path)
+    store.initialize(AppSettings(db_path=db_path, admins=(10000,)))
+
+    store.set_direct_trigger_percent(25, actor_id=10000)
+
+    reopened = PolicyStore(db_path)
+    reopened.initialize(AppSettings(db_path=db_path, admins=(10000,)))
+
+    assert reopened.get_direct_trigger_percent() == 25.0
 
 
 def test_empty_prefixes_default_to_tilde(tmp_path):

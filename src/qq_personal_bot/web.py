@@ -34,6 +34,10 @@ class PrefixesPayload(BaseModel):
     prefixes: list[str]
 
 
+class DirectTriggerPercentPayload(BaseModel):
+    percent: float
+
+
 class LuaPayload(BaseModel):
     content: str
 
@@ -84,6 +88,18 @@ def create_app():
     async def set_prefixes(payload: PrefixesPayload, request: Request) -> dict:
         require_token(request)
         get_store().set_prefixes(payload.prefixes, actor_id=0)
+        return get_store().snapshot()
+
+    @app.post("/api/policy/direct-trigger-percent")
+    async def set_direct_trigger_percent(
+        payload: DirectTriggerPercentPayload,
+        request: Request,
+    ) -> dict:
+        require_token(request)
+        try:
+            get_store().set_direct_trigger_percent(payload.percent, actor_id=0)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return get_store().snapshot()
 
     @app.get("/api/replies")

@@ -106,6 +106,24 @@ def test_prefixes_api_defaults_empty_to_tilde(tmp_path, monkeypatch):
     assert response.json()["trigger"]["prefixes"] == ["~"]
 
 
+def test_direct_trigger_percent_api_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("QQBOT_WEB_TOKEN", raising=False)
+    monkeypatch.setenv("QQBOT_DB_PATH", str(tmp_path / "policy.sqlite3"))
+    reset_runtime()
+    client = TestClient(create_app())
+
+    response = client.post("/api/policy/direct-trigger-percent", json={"percent": 35})
+
+    assert response.status_code == 200
+    assert response.json()["trigger"]["direct_trigger_percent"] == 35.0
+
+    response = client.post("/api/policy/direct-trigger-percent", json={"percent": 101})
+
+    assert response.status_code == 400
+    assert "between 0 and 100" in response.json()["detail"]
+
+
 def test_lua_api_returns_example_when_script_missing(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("QQBOT_WEB_TOKEN", raising=False)

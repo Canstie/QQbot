@@ -120,6 +120,7 @@ async function refresh() {
     byId("connectionStatus").textContent = "在线";
     if (data.mode) byId("mode").value = data.mode;
     byId("prefixesInput").value = (data.trigger?.prefixes || ["~"]).join(",");
+    byId("directTriggerPercent").value = data.trigger?.direct_trigger_percent ?? 10;
   } catch (error) {
     byId("connectionStatus").textContent = "异常";
     byId("state").textContent = error.message;
@@ -141,6 +142,16 @@ async function savePrefixes() {
     method: "POST",
     headers: headers(),
     body: JSON.stringify({ prefixes }),
+  });
+  await refresh();
+}
+
+async function saveDirectTriggerPercent() {
+  const percent = Number(byId("directTriggerPercent").value);
+  await requestJson("./api/policy/direct-trigger-percent", {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify({ percent }),
   });
   await refresh();
 }
@@ -473,6 +484,7 @@ document.addEventListener("click", async (event) => {
     refresh,
     "set-mode": setMode,
     "save-prefixes": savePrefixes,
+    "save-direct-trigger-percent": saveDirectTriggerPercent,
     "load-replies": loadReplies,
     "save-replies": saveReplies,
     "load-lua": loadLuaCommands,

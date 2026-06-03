@@ -97,6 +97,7 @@ def test_direct_reply_rule_allows_without_prefix(tmp_path, monkeypatch):
     store = make_store(tmp_path)
     store.set_group_enabled(123, True, actor_id=10000)
     store.set_limits(0, 0, actor_id=10000)
+    store.set_direct_trigger_percent(100, actor_id=10000)
     engine = PolicyEngine(store, RateLimiter(0, 0))
 
     decision = engine.evaluate(make_event(raw_message="hello keyword"), self_id=99999)
@@ -129,6 +130,7 @@ def test_direct_lua_rule_routes_without_prefix(tmp_path, monkeypatch):
     store = make_store(tmp_path)
     store.set_group_enabled(123, True, actor_id=10000)
     store.set_limits(0, 0, actor_id=10000)
+    store.set_direct_trigger_percent(100, actor_id=10000)
     engine = PolicyEngine(store, RateLimiter(0, 0))
 
     exact = engine.evaluate(make_event(raw_message="吃什么"), self_id=99999)
@@ -147,6 +149,34 @@ def test_direct_lua_rule_routes_without_prefix(tmp_path, monkeypatch):
     assert csm.normalized_message == "今日菜单"
     assert not should_ignore.allowed
     assert should_ignore.reason == "no_trigger"
+
+
+def test_direct_trigger_percent_zero_skips_direct_reply_and_lua(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "replies.json").write_text(
+        json.dumps(
+            {
+                "direct_rules": [{"type": "contains", "pattern": "keyword", "reply": "direct"}],
+                "direct_lua_rules": [{"type": "exact", "pattern": "csm", "command": "今日菜单"}],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    reload_reply_config()
+    store = make_store(tmp_path)
+    store.set_group_enabled(123, True, actor_id=10000)
+    store.set_limits(0, 0, actor_id=10000)
+    store.set_direct_trigger_percent(0, actor_id=10000)
+    engine = PolicyEngine(store, RateLimiter(0, 0))
+
+    direct = engine.evaluate(make_event(raw_message="hello keyword"), self_id=99999)
+    lua = engine.evaluate(make_event(raw_message="csm"), self_id=99999)
+
+    assert not direct.allowed
+    assert direct.reason == "direct_trigger_skipped"
+    assert not lua.allowed
+    assert lua.reason == "direct_trigger_skipped"
 
 
 def test_prefix_trigger_takes_priority_over_direct_rule(tmp_path, monkeypatch):
@@ -214,6 +244,7 @@ def test_self_message_uses_direct_lua_rules(tmp_path, monkeypatch):
     reload_reply_config()
     store = make_store(tmp_path)
     store.set_group_enabled(123, True, actor_id=10000)
+    store.set_direct_trigger_percent(100, actor_id=10000)
     engine = PolicyEngine(store, RateLimiter(0, 0))
 
     csm = engine.evaluate(make_event(user_id=99999, raw_message="csm"), self_id=99999)
@@ -237,6 +268,7 @@ def test_self_message_uses_direct_lua_rules(tmp_path, monkeypatch):
 def test_self_mention_is_ignored(tmp_path):
     store = make_store(tmp_path)
     store.set_group_enabled(123, True, actor_id=10000)
+    store.set_direct_trigger_percent(100, actor_id=10000)
     engine = PolicyEngine(store, RateLimiter(0, 0))
 
     decision = engine.evaluate(
