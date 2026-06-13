@@ -14,8 +14,10 @@ from nonebot import logger
 from nonebot.adapters.onebot.v11 import Bot
 
 from qq_personal_bot.core.models import MessageEvent, PolicyDecision
-from qq_personal_bot.menu_recipes import fetch_jisu_recipe, is_supported_image_file
+from qq_personal_bot.menu_recipes import cache_image, fetch_jisu_recipe, is_supported_image_file
 from qq_personal_bot.runtime import get_settings, get_store
+
+_PENDING_LUA_NAMESPACE = "lua_pending_command"
 
 
 @dataclass(frozen=True)
@@ -122,6 +124,14 @@ class LuaApi:
     def delete_state(self, key: str, namespace: str | None = None) -> bool:
         return get_store().delete_lua_state(self._state_namespace(namespace), str(key))
 
+    def set_pending_command(self, command: str | None = None) -> bool:
+        pending_command = validate_lua_command(str(command or self._command))
+        get_store().set_lua_state(_PENDING_LUA_NAMESPACE, _pending_lua_key(self._event), pending_command)
+        return True
+
+    def clear_pending_command(self) -> bool:
+        return get_store().delete_lua_state(_PENDING_LUA_NAMESPACE, _pending_lua_key(self._event))
+
     def url_encode(self, value: str) -> str:
         return quote(str(value), safe="")
 
@@ -183,6 +193,51 @@ class LuaApi:
             return None
         if not is_supported_image_file(image_path):
             logger.warning(f"Lua: skipped unsupported local image file: {image_path}")
+            return None
+        return f"[CQ:image,file={image_path.as_uri()}]"
+
+    def save_classic_image(self, group_id: int, image_source: str, image_id: str | None = None) -> str | None:
+        group_id = int(group_id)
+        if group_id <= 0:
+            raise ValueError("group_id must be positive")
+        recipe_id = _safe_image_id(
+            image_id
+            or f"{int(self._event.timestamp or 0)}_{self._event.user_id}_{self._event.message_id}"
+        )
+        relpath = cache_image(
+            image_source,
+            recipe_id=recipe_id,
+            image_dir=get_settings().classics_image_dir / str(group_id),
+        )
+        return f"{group_id}/{relpath}" if relpath else None
+
+    def pick_classic_image(self, group_id: int, seed: int) -> str | None:
+        group_id = int(group_id)
+        group_dir = get_settings().classics_image_dir / str(group_id)
+        if not group_dir.is_dir():
+            return None
+        images = [
+            path
+            for path in sorted(group_dir.iterdir())
+            if path.is_file() and is_supported_image_file(path)
+        ]
+        if not images:
+            return None
+        picked = images[abs(int(seed)) % len(images)]
+        return f"{group_id}/{picked.name}"
+
+    def classic_image(self, relpath: str) -> str | None:
+        relative_path = str(relpath or "").strip()
+        if not relative_path:
+            return None
+
+        root = get_settings().classics_image_dir.resolve(strict=False)
+        image_path = (root / relative_path).resolve(strict=False)
+        try:
+            image_path.relative_to(root)
+        except ValueError:
+            return None
+        if not image_path.is_file() or not is_supported_image_file(image_path):
             return None
         return f"[CQ:image,file={image_path.as_uri()}]"
 
@@ -380,6 +435,35 @@ def list_lua_command_scripts(lua_dir: Path | None = None) -> list[LuaCommandScri
             )
         )
     return scripts
+
+
+def pending_lua_command(event: MessageEvent) -> str | None:
+    if event.group_id is None:
+        return None
+    command = get_store().get_lua_state(_PENDING_LUA_NAMESPACE, _pending_lua_key(event))
+    if not command:
+        return None
+    try:
+        command = validate_lua_command(command)
+        script_path = lua_command_path(command)
+    except ValueError:
+        get_store().delete_lua_state(_PENDING_LUA_NAMESPACE, _pending_lua_key(event))
+        return None
+    if not script_path.is_file():
+        get_store().delete_lua_state(_PENDING_LUA_NAMESPACE, _pending_lua_key(event))
+        return None
+    return command
+
+
+def _pending_lua_key(event: MessageEvent) -> str:
+    if event.group_id is None:
+        raise ValueError("pending Lua commands require a group message")
+    return f"{event.group_id}:{event.user_id}"
+
+
+def _safe_image_id(value: str) -> str:
+    safe = "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in str(value))
+    return safe[:80].strip("_") or "image"
 
 
 def _sandbox(lua: Any) -> None:

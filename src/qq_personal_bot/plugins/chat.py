@@ -6,7 +6,8 @@ from nonebot import logger, on, on_message
 from nonebot.adapters.onebot.v11 import Bot, Event, GroupMessageEvent, Message, MessageSegment
 
 from qq_personal_bot.adapters.onebot import onebot_to_internal
-from qq_personal_bot.lua_runner import run_lua_message
+from qq_personal_bot.core.models import PolicyDecision
+from qq_personal_bot.lua_runner import pending_lua_command, run_lua_message
 from qq_personal_bot.plugins.custom_flows import handle_custom_flow
 from qq_personal_bot.replies import build_reply
 from qq_personal_bot.runtime import get_policy_engine
@@ -50,6 +51,29 @@ async def _handle_onebot_message(
     explicit_group_send: bool = False,
 ) -> None:
     internal_event = onebot_to_internal(event, self_id=bot.self_id)
+    pending_command = pending_lua_command(internal_event)
+    if pending_command is not None:
+        lua_result = await run_lua_message(
+            bot,
+            internal_event,
+            PolicyDecision(
+                True,
+                "ok",
+                handler="lua",
+                normalized_message=pending_command,
+            ),
+        )
+        if lua_result.reply:
+            await _finish_with_response(
+                matcher,
+                bot,
+                event,
+                _build_lua_response(lua_result.reply, event, quote=lua_result.quote),
+                explicit_group_send=explicit_group_send,
+            )
+        if lua_result.stop:
+            return
+
     custom_flow_reply = handle_custom_flow(internal_event)
     if custom_flow_reply:
         await _finish_with_response(

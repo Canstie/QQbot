@@ -192,6 +192,8 @@ scripts/lua/抽群老婆.lua
 - `~添加菜单`：群内两步添加自定义菜单，先发送菜单名，再发送图片；所有已启用群成员可用。
 - `~添加饭店`：群内添加饭店，先发送饭店名，再连续发送招牌菜，发送 `完成` 保存，发送 `取消` 退出。
 - `~今日饭店`：从当前群已添加并启用的饭店中随机抽取一个。
+- `~存典`：提示发送图片后，把发起人的下一张图片保存到 `data/classics/<群号>`；发送 `取消` 可退出。
+- `~爆典`：从当前群已保存的典图里随机发出一张。
 - `~群排行` 或 `~群排行 摸鱼王`：每天按主题随机生成群成员 TOP3。
 
 Web 管理页按标签页整理为策略、回复规则、Lua、菜单、饭店。策略页可直接修改核心配置 JSON 对应字段，包括模式、启用/屏蔽群、管理员、@ 触发、前缀、免前缀概率、群限流秒数和用户每分钟限流；菜单页可新增/编辑/删除带图菜单并清理无图 HowToCook；饭店页可新增/编辑/删除饭店和招牌菜。
@@ -248,6 +250,10 @@ end
 - `api.json_encode(value)`：把 Lua table 编码为 JSON 字符串，便于保存到状态
 - `api.json_decode(value)`：把 JSON 字符串解码为 Lua table
 - `api.call(action, params)`：调用其他 OneBot API
+- `api.set_pending_command(command)` / `api.clear_pending_command()`：让同一用户下一条群消息继续交给指定 Lua 指令处理
+- `api.save_classic_image(group_id, image_source, image_id)`：保存典图到 `data/classics/<group_id>`
+- `api.pick_classic_image(group_id, seed)`：从当前群典图库里选一张图片路径
+- `api.classic_image(relpath)`：把典图相对路径转成可发送的 CQ 图片
 
 ## 测试
 

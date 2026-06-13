@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from qq_personal_bot.core.models import MessageEvent, PolicyDecision
-from qq_personal_bot.lua_runner import run_lua_message
+from qq_personal_bot.lua_runner import pending_lua_command, run_lua_message
 from qq_personal_bot.runtime import reset_runtime
 
 
@@ -714,6 +714,49 @@ async def test_builtin_change_wife_reply_uses_avatar_and_name_only(tmp_path, mon
     assert result.reply.startswith("你今天亲爱的群老婆是\n[CQ:image,file=https://q1.qlogo.cn/")
     assert any(name in result.reply for name in {"Alpha", "BetaCard", "Gamma"})
     assert "（" not in result.reply
+
+
+@pytest.mark.asyncio
+async def test_builtin_store_and_blast_classic_lua(tmp_path, monkeypatch):
+    monkeypatch.setenv("QQBOT_CLASSICS_IMAGE_DIR", str(tmp_path / "classics"))
+    configure_builtin_lua_dir(tmp_path, monkeypatch)
+    image_path = tmp_path / "classic.gif"
+    image_path.write_bytes(
+        b"GIF89a\x01\x00\x01\x00\x80\x00\x00\xff\xff\xff\x00\x00\x00"
+        b"!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00"
+        b"\x00\x02\x02D\x01\x00;"
+    )
+
+    start = await run_lua_message(
+        RichFakeBot(),
+        make_event(raw_message="~存典"),
+        PolicyDecision(True, "ok", handler="default", normalized_message="存典"),
+    )
+    image_event = make_event(
+        raw_message="[CQ:image,file=classic.gif]",
+        segments=({"type": "image", "data": {"file": str(image_path)}},),
+    )
+    assert start.reply == "请发出你要存的典或发送'取消'以取消"
+    assert pending_lua_command(image_event) == "存典"
+
+    saved = await run_lua_message(
+        RichFakeBot(),
+        image_event,
+        PolicyDecision(True, "ok", handler="lua", normalized_message="存典"),
+    )
+    blasted = await run_lua_message(
+        RichFakeBot(),
+        make_event(raw_message="~爆典", message_id=2),
+        PolicyDecision(True, "ok", handler="default", normalized_message="爆典"),
+    )
+
+    saved_images = list((tmp_path / "classics" / "123").iterdir())
+    assert saved.reply == "存典成功"
+    assert pending_lua_command(image_event) is None
+    assert len(saved_images) == 1
+    assert blasted.reply is not None
+    assert blasted.reply.startswith("[CQ:image,file=file:///")
+    assert saved_images[0].name in blasted.reply
 
 
 @pytest.mark.asyncio

@@ -63,6 +63,7 @@ class AppSettings:
     lua_timeout_seconds: float = 3.0
     menu_seed_path: Path = Path("data/recipes_seed.jsonl")
     menu_image_dir: Path = Path("data/menu_images")
+    classics_image_dir: Path = Path("data/classics")
     menu_provider: str = "auto"
     jisu_recipe_appkey: str = ""
     web_token: str | None = None
@@ -94,6 +95,7 @@ class AppSettings:
             lua_timeout_seconds=_env_float(env.get("QQBOT_LUA_TIMEOUT_SECONDS"), 3.0),
             menu_seed_path=Path(env.get("QQBOT_MENU_SEED_PATH", "data/recipes_seed.jsonl")),
             menu_image_dir=Path(env.get("QQBOT_MENU_IMAGE_DIR", "data/menu_images")),
+            classics_image_dir=Path(env.get("QQBOT_CLASSICS_IMAGE_DIR", "data/classics")),
             menu_provider=env.get("QQBOT_MENU_PROVIDER", "auto").strip().lower() or "auto",
             jisu_recipe_appkey=env.get("QQBOT_JISU_RECIPE_APPKEY", "").strip(),
             web_token=web_token,
