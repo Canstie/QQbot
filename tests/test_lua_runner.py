@@ -3,12 +3,14 @@
 import base64
 import io
 import json
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 from PIL import Image
 
+from qq_personal_bot import lua_runner
 from qq_personal_bot.core.models import MessageEvent, PolicyDecision
 from qq_personal_bot.lua_runner import pending_lua_command, run_lua_message
 from qq_personal_bot.runtime import get_store, reset_runtime
@@ -932,6 +934,33 @@ async def test_builtin_image_symmetry_command_preserves_animated_gif(tmp_path, m
         frame1 = mirrored.convert("RGBA")
         assert frame1.getpixel((3, 0)) == (0, 0, 255, 255)
         assert frame1.getpixel((2, 0)) == (255, 255, 0, 255)
+
+
+@pytest.mark.asyncio
+async def test_image_symmetry_timeout_stops_without_json_fallback(tmp_path, monkeypatch):
+    lua_dir = configure_lua_dir(tmp_path, monkeypatch)
+    (lua_dir / "左对称.lua").write_text(
+        'function on_command(event, api)\n  return "should not run"\nend\n',
+        encoding="utf-8",
+    )
+
+    def slow_lua(*args, **kwargs):
+        time.sleep(0.7)
+        return lua_runner.LuaMessageResult(reply="late")
+
+    monkeypatch.setattr(lua_runner, "_command_timeout_seconds", lambda command, default: 0.01)
+    monkeypatch.setattr(lua_runner, "_run_lua_message_sync", slow_lua)
+
+    result = await run_lua_message(
+        RichFakeBot(),
+        make_event(raw_message="~左对称"),
+        PolicyDecision(True, "ok", handler="default", normalized_message="左对称"),
+    )
+
+    assert result.stop is True
+    assert result.quote is True
+    assert result.reply is not None
+    assert "处理超时" in result.reply
 
 
 @pytest.mark.asyncio

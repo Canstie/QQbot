@@ -27,6 +27,8 @@ from qq_personal_bot.runtime import get_settings, get_store
 
 _PENDING_LUA_NAMESPACE = "lua_pending_command"
 _CHINA_TZ = timezone(timedelta(hours=8))
+_MIRROR_COMMANDS = frozenset({"上对称", "下对称", "左对称", "右对称"})
+_MIRROR_TIMEOUT_SECONDS = 60.0
 
 
 @dataclass(frozen=True)
@@ -324,6 +326,7 @@ async def run_lua_message(
         return LuaMessageResult()
 
     loop = asyncio.get_running_loop()
+    command_timeout_seconds = _command_timeout_seconds(command, settings.lua_timeout_seconds)
     try:
         return await asyncio.wait_for(
             asyncio.to_thread(
@@ -335,15 +338,21 @@ async def run_lua_message(
                 command,
                 args,
                 loop,
-                settings.lua_timeout_seconds,
+                command_timeout_seconds,
             ),
-            timeout=settings.lua_timeout_seconds + 0.5,
+            timeout=command_timeout_seconds + 0.5,
         )
     except asyncio.TimeoutError:
         logger.warning(
             f"Lua: command {command!r} timed out after "
-            f"{settings.lua_timeout_seconds + 0.5:.1f}s"
+            f"{command_timeout_seconds + 0.5:.1f}s"
         )
+        if command in _MIRROR_COMMANDS:
+            return LuaMessageResult(
+                reply="这张图片或 GIF 帧数太多，处理超时了。可以换一张小一点的再试。",
+                stop=True,
+                quote=True,
+            )
         return LuaMessageResult()
     except Exception:
         logger.warning(
@@ -351,6 +360,12 @@ async def run_lua_message(
             f"{traceback.format_exc()}"
         )
         return LuaMessageResult()
+
+
+def _command_timeout_seconds(command: str, default_timeout_seconds: float) -> float:
+    if command in _MIRROR_COMMANDS:
+        return max(float(default_timeout_seconds), _MIRROR_TIMEOUT_SECONDS)
+    return float(default_timeout_seconds)
 
 
 def _run_lua_message_sync(
@@ -640,14 +655,15 @@ def _mirror_image_file(image_path: Path, direction: str) -> bytes:
 
     with Image.open(image_path) as image:
         if image.format == "GIF":
-            frames = [_mirror_image_frame(frame.convert("RGBA"), direction) for frame in ImageSequence.Iterator(image)]
+            frames = []
+            durations = []
+            default_duration = int(image.info.get("duration", 100) or 100)
+            for frame in ImageSequence.Iterator(image):
+                durations.append(int(frame.info.get("duration", default_duration) or default_duration))
+                frames.append(_mirror_image_frame(frame.convert("RGBA"), direction))
             if not frames:
                 raise ValueError("gif has no frames")
 
-            durations = [
-                int(frame.info.get("duration", image.info.get("duration", 100)) or 100)
-                for frame in ImageSequence.Iterator(image)
-            ]
             output = io.BytesIO()
             frames[0].save(
                 output,
