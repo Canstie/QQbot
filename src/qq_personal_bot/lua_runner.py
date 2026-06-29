@@ -636,10 +636,41 @@ def _mirror_image_source(image_source: str, direction: str, timeout_seconds: flo
 
 
 def _mirror_image_file(image_path: Path, direction: str) -> bytes:
-    from PIL import Image, ImageOps
+    from PIL import Image, ImageSequence
 
     with Image.open(image_path) as image:
-        result = image.convert("RGBA")
+        if image.format == "GIF":
+            frames = [_mirror_image_frame(frame.convert("RGBA"), direction) for frame in ImageSequence.Iterator(image)]
+            if not frames:
+                raise ValueError("gif has no frames")
+
+            durations = [
+                int(frame.info.get("duration", image.info.get("duration", 100)) or 100)
+                for frame in ImageSequence.Iterator(image)
+            ]
+            output = io.BytesIO()
+            frames[0].save(
+                output,
+                format="GIF",
+                save_all=True,
+                append_images=frames[1:],
+                duration=durations,
+                loop=int(image.info.get("loop", 0) or 0),
+                disposal=2,
+            )
+            return output.getvalue()
+
+        result = _mirror_image_frame(image.convert("RGBA"), direction)
+
+    output = io.BytesIO()
+    result.save(output, format="PNG")
+    return output.getvalue()
+
+
+def _mirror_image_frame(frame: Any, direction: str) -> Any:
+    from PIL import ImageOps
+
+    result = frame.copy()
     width, height = result.size
     if width <= 0 or height <= 0:
         raise ValueError("image has invalid dimensions")
@@ -660,10 +691,7 @@ def _mirror_image_file(image_path: Path, direction: str) -> bytes:
         strip_height = height // 2
         source = result.crop((0, height - strip_height, width, height))
         result.paste(ImageOps.flip(source), (0, 0))
-
-    output = io.BytesIO()
-    result.save(output, format="PNG")
-    return output.getvalue()
+    return result
 
 
 def _sandbox(lua: Any) -> None:

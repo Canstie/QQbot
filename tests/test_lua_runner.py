@@ -161,6 +161,14 @@ def decode_cq_base64_image(message: str) -> Image.Image:
     return Image.open(io.BytesIO(base64.b64decode(body))).convert("RGBA")
 
 
+def decode_cq_base64_image_bytes(message: str) -> bytes:
+    prefix = "[CQ:image,file=base64://"
+    assert message.startswith(prefix)
+    assert message.endswith("]")
+    body = message[len(prefix) : -1]
+    return base64.b64decode(body)
+
+
 @pytest.mark.asyncio
 async def test_lua_command_routes_to_matching_script(tmp_path, monkeypatch):
     lua_dir = configure_lua_dir(tmp_path, monkeypatch)
@@ -880,6 +888,50 @@ async def test_builtin_image_symmetry_command_reads_raw_message_from_get_msg(tmp
     assert result.reply is not None
     mirrored = decode_cq_base64_image(result.reply)
     assert mirrored.getpixel((3, 0)) == source_pixels[(0, 0)]
+
+
+@pytest.mark.asyncio
+async def test_builtin_image_symmetry_command_preserves_animated_gif(tmp_path, monkeypatch):
+    configure_builtin_lua_dir(tmp_path, monkeypatch)
+    image_path = tmp_path / "animated.gif"
+    first = Image.new("RGBA", (4, 2), (0, 0, 0, 0))
+    first.putpixel((0, 0), (255, 0, 0, 255))
+    first.putpixel((1, 0), (0, 255, 0, 255))
+    second = Image.new("RGBA", (4, 2), (0, 0, 0, 0))
+    second.putpixel((0, 0), (0, 0, 255, 255))
+    second.putpixel((1, 0), (255, 255, 0, 255))
+    first.save(
+        image_path,
+        format="GIF",
+        save_all=True,
+        append_images=[second],
+        duration=[80, 120],
+        loop=0,
+        disposal=2,
+    )
+
+    result = await run_lua_message(
+        ReplyImageFakeBot(image_path),
+        make_event(
+            raw_message="~左对称",
+            segments=({"type": "reply", "data": {"id": "quoted-image"}},),
+        ),
+        PolicyDecision(True, "ok", handler="default", normalized_message="左对称"),
+    )
+
+    assert result.quote is True
+    assert result.reply is not None
+    with Image.open(io.BytesIO(decode_cq_base64_image_bytes(result.reply))) as mirrored:
+        assert mirrored.format == "GIF"
+        assert mirrored.n_frames == 2
+        mirrored.seek(0)
+        frame0 = mirrored.convert("RGBA")
+        assert frame0.getpixel((3, 0)) == (255, 0, 0, 255)
+        assert frame0.getpixel((2, 0)) == (0, 255, 0, 255)
+        mirrored.seek(1)
+        frame1 = mirrored.convert("RGBA")
+        assert frame1.getpixel((3, 0)) == (0, 0, 255, 255)
+        assert frame1.getpixel((2, 0)) == (255, 255, 0, 255)
 
 
 @pytest.mark.asyncio
