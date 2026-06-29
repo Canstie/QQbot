@@ -267,6 +267,8 @@ class LuaApi:
     def mirror_referenced_image(self, direction: str) -> str | None:
         image_source = _first_image_source_from_segments(self._event.segments)
         if image_source is None:
+            image_source = _first_embedded_reply_image_source(self._event.segments)
+        if image_source is None:
             reply_message_id = _reply_message_id_from_segments(self._event.segments)
             if reply_message_id is not None:
                 payload = self._call_api_raw("get_msg", message_id=reply_message_id)
@@ -528,10 +530,25 @@ def _first_image_source_from_segments(segments: Iterable[Mapping[str, Any]]) -> 
         data = segment.get("data")
         if not isinstance(data, Mapping):
             continue
-        for key in ("url", "file"):
+        for key in ("url", "file", "path"):
             value = data.get(key)
             if value is not None and str(value).strip():
                 return str(value).strip()
+    return None
+
+
+def _first_embedded_reply_image_source(segments: Iterable[Mapping[str, Any]]) -> str | None:
+    for segment in segments:
+        if segment.get("type") != "reply":
+            continue
+        data = segment.get("data")
+        if not isinstance(data, Mapping):
+            continue
+        for key in ("message", "raw_message"):
+            value = data.get(key)
+            image_source = _first_image_source_from_message(value)
+            if image_source is not None:
+                return image_source
     return None
 
 
@@ -542,7 +559,7 @@ def _reply_message_id_from_segments(segments: Iterable[Mapping[str, Any]]) -> in
         data = segment.get("data")
         if not isinstance(data, Mapping):
             continue
-        for key in ("id", "message_id"):
+        for key in ("id", "message_id", "real_id", "source", "source_id"):
             value = data.get(key)
             if value is not None and str(value).strip():
                 return value
@@ -553,7 +570,7 @@ def _coerce_segments(value: Any) -> tuple[dict[str, Any], ...]:
     if value is None:
         return ()
     if isinstance(value, str):
-        return tuple(_cq_image_segments(value))
+        return tuple(_cq_segments(value))
     if isinstance(value, Mapping):
         if "type" in value:
             data = value.get("data", {})
@@ -579,15 +596,15 @@ def _coerce_segments(value: Any) -> tuple[dict[str, Any], ...]:
     return tuple(result)
 
 
-def _cq_image_segments(message: str) -> list[dict[str, Any]]:
+def _cq_segments(message: str) -> list[dict[str, Any]]:
     segments = []
-    for match in re.finditer(r"\[CQ:image,([^\]]+)\]", str(message)):
+    for match in re.finditer(r"\[CQ:(image|reply),([^\]]+)\]", str(message)):
         data = {}
-        for item in match.group(1).split(","):
+        for item in match.group(2).split(","):
             key, sep, value = item.partition("=")
             if sep:
                 data[key.strip()] = value.strip()
-        segments.append({"type": "image", "data": data})
+        segments.append({"type": match.group(1), "data": data})
     return segments
 
 

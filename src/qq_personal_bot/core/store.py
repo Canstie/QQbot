@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
@@ -24,6 +25,10 @@ from qq_personal_bot.settings import AppSettings
 
 
 CHINA_TZ = timezone(timedelta(hours=8))
+
+
+def _strip_cq_segments(message: str) -> str:
+    return re.sub(r"\[CQ:[^\]]+\]", "", message)
 
 
 class PolicyStore:
@@ -520,7 +525,7 @@ class PolicyStore:
         event_datetime = datetime.fromtimestamp(event_time, CHINA_TZ)
         event_date = event_datetime.date().isoformat()
         hour = event_datetime.hour
-        text_chars = len(str(raw_message or "").strip())
+        text_chars = self._message_text_length(raw_message, segments)
         image_count = self._count_segments(segments, "image")
         at_count = self._count_segments(segments, "at")
         reply_count = self._count_segments(segments, "reply")
@@ -1283,6 +1288,25 @@ class PolicyStore:
             if str(segment.get("type") or "") == segment_type:
                 count += 1
         return count
+
+    def _message_text_length(self, raw_message: str, segments: Any) -> int:
+        text_from_segments = self._text_from_segments(segments)
+        if text_from_segments is not None:
+            return len(text_from_segments.strip())
+        return len(_strip_cq_segments(str(raw_message or "")).strip())
+
+    def _text_from_segments(self, segments: Any) -> str | None:
+        iterated = self._iter_segments(segments)
+        if not iterated:
+            return None
+        parts = []
+        for segment in iterated:
+            if str(segment.get("type") or "") != "text":
+                continue
+            data = segment.get("data")
+            if isinstance(data, Mapping):
+                parts.append(str(data.get("text", "")))
+        return "".join(parts)
 
     def _iter_segments(self, segments: Any) -> list[Mapping[str, Any]]:
         if segments is None or isinstance(segments, str):

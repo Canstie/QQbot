@@ -544,7 +544,10 @@ def test_group_daily_summary_counts_activity_by_day(tmp_path):
         user_id=1,
         timestamp=_china_timestamp(2026, 6, 19, 23, 58),
         raw_message="最后一条",
-        segments=({"type": "image", "data": {"file": "a.jpg"}},),
+        segments=(
+            {"type": "text", "data": {"text": "最后一条"}},
+            {"type": "image", "data": {"file": "a.jpg"}},
+        ),
     )
     store.record_group_message_activity(
         group_id=123,
@@ -552,6 +555,7 @@ def test_group_daily_summary_counts_activity_by_day(tmp_path):
         timestamp=_china_timestamp(2026, 6, 19, 12, 0),
         raw_message="hello world",
         segments=(
+            {"type": "text", "data": {"text": "hello world"}},
             {"type": "at", "data": {"qq": "1"}},
             {"type": "reply", "data": {"id": "42"}},
         ),
@@ -563,15 +567,47 @@ def test_group_daily_summary_counts_activity_by_day(tmp_path):
         raw_message="next day",
         segments=(),
     )
+    store.record_group_message_activity(
+        group_id=123,
+        user_id=3,
+        timestamp=_china_timestamp(2026, 6, 19, 13, 0),
+        raw_message="[CQ:image,file=base64://very-long-image-body]",
+        segments=({"type": "image", "data": {"file": "base64://very-long-image-body"}},),
+    )
+    store.record_group_message_activity(
+        group_id=123,
+        user_id=3,
+        timestamp=_china_timestamp(2026, 6, 19, 13, 5),
+        raw_message="[CQ:image,file=a.jpg]看看",
+        segments=(
+            {"type": "image", "data": {"file": "a.jpg"}},
+            {"type": "text", "data": {"text": "看看"}},
+        ),
+    )
 
     summary = store.get_group_daily_summary(123, "2026-06-19", limit=5)
 
-    assert summary["total_messages"] == 3
-    assert summary["active_users"] == 2
+    assert summary["total_messages"] == 5
+    assert summary["active_users"] == 3
     assert summary["top_messages"][0]["user_id"] == 1
     assert summary["top_messages"][0]["message_count"] == 2
     assert summary["top_text_chars"][0]["user_id"] == 2
+    assert summary["top_text_chars"][1]["user_id"] == 1
+    assert summary["top_text_chars"][2]["user_id"] == 3
+    assert summary["top_text_chars"][2]["text_chars"] == 2
     assert summary["top_images"] == [
+        {
+            "user_id": 3,
+            "message_count": 2,
+            "text_chars": 2,
+            "image_count": 2,
+            "at_count": 0,
+            "reply_count": 0,
+            "first_timestamp": _china_timestamp(2026, 6, 19, 13, 0),
+            "last_timestamp": _china_timestamp(2026, 6, 19, 13, 5),
+            "first_time": "13:00",
+            "last_time": "13:05",
+        },
         {
             "user_id": 1,
             "message_count": 2,
@@ -587,7 +623,7 @@ def test_group_daily_summary_counts_activity_by_day(tmp_path):
     ]
     assert summary["top_mentions"][0]["user_id"] == 2
     assert summary["top_mentions"][0]["at_count"] == 1
-    assert summary["peak_hour"] == {"hour": 8, "message_count": 1}
+    assert summary["peak_hour"] == {"hour": 13, "message_count": 2}
     assert summary["early_bird"]["user_id"] == 1
     assert summary["early_bird"]["first_time"] == "08:10"
     assert summary["night_owl"]["user_id"] == 1

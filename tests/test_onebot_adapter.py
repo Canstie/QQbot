@@ -20,6 +20,14 @@ class FakeEvent:
         self.message = message
 
 
+class FakeReply:
+    message_id = 123456
+    real_id = 123456
+
+    def __init__(self, message):
+        self.message = message
+
+
 def test_onebot_event_conversion_detects_at_and_text():
     event = FakeEvent(
         [
@@ -49,3 +57,19 @@ def test_onebot_event_conversion_keeps_reply_segment():
 
     assert converted.raw_message == "~左对称"
     assert converted.segments[0] == {"type": "reply", "data": {"id": "123456"}}
+
+
+def test_onebot_event_conversion_keeps_event_reply_message():
+    event = FakeEvent([FakeSegment("text", {"text": " ~左对称"})])
+    event.reply = FakeReply([FakeSegment("image", {"url": "https://example.test/a.png"})])
+
+    converted = onebot_to_internal(event, self_id=99999)
+
+    assert converted.raw_message == "~左对称"
+    assert converted.segments[0] == {
+        "type": "reply",
+        "data": {
+            "id": 123456,
+            "message": [{"type": "image", "data": {"url": "https://example.test/a.png"}}],
+        },
+    }

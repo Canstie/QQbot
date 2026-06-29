@@ -64,6 +64,17 @@ class ReplyImageFakeBot(RichFakeBot):
         return await super().call_api(action, **params)
 
 
+class RawReplyImageFakeBot(RichFakeBot):
+    def __init__(self, image_path: Path):
+        self.image_path = image_path
+
+    async def call_api(self, action: str, **params):
+        if action == "get_msg":
+            assert params["message_id"] == "quoted-image"
+            return {"raw_message": f"[CQ:image,file={self.image_path}]"}
+        return await super().call_api(action, **params)
+
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -822,6 +833,56 @@ async def test_builtin_image_symmetry_commands_use_quoted_image(
 
 
 @pytest.mark.asyncio
+async def test_builtin_image_symmetry_command_uses_event_reply_message(tmp_path, monkeypatch):
+    configure_builtin_lua_dir(tmp_path, monkeypatch)
+    image_path = tmp_path / "quoted.png"
+    source_pixels = write_test_image(image_path)
+
+    result = await run_lua_message(
+        RichFakeBot(),
+        make_event(
+            raw_message="~左对称",
+            segments=(
+                {
+                    "type": "reply",
+                    "data": {
+                        "id": "quoted-image",
+                        "message": [{"type": "image", "data": {"file": str(image_path)}}],
+                    },
+                },
+            ),
+        ),
+        PolicyDecision(True, "ok", handler="default", normalized_message="左对称"),
+    )
+
+    assert result.quote is True
+    assert result.reply is not None
+    mirrored = decode_cq_base64_image(result.reply)
+    assert mirrored.getpixel((3, 0)) == source_pixels[(0, 0)]
+
+
+@pytest.mark.asyncio
+async def test_builtin_image_symmetry_command_reads_raw_message_from_get_msg(tmp_path, monkeypatch):
+    configure_builtin_lua_dir(tmp_path, monkeypatch)
+    image_path = tmp_path / "quoted.png"
+    source_pixels = write_test_image(image_path)
+
+    result = await run_lua_message(
+        RawReplyImageFakeBot(image_path),
+        make_event(
+            raw_message="~左对称",
+            segments=({"type": "reply", "data": {"id": "quoted-image"}},),
+        ),
+        PolicyDecision(True, "ok", handler="default", normalized_message="左对称"),
+    )
+
+    assert result.quote is True
+    assert result.reply is not None
+    mirrored = decode_cq_base64_image(result.reply)
+    assert mirrored.getpixel((3, 0)) == source_pixels[(0, 0)]
+
+
+@pytest.mark.asyncio
 async def test_builtin_image_symmetry_command_requires_quoted_image(tmp_path, monkeypatch):
     configure_builtin_lua_dir(tmp_path, monkeypatch)
 
@@ -986,6 +1047,7 @@ async def test_builtin_group_summary_reports_daily_activity(tmp_path, monkeypatc
         timestamp=china_timestamp(2026, 6, 19, 22, 0),
         raw_message="hello world",
         segments=(
+            {"type": "text", "data": {"text": "hello world"}},
             {"type": "image", "data": {"file": "a.jpg"}},
             {"type": "at", "data": {"qq": "1"}},
         ),
@@ -995,7 +1057,10 @@ async def test_builtin_group_summary_reports_daily_activity(tmp_path, monkeypatc
         user_id=2,
         timestamp=china_timestamp(2026, 6, 19, 23, 30),
         raw_message="晚安",
-        segments=({"type": "image", "data": {"file": "b.jpg"}},),
+        segments=(
+            {"type": "text", "data": {"text": "晚安"}},
+            {"type": "image", "data": {"file": "b.jpg"}},
+        ),
     )
 
     result = await run_lua_message(
