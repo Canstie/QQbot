@@ -1,10 +1,3 @@
-let replyConfig = { empty: "", fallback: "Received: {message}", rules: [], direct_rules: [] };
-let luaCommands = [];
-let currentLuaCommand = "";
-let menus = [];
-let restaurants = [];
-let ruleFilters = { rules: "", direct_rules: "" };
-
 const ruleTypes = [
   ["exact", "完全匹配"],
   ["contains", "包含关键词"],
@@ -12,12 +5,35 @@ const ruleTypes = [
   ["regex", "正则匹配"],
 ];
 
+const validViews = new Set([
+  "overview",
+  "policy",
+  "replies",
+  "lua",
+  "menus",
+  "restaurants",
+  "classics",
+]);
+
+const state = {
+  replyConfig: { empty: "", fallback: "Received: {message}", rules: [], direct_rules: [] },
+  luaCommands: [],
+  currentLuaCommand: "",
+  menus: [],
+  restaurants: [],
+  classicsGroups: [],
+  currentClassicGroup: null,
+  currentClassicImages: [],
+  ruleFilters: { rules: "", direct_rules: "" },
+};
+
 const byId = (id) => document.getElementById(id);
 
 const headers = () => {
-  const token = byId("token").value;
+  const tokenInput = byId("token");
+  const token = tokenInput ? tokenInput.value.trim() : "";
   return token
-    ? { "X-Admin-Token": token, "Content-Type": "application/json" }
+    ? { "Content-Type": "application/json", "X-Admin-Token": token }
     : { "Content-Type": "application/json" };
 };
 
@@ -27,10 +43,19 @@ function setNotice(id, message, kind = "") {
   node.className = kind ? `notice ${kind}` : "notice";
 }
 
+function setConnectionStatus(message) {
+  byId("connectionStatus").textContent = message;
+}
+
+function setGlobalStatus(message, kind = "") {
+  setNotice("globalNotice", message, kind);
+}
+
 async function requestJson(url, options = {}) {
   const response = await fetch(url, options);
   const text = await response.text();
   let data = {};
+
   if (text) {
     try {
       data = JSON.parse(text);
@@ -38,11 +63,18 @@ async function requestJson(url, options = {}) {
       data = { detail: text };
     }
   }
+
   if (!response.ok) {
     const detail = data.detail || `HTTP ${response.status}`;
     throw new Error(Array.isArray(detail) ? JSON.stringify(detail) : detail);
   }
+
   return data;
+}
+
+async function logout() {
+  await fetch("./logout", { method: "POST" });
+  window.location.href = "./login";
 }
 
 function escapeHtml(value) {
@@ -55,31 +87,91 @@ function escapeHtml(value) {
 
 function parseIdList(value) {
   return String(value || "")
-    .split(/[,\s，、]+/)
+    .split(/[\s,，]+/)
     .map((item) => item.trim())
     .filter(Boolean)
-    .map((item) => Number(item));
+    .map((item) => Number(item))
+    .filter((item) => Number.isFinite(item));
 }
 
 function formatIdList(values) {
   return (values || []).join("\n");
 }
 
-function showTab(name) {
-  document.querySelectorAll(".tab").forEach((tab) => {
-    tab.classList.toggle("active", tab.dataset.tab === name);
+function formatDateTime(value) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "-";
+  return date.toLocaleString("zh-CN", { hour12: false });
+}
+
+function formatBytes(value) {
+  const bytes = Number(value || 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const amount = bytes / 1024 ** index;
+  return `${amount.toFixed(amount >= 10 || index === 0 ? 0 : 1)} ${units[index]}`;
+}
+
+function showView(name) {
+  document.querySelectorAll(".nav-link").forEach((node) => {
+    node.classList.toggle("active", node.dataset.view === name);
   });
-  document.querySelectorAll(".tab-panel").forEach((panel) => {
-    panel.classList.toggle("active", panel.dataset.panel === name);
+  document.querySelectorAll(".view").forEach((node) => {
+    node.classList.toggle("active", node.dataset.viewPanel === name);
   });
+}
+
+function parseRoute() {
+  const hash = location.hash.replace(/^#/, "").trim();
+  if (!hash) return { view: "overview", groupId: null };
+
+  const [rawView, rawGroupId] = hash.split("/");
+  const view = validViews.has(rawView) ? rawView : "overview";
+  const groupId = view === "classics" && rawGroupId ? rawGroupId.trim() : null;
+  return { view, groupId };
+}
+
+function setRoute(view, groupId = null, replace = false) {
+  const nextHash = groupId ? `#${view}/${groupId}` : `#${view}`;
+  if (location.hash === nextHash) {
+    applyRoute();
+    return;
+  }
+  if (replace) {
+    history.replaceState(null, "", nextHash);
+    applyRoute();
+    return;
+  }
+  location.hash = nextHash;
+}
+
+function renderOverviewArchiveStrip() {
+  const list = byId("overviewArchiveStrip");
+  if (!state.classicsGroups.length) {
+    list.innerHTML = '<div class="empty-list">还没有任何群存过典图。</div>';
+    return;
+  }
+
+  list.innerHTML = state.classicsGroups.slice(0, 4).map((group) => `
+    <article class="archive-card">
+      <p class="panel-kicker">Group</p>
+      <strong>${escapeHtml(group.group_id)}</strong>
+      <p>${group.count} 张典图 · ${formatDateTime(group.updated_at)}</p>
+      <div class="button-row">
+        <button class="secondary" data-classics-open="${group.group_id}">进入群号</button>
+      </div>
+    </article>
+  `).join("");
 }
 
 function renderRules(kind) {
   const listId = kind === "rules" ? "rulesList" : "directRulesList";
   const metaId = kind === "rules" ? "rulesMeta" : "directRulesMeta";
   const list = byId(listId);
-  const rules = replyConfig[kind] || [];
-  const filter = (ruleFilters[kind] || "").trim().toLowerCase();
+  const rules = state.replyConfig[kind] || [];
+  const filter = (state.ruleFilters[kind] || "").trim().toLowerCase();
   const visibleRules = rules
     .map((rule, index) => ({ rule, index }))
     .filter(({ rule }) => {
@@ -87,27 +179,33 @@ function renderRules(kind) {
       return [rule.type, rule.pattern, rule.reply]
         .some((value) => String(value || "").toLowerCase().includes(filter));
     });
+
   byId(metaId).textContent = filter
     ? `显示 ${visibleRules.length} / ${rules.length} 条`
     : `${rules.length} 条`;
+
   if (!rules.length) {
     list.innerHTML = '<div class="empty-list">暂无规则</div>';
     return;
   }
+
   if (!visibleRules.length) {
     list.innerHTML = '<div class="empty-list">没有匹配的规则</div>';
     return;
   }
+
   list.innerHTML = visibleRules.map(({ rule, index }) => `
     <div class="rule-card">
       <div class="rule-index">#${index + 1}</div>
       <label>匹配方式
         <select data-kind="${kind}" data-index="${index}" data-field="type">
-          ${ruleTypes.map(([value, label]) => `<option value="${value}" ${rule.type === value ? "selected" : ""}>${label}</option>`).join("")}
+          ${ruleTypes.map(([value, label]) => `
+            <option value="${value}" ${rule.type === value ? "selected" : ""}>${label}</option>
+          `).join("")}
         </select>
       </label>
       <label>触发内容
-        <input data-kind="${kind}" data-index="${index}" data-field="pattern" value="${escapeHtml(rule.pattern)}">
+        <input data-kind="${kind}" data-index="${index}" data-field="pattern" value="${escapeHtml(rule.pattern)}" />
       </label>
       <label>回复内容
         <textarea data-kind="${kind}" data-index="${index}" data-field="reply">${escapeHtml(rule.reply)}</textarea>
@@ -115,10 +213,12 @@ function renderRules(kind) {
       <button class="danger" data-remove-rule="${kind}" data-index="${index}">删除</button>
     </div>
   `).join("");
+
   list.querySelectorAll("[data-kind]").forEach((node) => {
     node.addEventListener("input", updateRuleFromInput);
     node.addEventListener("change", updateRuleFromInput);
   });
+
   list.querySelectorAll("[data-remove-rule]").forEach((node) => {
     node.addEventListener("click", () => removeRule(node.dataset.removeRule, Number(node.dataset.index)));
   });
@@ -126,33 +226,32 @@ function renderRules(kind) {
 
 function updateRuleFromInput(event) {
   const node = event.target;
-  replyConfig[node.dataset.kind][Number(node.dataset.index)][node.dataset.field] = node.value;
+  state.replyConfig[node.dataset.kind][Number(node.dataset.index)][node.dataset.field] = node.value;
 }
 
 function addRule(kind) {
-  replyConfig[kind] = replyConfig[kind] || [];
-  ruleFilters[kind] = "";
+  state.replyConfig[kind] = state.replyConfig[kind] || [];
+  state.ruleFilters[kind] = "";
   const filterId = kind === "rules" ? "rulesFilter" : "directRulesFilter";
   byId(filterId).value = "";
-  replyConfig[kind].unshift({ type: "contains", pattern: "", reply: "" });
+  state.replyConfig[kind].unshift({ type: "contains", pattern: "", reply: "" });
   renderRules(kind);
-  const listId = kind === "rules" ? "rulesList" : "directRulesList";
-  byId(listId).scrollTop = 0;
 }
 
 function removeRule(kind, index) {
-  replyConfig[kind].splice(index, 1);
+  state.replyConfig[kind].splice(index, 1);
   renderRules(kind);
 }
 
-async function refresh() {
+async function loadPolicy() {
   try {
     const data = await requestJson("./api/policy", { headers: headers() });
     byId("state").textContent = JSON.stringify(data, null, 2);
+    byId("overviewMode").textContent = data.mode || "-";
     byId("enabledCount").textContent = data.enabled_groups?.length ?? 0;
     byId("blockedCount").textContent = data.blocked_groups?.length ?? 0;
     byId("adminCount").textContent = data.admins?.length ?? 0;
-    byId("connectionStatus").textContent = "在线";
+
     if (data.mode) byId("mode").value = data.mode;
     byId("prefixesInput").value = (data.trigger?.prefixes || ["~"]).join(",");
     byId("mentionTrigger").checked = Boolean(data.trigger?.mention);
@@ -162,45 +261,24 @@ async function refresh() {
     byId("enabledGroupsInput").value = formatIdList(data.enabled_groups);
     byId("blockedGroupsInput").value = formatIdList(data.blocked_groups);
     byId("adminsInput").value = formatIdList(data.admins);
+
+    setConnectionStatus("在线");
     setNotice("configNotice", "核心配置已加载", "ok");
+    return data;
   } catch (error) {
-    byId("connectionStatus").textContent = "异常";
+    setConnectionStatus("异常");
     byId("state").textContent = error.message;
     setNotice("configNotice", error.message, "error");
+    throw error;
   }
 }
 
-async function setMode() {
-  await requestJson("./api/policy/mode", {
-    method: "POST",
-    headers: headers(),
-    body: JSON.stringify({ mode: byId("mode").value }),
-  });
-  await refresh();
-}
-
-async function savePrefixes() {
-  const prefixes = byId("prefixesInput").value.split(",").map((item) => item.trim()).filter(Boolean);
-  await requestJson("./api/policy/prefixes", {
-    method: "POST",
-    headers: headers(),
-    body: JSON.stringify({ prefixes }),
-  });
-  await refresh();
-}
-
-async function saveDirectTriggerPercent() {
-  const percent = Number(byId("directTriggerPercent").value);
-  await requestJson("./api/policy/direct-trigger-percent", {
-    method: "POST",
-    headers: headers(),
-    body: JSON.stringify({ percent }),
-  });
-  await refresh();
-}
-
 async function saveCoreConfig() {
-  const prefixes = byId("prefixesInput").value.split(",").map((item) => item.trim()).filter(Boolean);
+  const prefixes = byId("prefixesInput").value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+
   const payload = {
     mode: byId("mode").value,
     enabled_groups: parseIdList(byId("enabledGroupsInput").value),
@@ -216,130 +294,131 @@ async function saveCoreConfig() {
       per_user_per_minute: Number(byId("perUserPerMinute").value),
     },
   };
+
   const data = await requestJson("./api/policy/core", {
     method: "POST",
     headers: headers(),
     body: JSON.stringify(payload),
   });
+
   byId("state").textContent = JSON.stringify(data, null, 2);
   setNotice("configNotice", "核心配置已保存", "ok");
-  await refresh();
+  await loadPolicy();
 }
 
 async function groupAction(action) {
   const groupId = byId("groupId").value.trim();
   if (!groupId) return;
-  await requestJson(`./api/groups/${groupId}/${action}`, { method: "POST", headers: headers() });
-  await refresh();
+  await requestJson(`./api/groups/${groupId}/${action}`, {
+    method: "POST",
+    headers: headers(),
+  });
+  await loadPolicy();
 }
 
 async function loadReplies() {
   try {
     const data = await requestJson("./api/replies", { headers: headers() });
-    replyConfig = data.config || replyConfig;
-    replyConfig.rules = replyConfig.rules || [];
-    replyConfig.direct_rules = replyConfig.direct_rules || [];
-    byId("emptyReply").value = replyConfig.empty || "";
-    byId("fallbackReply").value = replyConfig.fallback || "";
+    state.replyConfig = data.config || state.replyConfig;
+    state.replyConfig.rules = state.replyConfig.rules || [];
+    state.replyConfig.direct_rules = state.replyConfig.direct_rules || [];
+    byId("emptyReply").value = state.replyConfig.empty || "";
+    byId("fallbackReply").value = state.replyConfig.fallback || "";
     renderRules("rules");
     renderRules("direct_rules");
     setNotice("editorNotice", data.valid ? "回复规则已加载" : data.error, data.valid ? "ok" : "error");
+    return data;
   } catch (error) {
     setNotice("editorNotice", error.message, "error");
+    throw error;
   }
 }
 
 async function saveReplies() {
-  replyConfig.empty = byId("emptyReply").value;
-  replyConfig.fallback = byId("fallbackReply").value;
-  try {
-    const data = await requestJson("./api/replies", {
-      method: "POST",
-      headers: headers(),
-      body: JSON.stringify(replyConfig),
-    });
-    replyConfig = data.config || replyConfig;
-    renderRules("rules");
-    renderRules("direct_rules");
-    setNotice("editorNotice", "保存成功", "ok");
-  } catch (error) {
-    setNotice("editorNotice", error.message, "error");
-  }
+  state.replyConfig.empty = byId("emptyReply").value;
+  state.replyConfig.fallback = byId("fallbackReply").value;
+
+  const data = await requestJson("./api/replies", {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify(state.replyConfig),
+  });
+
+  state.replyConfig = data.config || state.replyConfig;
+  renderRules("rules");
+  renderRules("direct_rules");
+  setNotice("editorNotice", "回复规则已保存", "ok");
 }
 
 const encodedCommand = (command) => encodeURIComponent(command);
 
 function renderLuaCommandList() {
   const list = byId("luaCommandList");
-  if (!luaCommands.length) {
+  if (!state.luaCommands.length) {
     list.innerHTML = '<div class="empty-list">暂无脚本</div>';
     return;
   }
-  list.innerHTML = luaCommands.map((item) => `
-    <button class="lua-command-item ${item.command === currentLuaCommand ? "active" : ""}" data-lua-open="${escapeHtml(item.command)}">
-      <span>${escapeHtml(item.command)}</span><small>${Math.max(1, Math.ceil((item.size || 0) / 1024))} KB</small>
+
+  list.innerHTML = state.luaCommands.map((item) => `
+    <button class="command-item ${item.command === state.currentLuaCommand ? "active" : ""}" data-lua-open="${escapeHtml(item.command)}">
+      <span>${escapeHtml(item.command)}</span>
+      <small>${Math.max(1, Math.ceil((item.size || 0) / 1024))} KB</small>
     </button>
   `).join("");
 }
 
-async function loadLuaCommands(preferredCommand = currentLuaCommand) {
-  try {
-    const data = await requestJson("./api/lua/commands", { headers: headers() });
-    luaCommands = data.commands || [];
-    byId("luaListMeta").textContent = `${data.lua_dir} | ${data.enabled ? "已启用" : "未启用"} | ${luaCommands.length} 个脚本`;
-    renderLuaCommandList();
-    const nextCommand = preferredCommand || luaCommands[0]?.command || "抽群老婆";
-    await openLuaCommand(nextCommand);
-  } catch (error) {
-    setNotice("luaNotice", error.message, "error");
-  }
+async function loadLuaCommands(preferredCommand = state.currentLuaCommand) {
+  const data = await requestJson("./api/lua/commands", { headers: headers() });
+  state.luaCommands = data.commands || [];
+  byId("overviewLuaCount").textContent = state.luaCommands.length;
+  byId("luaListMeta").textContent =
+    `${data.lua_dir} | ${data.enabled ? "已启用" : "未启用"} | ${state.luaCommands.length} 个脚本`;
+  renderLuaCommandList();
+
+  const nextCommand = preferredCommand || state.luaCommands[0]?.command || "抽群老婆";
+  await openLuaCommand(nextCommand);
+  return data;
 }
 
 async function openLuaCommand(command) {
   const value = String(command || "").trim();
   if (!value) return;
-  try {
-    const data = await requestJson(`./api/lua/commands/${encodedCommand(value)}`, { headers: headers() });
-    currentLuaCommand = data.command;
-    byId("luaCommandInput").value = data.command;
-    byId("luaCurrentCommand").value = data.command;
-    byId("luaEditor").value = data.content || "";
-    byId("luaMeta").textContent = `${data.path}${data.using_example ? " | 示例" : ""}`;
-    setNotice("luaNotice", data.using_example ? "当前显示示例，保存后生效" : "Lua 脚本已加载", "ok");
-    renderLuaCommandList();
-  } catch (error) {
-    setNotice("luaNotice", error.message, "error");
-  }
+
+  const data = await requestJson(`./api/lua/commands/${encodedCommand(value)}`, { headers: headers() });
+  state.currentLuaCommand = data.command;
+  byId("luaCommandInput").value = data.command;
+  byId("luaCurrentCommand").value = data.command;
+  byId("luaEditor").value = data.content || "";
+  byId("luaMeta").textContent = `${data.path}${data.using_example ? " | 示例脚本" : ""}`;
+  setNotice("luaNotice", data.using_example ? "当前展示的是示例脚本，保存后会生成文件" : "Lua 脚本已加载", "ok");
+  renderLuaCommandList();
 }
 
 async function saveLua() {
-  if (!currentLuaCommand) return;
-  try {
-    const data = await requestJson(`./api/lua/commands/${encodedCommand(currentLuaCommand)}`, {
-      method: "POST",
-      headers: headers(),
-      body: JSON.stringify({ content: byId("luaEditor").value }),
-    });
-    await loadLuaCommands(data.command);
-    setNotice("luaNotice", "保存成功", "ok");
-  } catch (error) {
-    setNotice("luaNotice", error.message, "error");
-  }
+  if (!state.currentLuaCommand) return;
+
+  const data = await requestJson(`./api/lua/commands/${encodedCommand(state.currentLuaCommand)}`, {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify({ content: byId("luaEditor").value }),
+  });
+
+  await loadLuaCommands(data.command);
+  setNotice("luaNotice", "脚本已保存", "ok");
 }
 
 async function deleteLua() {
-  if (!currentLuaCommand || !confirm(`删除 Lua 指令“${currentLuaCommand}”？`)) return;
-  try {
-    await requestJson(`./api/lua/commands/${encodedCommand(currentLuaCommand)}`, {
-      method: "DELETE",
-      headers: headers(),
-    });
-    currentLuaCommand = "";
-    await loadLuaCommands();
-    setNotice("luaNotice", "已删除", "ok");
-  } catch (error) {
-    setNotice("luaNotice", error.message, "error");
-  }
+  if (!state.currentLuaCommand) return;
+  if (!confirm(`删除 Lua 指令“${state.currentLuaCommand}”？`)) return;
+
+  await requestJson(`./api/lua/commands/${encodedCommand(state.currentLuaCommand)}`, {
+    method: "DELETE",
+    headers: headers(),
+  });
+
+  state.currentLuaCommand = "";
+  await loadLuaCommands();
+  setNotice("luaNotice", "脚本已删除", "ok");
 }
 
 function importLuaFile(file) {
@@ -365,16 +444,17 @@ async function fileToDataUrl(file) {
 
 function renderMenus() {
   const list = byId("menuList");
-  if (!menus.length) {
+  if (!state.menus.length) {
     list.innerHTML = '<div class="empty-list">暂无菜单</div>';
     return;
   }
-  list.innerHTML = menus.map((menu) => `
+
+  list.innerHTML = state.menus.map((menu) => `
     <article class="item-card">
-      ${menu.image_url ? `<img src="${escapeHtml(menu.image_url)}" alt="">` : '<div class="image-placeholder">无图</div>'}
+      ${menu.image_url ? `<img src="${escapeHtml(menu.image_url)}" alt="${escapeHtml(menu.title)}" />` : '<div class="image-placeholder">无图</div>'}
       <div>
         <strong>${escapeHtml(menu.title)}</strong>
-        <p>${escapeHtml(menu.category)} | ${escapeHtml(menu.source)} | ${menu.enabled ? "启用" : "停用"}</p>
+        <p>${escapeHtml(menu.category)} · ${escapeHtml(menu.source)} · ${menu.enabled ? "启用" : "停用"}</p>
       </div>
       <div class="button-row">
         <button class="secondary" data-edit-menu="${escapeHtml(menu.id)}">编辑</button>
@@ -385,15 +465,13 @@ function renderMenus() {
 }
 
 async function loadMenus() {
-  try {
-    const query = encodeURIComponent(byId("menuSearch").value.trim());
-    const data = await requestJson(`./api/menus?search=${query}`, { headers: headers() });
-    menus = data.menus || [];
-    renderMenus();
-    setNotice("menuNotice", `已加载 ${menus.length} 个菜单`, "ok");
-  } catch (error) {
-    setNotice("menuNotice", error.message, "error");
-  }
+  const query = encodeURIComponent(byId("menuSearch").value.trim());
+  const data = await requestJson(`./api/menus?search=${query}`, { headers: headers() });
+  state.menus = data.menus || [];
+  byId("overviewMenuCount").textContent = state.menus.length;
+  renderMenus();
+  setNotice("menuNotice", `已加载 ${state.menus.length} 个菜单`, "ok");
+  return data;
 }
 
 function newMenu() {
@@ -404,7 +482,7 @@ function newMenu() {
 }
 
 function editMenu(id) {
-  const menu = menus.find((item) => item.id === id);
+  const menu = state.menus.find((item) => item.id === id);
   if (!menu) return;
   byId("menuCurrentId").value = menu.id;
   byId("menuTitle").value = menu.title;
@@ -414,59 +492,57 @@ function editMenu(id) {
 }
 
 async function saveMenu() {
-  try {
-    const id = byId("menuCurrentId").value;
-    const imageDataUrl = await fileToDataUrl(byId("menuImage").files[0]);
-    const payload = {
-      title: byId("menuTitle").value.trim(),
-      enabled: byId("menuEnabled").checked,
-      image_data_url: imageDataUrl,
-    };
-    const url = id ? `./api/menus/${encodeURIComponent(id)}` : "./api/menus";
-    await requestJson(url, {
-      method: id ? "PUT" : "POST",
-      headers: headers(),
-      body: JSON.stringify(payload),
-    });
-    newMenu();
-    await loadMenus();
-    setNotice("menuNotice", "菜单已保存", "ok");
-  } catch (error) {
-    setNotice("menuNotice", error.message, "error");
-  }
+  const id = byId("menuCurrentId").value;
+  const imageDataUrl = await fileToDataUrl(byId("menuImage").files[0]);
+  const payload = {
+    title: byId("menuTitle").value.trim(),
+    enabled: byId("menuEnabled").checked,
+    image_data_url: imageDataUrl,
+  };
+
+  const url = id ? `./api/menus/${encodeURIComponent(id)}` : "./api/menus";
+  await requestJson(url, {
+    method: id ? "PUT" : "POST",
+    headers: headers(),
+    body: JSON.stringify(payload),
+  });
+
+  newMenu();
+  await loadMenus();
+  setNotice("menuNotice", "菜单已保存", "ok");
 }
 
 async function deleteMenu(id) {
   if (!confirm("删除这个菜单？")) return;
-  await requestJson(`./api/menus/${encodeURIComponent(id)}`, { method: "DELETE", headers: headers() });
+  await requestJson(`./api/menus/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: headers(),
+  });
   await loadMenus();
 }
 
 async function pruneMenus() {
-  try {
-    const data = await requestJson("./api/menus/prune-howtocook-without-images", {
-      method: "POST",
-      headers: headers(),
-    });
-    await loadMenus();
-    setNotice("menuNotice", `已清理 ${data.deleted} 条无图 HowToCook 菜单`, "ok");
-  } catch (error) {
-    setNotice("menuNotice", error.message, "error");
-  }
+  const data = await requestJson("./api/menus/prune-howtocook-without-images", {
+    method: "POST",
+    headers: headers(),
+  });
+  await loadMenus();
+  setNotice("menuNotice", `已清理 ${data.deleted} 条无图 HowToCook 菜单`, "ok");
 }
 
 function renderRestaurants() {
   const list = byId("restaurantList");
-  if (!restaurants.length) {
+  if (!state.restaurants.length) {
     list.innerHTML = '<div class="empty-list">暂无饭店</div>';
     return;
   }
-  list.innerHTML = restaurants.map((restaurant) => `
+
+  list.innerHTML = state.restaurants.map((restaurant) => `
     <article class="item-card">
+      <div class="image-placeholder">群 ${restaurant.group_id}</div>
       <div>
         <strong>${escapeHtml(restaurant.name)}</strong>
-        <p>群 ${restaurant.group_id} | ${restaurant.enabled ? "启用" : "停用"}</p>
-        <p>${escapeHtml((restaurant.dishes || []).join("、"))}</p>
+        <p>${restaurant.enabled ? "启用" : "停用"} · ${escapeHtml((restaurant.dishes || []).join("、"))}</p>
       </div>
       <div class="button-row">
         <button class="secondary" data-edit-restaurant="${restaurant.id}">编辑</button>
@@ -477,27 +553,25 @@ function renderRestaurants() {
 }
 
 async function loadRestaurants() {
-  try {
-    const groupId = byId("restaurantGroupId").value.trim();
-    const query = groupId ? `?group_id=${encodeURIComponent(groupId)}` : "";
-    const data = await requestJson(`./api/restaurants${query}`, { headers: headers() });
-    restaurants = data.restaurants || [];
-    renderRestaurants();
-    setNotice("restaurantNotice", `已加载 ${restaurants.length} 个饭店`, "ok");
-  } catch (error) {
-    setNotice("restaurantNotice", error.message, "error");
-  }
+  const groupId = byId("restaurantFilterGroupId").value.trim();
+  const query = groupId ? `?group_id=${encodeURIComponent(groupId)}` : "";
+  const data = await requestJson(`./api/restaurants${query}`, { headers: headers() });
+  state.restaurants = data.restaurants || [];
+  renderRestaurants();
+  setNotice("restaurantNotice", `已加载 ${state.restaurants.length} 个饭店`, "ok");
+  return data;
 }
 
 function newRestaurant() {
   byId("restaurantCurrentId").value = "";
+  byId("restaurantGroupId").value = "";
   byId("restaurantName").value = "";
   byId("restaurantDishes").value = "";
   byId("restaurantEnabled").checked = true;
 }
 
 function editRestaurant(id) {
-  const restaurant = restaurants.find((item) => String(item.id) === String(id));
+  const restaurant = state.restaurants.find((item) => String(item.id) === String(id));
   if (!restaurant) return;
   byId("restaurantCurrentId").value = restaurant.id;
   byId("restaurantGroupId").value = restaurant.group_id;
@@ -508,53 +582,289 @@ function editRestaurant(id) {
 }
 
 async function saveRestaurant() {
-  try {
-    const id = byId("restaurantCurrentId").value;
-    const payload = {
-      group_id: Number(byId("restaurantGroupId").value),
-      name: byId("restaurantName").value.trim(),
-      dishes: byId("restaurantDishes").value.split("\n").map((item) => item.trim()).filter(Boolean),
-      enabled: byId("restaurantEnabled").checked,
-    };
-    const url = id ? `./api/restaurants/${id}` : "./api/restaurants";
-    await requestJson(url, {
-      method: id ? "PUT" : "POST",
-      headers: headers(),
-      body: JSON.stringify(payload),
-    });
-    newRestaurant();
-    await loadRestaurants();
-    setNotice("restaurantNotice", "饭店已保存", "ok");
-  } catch (error) {
-    setNotice("restaurantNotice", error.message, "error");
-  }
+  const id = byId("restaurantCurrentId").value;
+  const payload = {
+    group_id: Number(byId("restaurantGroupId").value),
+    name: byId("restaurantName").value.trim(),
+    dishes: byId("restaurantDishes").value
+      .split("\n")
+      .map((item) => item.trim())
+      .filter(Boolean),
+    enabled: byId("restaurantEnabled").checked,
+  };
+
+  const url = id ? `./api/restaurants/${id}` : "./api/restaurants";
+  await requestJson(url, {
+    method: id ? "PUT" : "POST",
+    headers: headers(),
+    body: JSON.stringify(payload),
+  });
+
+  newRestaurant();
+  await loadRestaurants();
+  setNotice("restaurantNotice", "饭店已保存", "ok");
 }
 
 async function deleteRestaurant(id) {
   if (!confirm("删除这个饭店？")) return;
-  await requestJson(`./api/restaurants/${id}`, { method: "DELETE", headers: headers() });
+  await requestJson(`./api/restaurants/${id}`, {
+    method: "DELETE",
+    headers: headers(),
+  });
   await loadRestaurants();
 }
 
-document.addEventListener("click", async (event) => {
-  const target = event.target.closest("button, [data-add-rule], [data-group-action], [data-lua-open], [data-edit-menu], [data-delete-menu], [data-edit-restaurant], [data-delete-restaurant]");
+function renderClassicsGroups() {
+  const list = byId("classicsGroupsList");
+  const search = byId("classicsGroupSearch").value.trim();
+  byId("classicsGroupsMeta").textContent = search
+    ? `匹配到 ${state.classicsGroups.length} 个群`
+    : `共 ${state.classicsGroups.length} 个群有典图`;
+
+  if (!state.classicsGroups.length) {
+    list.innerHTML = '<div class="empty-list">没有找到符合条件的群典藏。</div>';
+    return;
+  }
+
+  list.innerHTML = state.classicsGroups.map((group) => `
+    <article class="archive-item">
+      ${group.cover_url ? `<img src="${escapeHtml(group.cover_url)}" alt="群 ${group.group_id} 封面" />` : ""}
+      <div>
+        <p class="panel-kicker">Group</p>
+        <strong>${escapeHtml(group.group_id)}</strong>
+        <p>${group.count} 张典图 · ${formatBytes(group.total_bytes)}</p>
+        <p>最近更新：${formatDateTime(group.updated_at)}</p>
+      </div>
+      <div class="button-row">
+        <button class="secondary" data-classics-open="${group.group_id}">进入群号</button>
+        <button class="danger" data-delete-classics-group="${group.group_id}">删除整群</button>
+      </div>
+    </article>
+  `).join("");
+}
+
+function renderClassicDetailPlaceholder(message = "群内典图会在这里显示。") {
+  byId("classicsActiveGroup").textContent = "选择一个群查看存的典";
+  byId("classicsDetailMeta").textContent = message;
+  byId("classicsGallery").innerHTML = '<div class="empty-list">先从左侧选择一个群号。</div>';
+}
+
+function renderClassicGroupDetail() {
+  if (!state.currentClassicGroup) {
+    renderClassicDetailPlaceholder();
+    return;
+  }
+
+  byId("classicsActiveGroup").textContent = `群 ${state.currentClassicGroup} 的典图`;
+  byId("classicsDetailMeta").textContent =
+    `共 ${state.currentClassicImages.length} 张 · 点击图片可在新窗口打开原图`;
+
+  if (!state.currentClassicImages.length) {
+    byId("classicsGallery").innerHTML = '<div class="empty-list">这个群目前还没有可显示的典图。</div>';
+    return;
+  }
+
+  byId("classicsGallery").innerHTML = state.currentClassicImages.map((image) => `
+    <figure class="gallery-tile">
+      <a href="${escapeHtml(image.image_url)}" target="_blank" rel="noreferrer">
+        <img src="${escapeHtml(image.image_url)}" alt="${escapeHtml(image.filename)}" loading="lazy" />
+      </a>
+      <figcaption>
+        ${escapeHtml(image.filename)}<br />
+        ${formatBytes(image.size)} · ${formatDateTime(image.modified_at)}
+        <div class="button-row">
+          <button class="danger" data-delete-classic-image="${escapeHtml(image.filename)}">删除这张</button>
+        </div>
+      </figcaption>
+    </figure>
+  `).join("");
+}
+
+async function loadClassicGroups() {
+  const search = encodeURIComponent(byId("classicsGroupSearch").value.trim());
+  const data = await requestJson(`./api/classics/groups?search=${search}`, { headers: headers() });
+  state.classicsGroups = data.groups || [];
+  byId("overviewClassicGroupCount").textContent = state.classicsGroups.length;
+  renderOverviewArchiveStrip();
+  renderClassicsGroups();
+  if (!state.currentClassicGroup) {
+    renderClassicDetailPlaceholder();
+  }
+  setNotice("classicsNotice", `已加载 ${state.classicsGroups.length} 个群典藏`, "ok");
+  return data;
+}
+
+async function loadClassicGroup(groupId) {
+  const value = String(groupId || "").trim();
+  if (!value) {
+    state.currentClassicGroup = null;
+    state.currentClassicImages = [];
+    renderClassicDetailPlaceholder();
+    return;
+  }
+
+  const data = await requestJson(`./api/classics/groups/${encodeURIComponent(value)}`, { headers: headers() });
+  state.currentClassicGroup = String(data.group_id);
+  state.currentClassicImages = data.images || [];
+  renderClassicGroupDetail();
+  setNotice("classicsNotice", `群 ${state.currentClassicGroup} 已加载`, "ok");
+}
+
+async function clearClassicGroup() {
+  state.currentClassicGroup = null;
+  state.currentClassicImages = [];
+  renderClassicDetailPlaceholder();
+  setRoute("classics");
+}
+
+async function deleteClassicGroup(groupId = state.currentClassicGroup) {
+  const value = String(groupId || "").trim();
+  if (!value) return;
+  if (!confirm(`删除群 ${value} 的全部典图？`)) return;
+
+  await requestJson(`./api/classics/groups/${encodeURIComponent(value)}`, {
+    method: "DELETE",
+    headers: headers(),
+  });
+
+  if (String(state.currentClassicGroup) === value) {
+    state.currentClassicGroup = null;
+    state.currentClassicImages = [];
+    setRoute("classics", null, true);
+    renderClassicDetailPlaceholder("已删除这个群的全部典图。");
+  }
+  await loadClassicGroups();
+  setNotice("classicsNotice", `群 ${value} 的典图已删除`, "ok");
+}
+
+async function deleteClassicImage(filename) {
+  if (!state.currentClassicGroup || !filename) return;
+  if (!confirm(`删除这张典图：${filename}？`)) return;
+
+  await requestJson(
+    `./api/classics/groups/${encodeURIComponent(state.currentClassicGroup)}/images/${encodeURIComponent(filename)}`,
+    {
+      method: "DELETE",
+      headers: headers(),
+    },
+  );
+
+  await loadClassicGroup(state.currentClassicGroup);
+  await loadClassicGroups();
+  setNotice("classicsNotice", `已删除：${filename}`, "ok");
+}
+
+function applyRoute() {
+  const { view, groupId } = parseRoute();
+  showView(view);
+  if (view !== "classics") return;
+  if (!groupId) {
+    if (state.currentClassicGroup) {
+      renderClassicGroupDetail();
+    } else {
+      renderClassicDetailPlaceholder();
+    }
+    return;
+  }
+
+  loadClassicGroup(groupId).catch((error) => {
+    setNotice("classicsNotice", error.message, "error");
+  });
+}
+
+async function refreshAll() {
+  setConnectionStatus("同步中");
+  setGlobalStatus("正在同步控制室...");
+
+  const tasks = [
+    loadPolicy(),
+    loadReplies(),
+    loadLuaCommands(),
+    loadMenus(),
+    loadRestaurants(),
+    loadClassicGroups(),
+  ];
+
+  const results = await Promise.allSettled(tasks);
+  const failures = results.filter((item) => item.status === "rejected");
+
+  if (failures.length) {
+    setConnectionStatus("部分异常");
+    setGlobalStatus(`同步完成，但有 ${failures.length} 项加载失败`, "error");
+  } else {
+    setConnectionStatus("在线");
+    setGlobalStatus("控制室已同步", "ok");
+  }
+}
+
+document.addEventListener("click", (event) => {
+  const target = event.target.closest(
+    "button, [data-add-rule], [data-group-action], [data-lua-open], [data-edit-menu], [data-delete-menu], [data-edit-restaurant], [data-delete-restaurant], [data-classics-open], [data-delete-classics-group], [data-delete-classic-image]",
+  );
   if (!target) return;
-  if (target.matches(".tab")) showTab(target.dataset.tab);
-  if (target.dataset.groupAction) groupAction(target.dataset.groupAction).catch((error) => byId("state").textContent = error.message);
-  if (target.dataset.addRule) addRule(target.dataset.addRule);
-  if (target.dataset.luaOpen) openLuaCommand(target.dataset.luaOpen);
-  if (target.dataset.editMenu) editMenu(target.dataset.editMenu);
-  if (target.dataset.deleteMenu) deleteMenu(target.dataset.deleteMenu).catch((error) => setNotice("menuNotice", error.message, "error"));
-  if (target.dataset.editRestaurant) editRestaurant(target.dataset.editRestaurant);
-  if (target.dataset.deleteRestaurant) deleteRestaurant(target.dataset.deleteRestaurant).catch((error) => setNotice("restaurantNotice", error.message, "error"));
+
+  if (target.dataset.view) {
+    setRoute(target.dataset.view);
+  }
+
+  if (target.dataset.groupAction) {
+    groupAction(target.dataset.groupAction).catch((error) => {
+      byId("state").textContent = error.message;
+    });
+  }
+
+  if (target.dataset.addRule) {
+    addRule(target.dataset.addRule);
+  }
+
+  if (target.dataset.luaOpen) {
+    openLuaCommand(target.dataset.luaOpen).catch((error) => {
+      setNotice("luaNotice", error.message, "error");
+    });
+  }
+
+  if (target.dataset.editMenu) {
+    editMenu(target.dataset.editMenu);
+  }
+
+  if (target.dataset.deleteMenu) {
+    deleteMenu(target.dataset.deleteMenu).catch((error) => {
+      setNotice("menuNotice", error.message, "error");
+    });
+  }
+
+  if (target.dataset.editRestaurant) {
+    editRestaurant(target.dataset.editRestaurant);
+  }
+
+  if (target.dataset.deleteRestaurant) {
+    deleteRestaurant(target.dataset.deleteRestaurant).catch((error) => {
+      setNotice("restaurantNotice", error.message, "error");
+    });
+  }
+
+  if (target.dataset.classicsOpen) {
+    setRoute("classics", target.dataset.classicsOpen);
+  }
+
+  if (target.dataset.deleteClassicsGroup) {
+    deleteClassicGroup(target.dataset.deleteClassicsGroup).catch((error) => {
+      setNotice("classicsNotice", error.message, "error");
+    });
+  }
+
+  if (target.dataset.deleteClassicImage) {
+    deleteClassicImage(target.dataset.deleteClassicImage).catch((error) => {
+      setNotice("classicsNotice", error.message, "error");
+    });
+  }
 
   const action = target.dataset.action;
   if (!action) return;
+
   const actions = {
-    refresh,
-    "set-mode": setMode,
-    "save-prefixes": savePrefixes,
-    "save-direct-trigger-percent": saveDirectTriggerPercent,
+    refresh: refreshAll,
+    logout,
     "save-core-config": saveCoreConfig,
     "load-replies": loadReplies,
     "save-replies": saveReplies,
@@ -569,25 +879,52 @@ document.addEventListener("click", async (event) => {
     "load-restaurants": loadRestaurants,
     "save-restaurant": saveRestaurant,
     "new-restaurant": newRestaurant,
+    "load-classics-groups": loadClassicGroups,
+    "clear-classics-group": clearClassicGroup,
+    "delete-current-classics-group": deleteClassicGroup,
+    "reload-classics-group": () => (
+      state.currentClassicGroup ? loadClassicGroup(state.currentClassicGroup) : loadClassicGroups()
+    ),
   };
+
   if (actions[action]) {
     actions[action]().catch((error) => {
-      byId("state").textContent = error.message;
+      setGlobalStatus(error.message, "error");
     });
   }
 });
 
-byId("luaImport").addEventListener("change", (event) => importLuaFile(event.target.files[0]));
-byId("menuSearch").addEventListener("input", () => loadMenus());
+byId("luaImport").addEventListener("change", (event) => {
+  importLuaFile(event.target.files[0]);
+});
+
+byId("menuSearch").addEventListener("input", () => {
+  loadMenus().catch((error) => setNotice("menuNotice", error.message, "error"));
+});
+
+byId("restaurantFilterGroupId").addEventListener("input", () => {
+  loadRestaurants().catch((error) => setNotice("restaurantNotice", error.message, "error"));
+});
+
+byId("classicsGroupSearch").addEventListener("input", () => {
+  loadClassicGroups().catch((error) => setNotice("classicsNotice", error.message, "error"));
+});
+
 document.querySelectorAll("[data-rule-filter]").forEach((node) => {
   node.addEventListener("input", () => {
-    ruleFilters[node.dataset.ruleFilter] = node.value;
+    state.ruleFilters[node.dataset.ruleFilter] = node.value;
     renderRules(node.dataset.ruleFilter);
   });
 });
 
-refresh();
-loadReplies();
-loadLuaCommands();
-loadMenus();
-loadRestaurants();
+window.addEventListener("hashchange", applyRoute);
+
+if (!location.hash) {
+  history.replaceState(null, "", "#overview");
+}
+
+applyRoute();
+refreshAll().catch((error) => {
+  setConnectionStatus("异常");
+  setGlobalStatus(error.message, "error");
+});

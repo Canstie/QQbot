@@ -35,3 +35,17 @@ def test_onebot_event_conversion_detects_at_and_text():
     assert converted.user_id == 10000
     assert converted.is_at_bot is True
     assert converted.raw_message == "~hello"
+
+
+def test_onebot_event_conversion_keeps_reply_segment():
+    event = FakeEvent(
+        [
+            FakeSegment("reply", {"id": "123456"}),
+            FakeSegment("text", {"text": " ~左对称"}),
+        ]
+    )
+
+    converted = onebot_to_internal(event, self_id=99999)
+
+    assert converted.raw_message == "~左对称"
+    assert converted.segments[0] == {"type": "reply", "data": {"id": "123456"}}

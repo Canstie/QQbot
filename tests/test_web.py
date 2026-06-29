@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 
 from fastapi.testclient import TestClient
@@ -49,10 +50,9 @@ def test_index_serves_static_frontend(tmp_path, monkeypatch):
     assert response.status_code == 200
     assert "QQ Bot" in response.text
     assert "static/app.js" in response.text
-    assert "luaImport" in response.text
-    assert "luaCommandList" in response.text
-    assert "directRulesFilter" in response.text
-    assert "rulesMeta" in response.text
+    assert "classicsGroupsList" in response.text
+    assert "overviewArchiveStrip" in response.text
+    assert 'data-view="classics"' in response.text
 
 
 def test_replies_api_still_accepts_raw_json(tmp_path, monkeypatch):
@@ -381,3 +381,129 @@ def test_menu_and_restaurant_write_apis_require_token_when_configured(tmp_path, 
 
     assert menu_response.status_code == 401
     assert restaurant_response.status_code == 401
+
+
+def test_web_login_session_when_token_configured(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("QQBOT_WEB_TOKEN", "secret")
+    monkeypatch.setenv("QQBOT_DB_PATH", str(tmp_path / "policy.sqlite3"))
+    reset_runtime()
+    client = TestClient(create_app())
+
+    index_response = client.get("/", follow_redirects=False)
+    api_response = client.get("/api/policy")
+    bad_login = client.post("/login", data={"password": "bad"})
+
+    assert index_response.status_code == 303
+    assert index_response.headers["location"] == "./login"
+    assert api_response.status_code == 401
+    assert bad_login.status_code == 401
+
+    login_response = client.post("/login", data={"password": "secret"}, follow_redirects=False)
+
+    assert login_response.status_code == 303
+    assert "qqbot_admin_session" in login_response.headers["set-cookie"]
+
+    response = client.get("/api/policy")
+
+    assert response.status_code == 200
+
+    write_response = client.post("/api/policy/prefixes", json={"prefixes": ["~"]})
+
+    assert write_response.status_code == 200
+
+    logout_response = client.post("/logout", follow_redirects=False)
+
+    assert logout_response.status_code == 303
+    assert client.get("/api/policy").status_code == 401
+
+
+def test_classics_api_lists_groups_reads_group_and_serves_images(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("QQBOT_WEB_TOKEN", raising=False)
+    classics_dir = tmp_path / "classics"
+    monkeypatch.setenv("QQBOT_CLASSICS_IMAGE_DIR", str(classics_dir))
+    reset_runtime()
+    client = TestClient(create_app())
+
+    group_dir = classics_dir / "123"
+    group_dir.mkdir(parents=True)
+    image_body = base64.b64decode(GIF_DATA_URL.split(",", 1)[1])
+    (group_dir / "classic.gif").write_bytes(image_body)
+
+    response = client.get("/api/classics/groups")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["groups"][0]["group_id"] == 123
+    assert data["groups"][0]["count"] == 1
+    assert data["groups"][0]["cover_url"].endswith("/api/classic-images/123/classic.gif")
+
+    response = client.get("/api/classics/groups/123")
+
+    assert response.status_code == 200
+    detail = response.json()
+    assert detail["group_id"] == 123
+    assert detail["count"] == 1
+    assert detail["images"][0]["filename"] == "classic.gif"
+
+    response = client.get("/api/classic-images/123/classic.gif")
+
+    assert response.status_code == 200
+    assert response.content == image_body
+
+
+def test_classics_api_deletes_single_image_and_whole_group(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("QQBOT_WEB_TOKEN", raising=False)
+    classics_dir = tmp_path / "classics"
+    monkeypatch.setenv("QQBOT_CLASSICS_IMAGE_DIR", str(classics_dir))
+    reset_runtime()
+    client = TestClient(create_app())
+
+    group_dir = classics_dir / "123"
+    group_dir.mkdir(parents=True)
+    image_body = base64.b64decode(GIF_DATA_URL.split(",", 1)[1])
+    first = group_dir / "first.gif"
+    second = group_dir / "second.gif"
+    first.write_bytes(image_body)
+    second.write_bytes(image_body)
+
+    response = client.delete("/api/classics/groups/123/images/first.gif")
+
+    assert response.status_code == 200
+    assert response.json()["deleted"] is True
+    assert response.json()["group"]["count"] == 1
+    assert not first.exists()
+    assert second.exists()
+
+    response = client.get("/api/classics/groups/123")
+
+    assert response.status_code == 200
+    assert response.json()["count"] == 1
+    assert response.json()["images"][0]["filename"] == "second.gif"
+
+    response = client.delete("/api/classics/groups/123")
+
+    assert response.status_code == 200
+    assert response.json()["deleted"] is True
+    assert response.json()["deleted_count"] == 1
+    assert not group_dir.exists()
+
+    response = client.get("/api/classics/groups")
+
+    assert response.status_code == 200
+    assert response.json()["groups"] == []
+
+
+def test_classics_api_returns_empty_groups_when_directory_missing(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("QQBOT_WEB_TOKEN", raising=False)
+    monkeypatch.setenv("QQBOT_CLASSICS_IMAGE_DIR", str(tmp_path / "missing-classics"))
+    reset_runtime()
+    client = TestClient(create_app())
+
+    response = client.get("/api/classics/groups")
+
+    assert response.status_code == 200
+    assert response.json()["groups"] == []

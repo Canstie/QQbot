@@ -4,8 +4,9 @@ import hashlib
 import json
 import sqlite3
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from qq_personal_bot.menu_recipes import (
     cache_image,
@@ -20,6 +21,9 @@ from qq_personal_bot.menu_recipes import (
     optional_text_list,
 )
 from qq_personal_bot.settings import AppSettings
+
+
+CHINA_TZ = timezone(timedelta(hours=8))
 
 
 class PolicyStore:
@@ -114,6 +118,25 @@ class PolicyStore:
                 updated_at REAL NOT NULL,
                 UNIQUE(group_id, name)
             );
+
+            CREATE TABLE IF NOT EXISTS group_daily_stats (
+                date TEXT NOT NULL,
+                group_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                message_count INTEGER NOT NULL DEFAULT 0,
+                text_chars INTEGER NOT NULL DEFAULT 0,
+                image_count INTEGER NOT NULL DEFAULT 0,
+                at_count INTEGER NOT NULL DEFAULT 0,
+                reply_count INTEGER NOT NULL DEFAULT 0,
+                first_timestamp REAL NOT NULL,
+                last_timestamp REAL NOT NULL,
+                hourly_json TEXT NOT NULL,
+                updated_at REAL NOT NULL,
+                PRIMARY KEY (date, group_id, user_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_group_daily_stats_group_date
+            ON group_daily_stats(group_id, date);
             """
         )
 
@@ -481,6 +504,169 @@ class PolicyStore:
                 (namespace, key),
             )
             return cursor.rowcount > 0
+
+    def record_group_message_activity(
+        self,
+        *,
+        group_id: int,
+        user_id: int,
+        timestamp: float,
+        raw_message: str,
+        segments: Any,
+    ) -> None:
+        group_id = int(group_id)
+        user_id = int(user_id)
+        event_time = float(timestamp or time.time())
+        event_datetime = datetime.fromtimestamp(event_time, CHINA_TZ)
+        event_date = event_datetime.date().isoformat()
+        hour = event_datetime.hour
+        text_chars = len(str(raw_message or "").strip())
+        image_count = self._count_segments(segments, "image")
+        at_count = self._count_segments(segments, "at")
+        reply_count = self._count_segments(segments, "reply")
+        now = time.time()
+
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT hourly_json, first_timestamp, last_timestamp
+                FROM group_daily_stats
+                WHERE date = ? AND group_id = ? AND user_id = ?
+                """,
+                (event_date, group_id, user_id),
+            ).fetchone()
+            if row is None:
+                hourly_counts = [0] * 24
+                hourly_counts[hour] = 1
+                conn.execute(
+                    """
+                    INSERT INTO group_daily_stats(
+                        date,
+                        group_id,
+                        user_id,
+                        message_count,
+                        text_chars,
+                        image_count,
+                        at_count,
+                        reply_count,
+                        first_timestamp,
+                        last_timestamp,
+                        hourly_json,
+                        updated_at
+                    )
+                    VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        event_date,
+                        group_id,
+                        user_id,
+                        text_chars,
+                        image_count,
+                        at_count,
+                        reply_count,
+                        event_time,
+                        event_time,
+                        json.dumps(hourly_counts, separators=(",", ":")),
+                        now,
+                    ),
+                )
+                return
+
+            hourly_counts = self._decode_hourly_counts(str(row["hourly_json"]))
+            hourly_counts[hour] += 1
+            conn.execute(
+                """
+                UPDATE group_daily_stats
+                SET
+                    message_count = message_count + 1,
+                    text_chars = text_chars + ?,
+                    image_count = image_count + ?,
+                    at_count = at_count + ?,
+                    reply_count = reply_count + ?,
+                    first_timestamp = MIN(first_timestamp, ?),
+                    last_timestamp = MAX(last_timestamp, ?),
+                    hourly_json = ?,
+                    updated_at = ?
+                WHERE date = ? AND group_id = ? AND user_id = ?
+                """,
+                (
+                    text_chars,
+                    image_count,
+                    at_count,
+                    reply_count,
+                    event_time,
+                    event_time,
+                    json.dumps(hourly_counts, separators=(",", ":")),
+                    now,
+                    event_date,
+                    group_id,
+                    user_id,
+                ),
+            )
+
+    def get_group_daily_summary(
+        self,
+        group_id: int,
+        date: str,
+        limit: int = 5,
+    ) -> dict[str, Any]:
+        group_id = int(group_id)
+        target_date = str(date or "").strip()
+        if not target_date:
+            target_date = datetime.now(CHINA_TZ).date().isoformat()
+        limit = max(1, min(int(limit), 20))
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    date,
+                    group_id,
+                    user_id,
+                    message_count,
+                    text_chars,
+                    image_count,
+                    at_count,
+                    reply_count,
+                    first_timestamp,
+                    last_timestamp,
+                    hourly_json
+                FROM group_daily_stats
+                WHERE date = ? AND group_id = ?
+                """,
+                (target_date, group_id),
+            ).fetchall()
+
+        stats = [self._group_stat_from_row(row) for row in rows]
+        total_messages = sum(item["message_count"] for item in stats)
+        hourly_counts = [0] * 24
+        for item in stats:
+            for hour, count in enumerate(item["hourly_counts"]):
+                hourly_counts[hour] += count
+        active_hours = [
+            {"hour": hour, "message_count": count}
+            for hour, count in enumerate(hourly_counts)
+            if count > 0
+        ]
+        active_hours.sort(key=lambda item: (-item["message_count"], item["hour"]))
+        peak_hour = active_hours[0] if active_hours else None
+        early_bird = min(stats, key=lambda item: item["first_timestamp"]) if stats else None
+        night_owl = max(stats, key=lambda item: item["last_timestamp"]) if stats else None
+
+        return {
+            "date": target_date,
+            "group_id": group_id,
+            "total_messages": total_messages,
+            "active_users": len(stats),
+            "peak_hour": peak_hour,
+            "active_hours": active_hours[:limit],
+            "early_bird": self._public_group_stat(early_bird) if early_bird else None,
+            "night_owl": self._public_group_stat(night_owl) if night_owl else None,
+            "top_messages": self._top_group_stats(stats, "message_count", limit),
+            "top_text_chars": self._top_group_stats(stats, "text_chars", limit),
+            "top_images": self._top_group_stats(stats, "image_count", limit, positive_only=True),
+            "top_mentions": self._top_group_stats(stats, "at_count", limit, positive_only=True),
+        }
 
     def menu_recipe_count(self) -> int:
         with self._connect() as conn:
@@ -1090,6 +1276,104 @@ class PolicyStore:
             "created_at": float(row["created_at"]),
             "updated_at": float(row["updated_at"]),
         }
+
+    def _count_segments(self, segments: Any, segment_type: str) -> int:
+        count = 0
+        for segment in self._iter_segments(segments):
+            if str(segment.get("type") or "") == segment_type:
+                count += 1
+        return count
+
+    def _iter_segments(self, segments: Any) -> list[Mapping[str, Any]]:
+        if segments is None or isinstance(segments, str):
+            return []
+        if isinstance(segments, Mapping):
+            return [segments] if "type" in segments else []
+
+        result = []
+        try:
+            iterator = iter(segments)
+        except TypeError:
+            return []
+        for item in iterator:
+            if isinstance(item, Mapping):
+                result.append(item)
+        return result
+
+    def _decode_hourly_counts(self, value: str) -> list[int]:
+        try:
+            raw = json.loads(value)
+        except json.JSONDecodeError:
+            raw = []
+        counts = []
+        if isinstance(raw, list):
+            for item in raw[:24]:
+                try:
+                    counts.append(max(0, int(item)))
+                except (TypeError, ValueError):
+                    counts.append(0)
+        counts.extend([0] * (24 - len(counts)))
+        return counts[:24]
+
+    def _group_stat_from_row(self, row: sqlite3.Row) -> dict[str, Any]:
+        first_timestamp = float(row["first_timestamp"])
+        last_timestamp = float(row["last_timestamp"])
+        return {
+            "date": str(row["date"]),
+            "group_id": int(row["group_id"]),
+            "user_id": int(row["user_id"]),
+            "message_count": int(row["message_count"]),
+            "text_chars": int(row["text_chars"]),
+            "image_count": int(row["image_count"]),
+            "at_count": int(row["at_count"]),
+            "reply_count": int(row["reply_count"]),
+            "first_timestamp": first_timestamp,
+            "last_timestamp": last_timestamp,
+            "first_time": self._time_label(first_timestamp),
+            "last_time": self._time_label(last_timestamp),
+            "hourly_counts": self._decode_hourly_counts(str(row["hourly_json"])),
+        }
+
+    def _public_group_stat(self, stat: dict[str, Any] | None) -> dict[str, Any] | None:
+        if stat is None:
+            return None
+        return {
+            "user_id": stat["user_id"],
+            "message_count": stat["message_count"],
+            "text_chars": stat["text_chars"],
+            "image_count": stat["image_count"],
+            "at_count": stat["at_count"],
+            "reply_count": stat["reply_count"],
+            "first_timestamp": stat["first_timestamp"],
+            "last_timestamp": stat["last_timestamp"],
+            "first_time": stat["first_time"],
+            "last_time": stat["last_time"],
+        }
+
+    def _top_group_stats(
+        self,
+        stats: list[dict[str, Any]],
+        metric: str,
+        limit: int,
+        *,
+        positive_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        ranked = [item for item in stats if not positive_only or item[metric] > 0]
+        ranked.sort(
+            key=lambda item: (
+                -int(item[metric]),
+                -int(item["message_count"]),
+                int(item["user_id"]),
+            )
+        )
+        return [
+            public
+            for item in ranked[:limit]
+            if (public := self._public_group_stat(item)) is not None
+        ]
+
+    def _time_label(self, timestamp: float) -> str:
+        return datetime.fromtimestamp(timestamp, CHINA_TZ).strftime("%H:%M")
 
     def audit(
         self,

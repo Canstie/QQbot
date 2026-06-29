@@ -50,7 +50,7 @@ python bot.py
 构建后双击 `dist\QQBotLauncher.exe` 即可后台启动 Bot。启动器会使用本项目的
 `.venv\Scripts\python.exe` 运行 `bot.py`，日志按天写入
 `logs\qqbot-YYYY-MM-DD.log`。启动器会在后台驻留，跨天时重启 Bot 切换到新日志，
-并清理过期日志；默认保留最近 7 天。若只想保留当天日志，可在启动前设置：
+并清理过期日志；默认保留最近 2 天。若只想保留当天日志，可在启动前设置：
 
 ```powershell
 $env:QQBOT_LOG_RETENTION_DAYS = "1"
@@ -86,8 +86,9 @@ ONEBOT_WS_URLS=["ws://127.0.0.1:3001"]
 http://127.0.0.1:8080/qqbot/
 ```
 
-如果设置了 `QQBOT_WEB_TOKEN`，可在页面 token 输入框中填写，也可以通过
-`?token=...` 或 API 请求头 `X-Admin-Token` 传入。
+如果设置了 `QQBOT_WEB_TOKEN`，访问管理页会先进入登录页；登录后会写入
+HttpOnly 会话 Cookie。脚本或调试请求仍可通过 `?token=...` 或 API 请求头
+`X-Admin-Token` 传入同一个 token。
 
 Web 管理页可以直接用表单维护触发前缀、前缀触发回复、免前缀关键词回复。
 保存时会校验规则字段和正则表达式；保存成功后下一条消息会使用新规则。
@@ -194,7 +195,9 @@ scripts/lua/抽群老婆.lua
 - `~今日饭店`：从当前群已添加并启用的饭店中随机抽取一个。
 - `~存典`：提示发送图片后，把发起人的下一张图片保存到 `data/classics/<群号>`；发送 `取消` 可退出。
 - `~爆典`：从当前群已保存的典图里随机发出一张。
+- `~上对称` / `~下对称` / `~左对称` / `~右对称`：引用一张图片后发送，对图片按指定方向生成对称图；图片只临时保存，处理完成后删除。
 - `~群排行` 或 `~群排行 摸鱼王`：每天按主题随机生成群成员 TOP3。
+- `~群总结`：按今日真实群消息统计总消息数、活跃人数、水群榜、字数榜、发图榜、@ 人榜、最活跃时段、早鸟和夜猫子；只保存统计计数，不保存消息正文。
 
 Web 管理页按标签页整理为策略、回复规则、Lua、菜单、饭店。策略页可直接修改核心配置 JSON 对应字段，包括模式、启用/屏蔽群、管理员、@ 触发、前缀、免前缀概率、群限流秒数和用户每分钟限流；菜单页可新增/编辑/删除带图菜单并清理无图 HowToCook；饭店页可新增/编辑/删除饭店和招牌菜。
 
@@ -254,6 +257,7 @@ end
 - `api.save_classic_image(group_id, image_source, image_id)`：保存典图到 `data/classics/<group_id>`
 - `api.pick_classic_image(group_id, seed)`：从当前群典图库里选一张图片路径
 - `api.classic_image(relpath)`：把典图相对路径转成可发送的 CQ 图片
+- `api.mirror_referenced_image(direction)`：读取当前消息引用的图片并生成对称图；`direction` 支持 `top`、`bottom`、`left`、`right`，处理过程只使用临时文件
 
 ## 测试
 

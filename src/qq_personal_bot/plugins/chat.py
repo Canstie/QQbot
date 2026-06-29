@@ -10,7 +10,7 @@ from qq_personal_bot.core.models import PolicyDecision
 from qq_personal_bot.lua_runner import pending_lua_command, run_lua_message
 from qq_personal_bot.plugins.custom_flows import handle_custom_flow
 from qq_personal_bot.replies import build_reply
-from qq_personal_bot.runtime import get_policy_engine
+from qq_personal_bot.runtime import get_policy_engine, get_store
 
 chat = on_message(priority=50, block=False)
 self_sent = on("message_sent", priority=50, block=False)
@@ -51,6 +51,7 @@ async def _handle_onebot_message(
     explicit_group_send: bool = False,
 ) -> None:
     internal_event = onebot_to_internal(event, self_id=bot.self_id)
+    _record_group_activity(internal_event, self_id=bot.self_id)
     pending_command = pending_lua_command(internal_event)
     if pending_command is not None:
         lua_result = await run_lua_message(
@@ -126,3 +127,26 @@ async def handle_group_message(bot: Bot, event: GroupMessageEvent):
 @self_sent.handle()
 async def handle_self_sent_message(bot: Bot, event: Event):
     await _handle_onebot_message(self_sent, bot, event, explicit_group_send=True)
+
+
+def _record_group_activity(event: Any, *, self_id: int | str) -> None:
+    if event.group_id is None or str(event.user_id) == str(self_id):
+        return
+
+    store = get_store()
+    mode = store.get_mode()
+    if mode == "allowlist" and not store.is_group_enabled(event.group_id):
+        return
+    if mode == "blocklist" and store.is_group_blocked(event.group_id):
+        return
+
+    try:
+        store.record_group_message_activity(
+            group_id=event.group_id,
+            user_id=event.user_id,
+            timestamp=event.timestamp,
+            raw_message=event.raw_message,
+            segments=event.segments,
+        )
+    except Exception as exc:
+        logger.warning(f"Failed to record group activity: {exc}")

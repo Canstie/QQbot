@@ -1,11 +1,18 @@
+import base64
+import hashlib
+import hmac
+import html
 import json
 import re
-import base64
+import shutil
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import parse_qs, quote
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -17,6 +24,7 @@ from qq_personal_bot.lua_runner import (
     validate_lua_command,
     validate_lua_script,
 )
+from qq_personal_bot.menu_recipes import is_supported_image_file
 from qq_personal_bot.replies import (
     DEFAULT_CONFIG,
     parse_reply_config,
@@ -66,22 +74,67 @@ class RestaurantPayload(BaseModel):
     enabled: bool = True
 
 
+_SESSION_COOKIE_NAME = "qqbot_admin_session"
+_SESSION_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+
+
 def create_app():
     app = FastAPI(title="QQ Personal Bot Admin")
     static_dir = _static_dir()
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
-    def require_token(request: Request) -> None:
+    @app.middleware("http")
+    async def require_login(request: Request, call_next):
         expected = get_settings().web_token
-        if not expected:
-            return
-        provided = request.headers.get("x-admin-token") or request.query_params.get("token")
-        if provided != expected:
+        if not expected or _is_public_admin_path(request):
+            return await call_next(request)
+        if _is_authenticated(request):
+            return await call_next(request)
+        if _is_api_path(request):
+            return JSONResponse({"detail": "login required"}, status_code=401)
+        return RedirectResponse("./login", status_code=303)
+
+    def require_token(request: Request) -> None:
+        if not _is_authenticated(request):
             raise HTTPException(status_code=401, detail="invalid admin token")
 
     @app.get("/")
     async def index() -> FileResponse:
         return FileResponse(static_dir / "index.html")
+
+    @app.get("/login")
+    async def login_page(request: Request) -> Response:
+        if _is_authenticated(request):
+            return RedirectResponse("./", status_code=303)
+        return HTMLResponse(_login_page_html())
+
+    @app.post("/login")
+    async def login(request: Request) -> Response:
+        expected = get_settings().web_token
+        if not expected:
+            return RedirectResponse("./", status_code=303)
+
+        body = (await request.body()).decode("utf-8", errors="ignore")
+        password = parse_qs(body).get("password", [""])[0]
+        if not hmac.compare_digest(password, expected):
+            return HTMLResponse(_login_page_html("token 不正确"), status_code=401)
+
+        response = RedirectResponse("./", status_code=303)
+        response.set_cookie(
+            _SESSION_COOKIE_NAME,
+            _sign_session_cookie(expected),
+            max_age=_SESSION_MAX_AGE_SECONDS,
+            httponly=True,
+            samesite="lax",
+            path=_cookie_path(request),
+        )
+        return response
+
+    @app.post("/logout")
+    async def logout(request: Request) -> Response:
+        response = RedirectResponse("./login", status_code=303)
+        response.delete_cookie(_SESSION_COOKIE_NAME, path=_cookie_path(request))
+        return response
 
     @app.get("/api/policy")
     async def get_policy() -> dict:
@@ -323,6 +376,34 @@ def create_app():
         require_token(request)
         return {"deleted": get_store().delete_restaurant(restaurant_id), "id": restaurant_id}
 
+    @app.get("/api/classics/groups")
+    async def get_classic_groups(search: str = "", limit: int = 200) -> dict:
+        return {
+            "groups": _list_classic_groups(search=search, limit=limit),
+            "root": str(get_settings().classics_image_dir),
+        }
+
+    @app.get("/api/classics/groups/{group_id}")
+    async def get_classic_group(group_id: int, limit: int = 500) -> dict:
+        return _classic_group_detail(group_id, limit=limit)
+
+    @app.delete("/api/classics/groups/{group_id}")
+    async def delete_classic_group(group_id: int, request: Request) -> dict:
+        require_token(request)
+        return _delete_classic_group(group_id)
+
+    @app.delete("/api/classics/groups/{group_id}/images/{filename:path}")
+    async def delete_classic_group_image(group_id: int, filename: str, request: Request) -> dict:
+        require_token(request)
+        return _delete_classic_image(group_id, filename)
+
+    @app.get("/api/classic-images/{image_path:path}")
+    async def get_classic_image(image_path: str) -> FileResponse:
+        path = _resolve_classic_image(image_path)
+        if not path.is_file() or not is_supported_image_file(path):
+            raise HTTPException(status_code=404, detail="classic image not found")
+        return FileResponse(path)
+
     @app.post("/api/groups/{group_id}/on")
     async def group_on(group_id: int, request: Request) -> dict:
         require_token(request)
@@ -367,6 +448,186 @@ def _static_dir() -> Path:
 
 def _replies_path() -> Path:
     return Path("replies.json")
+
+
+def _is_public_admin_path(request: Request) -> bool:
+    path = request.scope.get("path", "")
+    normalized = path.rstrip("/") or "/"
+    return (
+        normalized.endswith("/login")
+        or normalized.endswith("/logout")
+        or path.startswith("/static/")
+        or "/static/" in path
+    )
+
+
+def _is_api_path(request: Request) -> bool:
+    path = request.scope.get("path", "")
+    return path.startswith("/api/") or "/api/" in path
+
+
+def _is_authenticated(request: Request) -> bool:
+    expected = get_settings().web_token
+    if not expected:
+        return True
+
+    provided = request.headers.get("x-admin-token") or request.query_params.get("token")
+    if provided and hmac.compare_digest(provided, expected):
+        return True
+
+    return _verify_session_cookie(request.cookies.get(_SESSION_COOKIE_NAME), expected)
+
+
+def _sign_session_cookie(secret: str, now: int | None = None) -> str:
+    issued_at = str(int(now if now is not None else time.time()))
+    digest = hmac.new(secret.encode("utf-8"), issued_at.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{issued_at}.{digest}"
+
+
+def _verify_session_cookie(value: str | None, secret: str) -> bool:
+    if not value:
+        return False
+    issued_at, sep, digest = value.partition(".")
+    if not sep or not issued_at.isdigit():
+        return False
+
+    try:
+        issued_ts = int(issued_at)
+    except ValueError:
+        return False
+    if issued_ts > int(time.time()) + 60:
+        return False
+    if int(time.time()) - issued_ts > _SESSION_MAX_AGE_SECONDS:
+        return False
+
+    expected = _sign_session_cookie(secret, issued_ts).split(".", 1)[1]
+    return hmac.compare_digest(digest, expected)
+
+
+def _cookie_path(request: Request) -> str:
+    return str(request.scope.get("root_path") or "/")
+
+
+def _login_page_html(error: str = "") -> str:
+    error_html = (
+        f'<div class="error">{html.escape(error)}</div>'
+        if error
+        else '<p class="hint">请输入服务器 .env 中的 QQBOT_WEB_TOKEN。</p>'
+    )
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>QQ Bot 登录</title>
+  <style>
+    :root {{
+      color-scheme: dark;
+      --bg: #101114;
+      --panel: #181a1f;
+      --text: #f5f7fb;
+      --muted: #a7adb8;
+      --line: #2b3038;
+      --accent: #6ee7b7;
+      --danger: #fb7185;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      min-height: 100vh;
+      margin: 0;
+      display: grid;
+      place-items: center;
+      background:
+        radial-gradient(circle at 20% 10%, rgba(110, 231, 183, 0.14), transparent 28rem),
+        linear-gradient(135deg, #101114 0%, #17191f 100%);
+      color: var(--text);
+      font-family: Inter, "Segoe UI", "Microsoft YaHei", sans-serif;
+    }}
+    main {{
+      width: min(92vw, 420px);
+      padding: 32px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(24, 26, 31, 0.94);
+      box-shadow: 0 24px 70px rgba(0, 0, 0, 0.35);
+    }}
+    p, h1 {{ margin: 0; }}
+    .eyebrow {{
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }}
+    h1 {{
+      margin-top: 10px;
+      font-size: 30px;
+      line-height: 1.15;
+    }}
+    .hint {{
+      margin-top: 12px;
+      color: var(--muted);
+      line-height: 1.7;
+    }}
+    form {{
+      margin-top: 26px;
+      display: grid;
+      gap: 14px;
+    }}
+    label {{
+      display: grid;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 14px;
+    }}
+    input {{
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 13px 14px;
+      background: #0f1116;
+      color: var(--text);
+      font: inherit;
+      outline: none;
+    }}
+    input:focus {{
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(110, 231, 183, 0.16);
+    }}
+    button {{
+      border: 0;
+      border-radius: 10px;
+      padding: 13px 16px;
+      background: var(--accent);
+      color: #07110d;
+      font: inherit;
+      font-weight: 800;
+      cursor: pointer;
+    }}
+    .error {{
+      margin-top: 14px;
+      padding: 10px 12px;
+      border: 1px solid rgba(251, 113, 133, 0.5);
+      border-radius: 10px;
+      background: rgba(251, 113, 133, 0.1);
+      color: var(--danger);
+    }}
+  </style>
+</head>
+<body>
+  <main>
+    <p class="eyebrow">QQ Bot Admin</p>
+    <h1>登录控制台</h1>
+    {error_html}
+    <form method="post" action="./login">
+      <label>Web Token
+        <input name="password" type="password" autocomplete="current-password" autofocus required />
+      </label>
+      <button type="submit">进入后台</button>
+    </form>
+  </main>
+</body>
+</html>"""
 
 
 def _load_lua_for_editor() -> dict:
@@ -489,3 +750,147 @@ def _menu_for_api(menu: dict[str, Any], image_dir: Path) -> dict[str, Any]:
         image_path = (image_dir / image_relpath).resolve(strict=False)
         image_url = f"./api/menu-images/{image_relpath}" if image_path.is_file() else ""
     return {**menu, "image_url": image_url}
+
+
+def _list_classic_groups(search: str = "", limit: int = 200) -> list[dict[str, Any]]:
+    root = get_settings().classics_image_dir
+    if not root.is_dir():
+        return []
+
+    normalized_search = search.strip()
+    groups: list[dict[str, Any]] = []
+    for group_dir in root.iterdir():
+        if not group_dir.is_dir():
+            continue
+        if normalized_search and normalized_search not in group_dir.name:
+            continue
+        summary = _classic_group_summary(group_dir)
+        if summary is not None:
+            groups.append(summary)
+
+    groups.sort(key=lambda item: (item["updated_at"], item["group_id"]), reverse=True)
+    return groups[: max(1, min(int(limit), 500))]
+
+
+def _classic_group_detail(group_id: int, limit: int = 500) -> dict[str, Any]:
+    group_id = _validate_group_id(group_id)
+    group_dir = _classic_group_dir(group_id)
+    images = _classic_group_images(group_dir)
+    limited_images = images[: max(1, min(int(limit), 1000))]
+
+    return {
+        "group_id": group_id,
+        "exists": group_dir.is_dir(),
+        "count": len(images),
+        "images": [_classic_image_for_api(group_id, path) for path in limited_images],
+    }
+
+
+def _classic_group_summary(group_dir: Path) -> dict[str, Any] | None:
+    try:
+        group_id = int(group_dir.name)
+    except ValueError:
+        return None
+
+    images = _classic_group_images(group_dir)
+    if not images:
+        return None
+
+    latest = images[0]
+    latest_stat = latest.stat()
+    return {
+        "group_id": group_id,
+        "count": len(images),
+        "cover_url": _classic_image_url(f"{group_id}/{latest.name}"),
+        "updated_at": datetime.fromtimestamp(latest_stat.st_mtime, UTC).isoformat(),
+        "total_bytes": sum(path.stat().st_size for path in images),
+    }
+
+
+def _classic_group_images(group_dir: Path) -> list[Path]:
+    if not group_dir.is_dir():
+        return []
+    return sorted(
+        [
+            path
+            for path in group_dir.iterdir()
+            if path.is_file() and is_supported_image_file(path)
+        ],
+        key=lambda path: (path.stat().st_mtime, path.name),
+        reverse=True,
+    )
+
+
+def _classic_image_for_api(group_id: int, path: Path) -> dict[str, Any]:
+    relpath = f"{group_id}/{path.name}"
+    stat = path.stat()
+    return {
+        "filename": path.name,
+        "relpath": relpath,
+        "image_url": _classic_image_url(relpath),
+        "size": stat.st_size,
+        "modified_at": datetime.fromtimestamp(stat.st_mtime, UTC).isoformat(),
+    }
+
+
+def _classic_image_url(relpath: str) -> str:
+    encoded = "/".join(quote(part) for part in Path(relpath).parts)
+    return f"./api/classic-images/{encoded}"
+
+
+def _delete_classic_group(group_id: int) -> dict[str, Any]:
+    group_id = _validate_group_id(group_id)
+    group_dir = _classic_group_dir(group_id)
+    if not group_dir.exists():
+        return {"deleted": False, "group_id": group_id, "deleted_count": 0}
+    if not group_dir.is_dir():
+        raise HTTPException(status_code=400, detail="classic group path is not a directory")
+
+    deleted_count = len(_classic_group_images(group_dir))
+    shutil.rmtree(group_dir)
+    return {"deleted": True, "group_id": group_id, "deleted_count": deleted_count}
+
+
+def _delete_classic_image(group_id: int, filename: str) -> dict[str, Any]:
+    group_id = _validate_group_id(group_id)
+    group_dir = _classic_group_dir(group_id).resolve(strict=False)
+    path = _resolve_classic_image(f"{group_id}/{filename}")
+    if path.parent.resolve(strict=False) != group_dir:
+        raise HTTPException(status_code=404, detail="classic image not found")
+    if not path.is_file() or not is_supported_image_file(path):
+        raise HTTPException(status_code=404, detail="classic image not found")
+
+    path.unlink()
+    return {
+        "deleted": True,
+        "group_id": group_id,
+        "filename": path.name,
+        "group": _classic_group_detail(group_id),
+    }
+
+
+def _validate_group_id(group_id: int) -> int:
+    group_id = int(group_id)
+    if group_id <= 0:
+        raise HTTPException(status_code=400, detail="group_id must be positive")
+    return group_id
+
+
+def _classic_group_dir(group_id: int) -> Path:
+    root = get_settings().classics_image_dir.resolve(strict=False)
+    path = (root / str(_validate_group_id(group_id))).resolve(strict=False)
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="classic group not found") from exc
+    return path
+
+
+def _resolve_classic_image(relpath: str) -> Path:
+    root = get_settings().classics_image_dir.resolve(strict=False)
+    path = (root / relpath).resolve(strict=False)
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="classic image not found") from exc
+    return path

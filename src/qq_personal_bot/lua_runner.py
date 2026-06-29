@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
 import json
+import re
+import tempfile
 import traceback
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable, Mapping
 from urllib.parse import quote, urlparse
 from urllib.request import Request, urlopen
 
@@ -14,10 +18,15 @@ from nonebot import logger
 from nonebot.adapters.onebot.v11 import Bot
 
 from qq_personal_bot.core.models import MessageEvent, PolicyDecision
-from qq_personal_bot.menu_recipes import cache_image, fetch_jisu_recipe, is_supported_image_file
+from qq_personal_bot.menu_recipes import (
+    cache_image,
+    fetch_jisu_recipe,
+    is_supported_image_file,
+)
 from qq_personal_bot.runtime import get_settings, get_store
 
 _PENDING_LUA_NAMESPACE = "lua_pending_command"
+_CHINA_TZ = timezone(timedelta(hours=8))
 
 
 @dataclass(frozen=True)
@@ -132,6 +141,20 @@ class LuaApi:
     def clear_pending_command(self) -> bool:
         return get_store().delete_lua_state(_PENDING_LUA_NAMESPACE, _pending_lua_key(self._event))
 
+    def get_group_daily_summary(
+        self,
+        group_id: int,
+        date: str | None = None,
+        limit: int = 5,
+    ) -> Any:
+        target_date = str(date or "").strip() or _china_date(self._event.timestamp)
+        summary = get_store().get_group_daily_summary(
+            int(group_id),
+            target_date,
+            int(limit or 5),
+        )
+        return _to_lua(self._lua, summary)
+
     def url_encode(self, value: str) -> str:
         return quote(str(value), safe="")
 
@@ -241,12 +264,27 @@ class LuaApi:
             return None
         return f"[CQ:image,file={image_path.as_uri()}]"
 
+    def mirror_referenced_image(self, direction: str) -> str | None:
+        image_source = _first_image_source_from_segments(self._event.segments)
+        if image_source is None:
+            reply_message_id = _reply_message_id_from_segments(self._event.segments)
+            if reply_message_id is not None:
+                payload = self._call_api_raw("get_msg", message_id=reply_message_id)
+                image_source = _first_image_source_from_message(payload)
+        if image_source is None:
+            return None
+
+        return _mirror_image_source(image_source, str(direction), self._timeout_seconds)
+
     def _call_api(self, action: str, **params: Any) -> Any:
+        return _to_lua(self._lua, self._call_api_raw(action, **params))
+
+    def _call_api_raw(self, action: str, **params: Any) -> Any:
         future = asyncio.run_coroutine_threadsafe(
             self._bot.call_api(action, **params),
             self._loop,
         )
-        return _to_lua(self._lua, future.result(timeout=self._timeout_seconds))
+        return future.result(timeout=self._timeout_seconds)
 
     def _state_namespace(self, namespace: str | None) -> str:
         value = str(namespace).strip() if namespace is not None else self._command
@@ -342,7 +380,7 @@ def _run_lua_message_sync(
         return LuaMessageResult()
 
     full_message = decision.normalized_message.strip()
-    date = datetime.fromtimestamp(event.timestamp, timezone(timedelta(hours=8))).date().isoformat()
+    date = _china_date(event.timestamp)
     lua_event = _to_lua(
         lua,
         {
@@ -461,9 +499,154 @@ def _pending_lua_key(event: MessageEvent) -> str:
     return f"{event.group_id}:{event.user_id}"
 
 
+def _china_date(timestamp: float) -> str:
+    return datetime.fromtimestamp(float(timestamp or 0), _CHINA_TZ).date().isoformat()
+
+
 def _safe_image_id(value: str) -> str:
     safe = "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in str(value))
     return safe[:80].strip("_") or "image"
+
+
+def _first_image_source_from_message(payload: Any) -> str | None:
+    if isinstance(payload, Mapping):
+        message = payload.get("message")
+        if message is not None:
+            image_source = _first_image_source_from_segments(_coerce_segments(message))
+            if image_source is not None:
+                return image_source
+        raw_message = payload.get("raw_message")
+        if raw_message is not None:
+            return _first_image_source_from_segments(_coerce_segments(raw_message))
+    return _first_image_source_from_segments(_coerce_segments(payload))
+
+
+def _first_image_source_from_segments(segments: Iterable[Mapping[str, Any]]) -> str | None:
+    for segment in segments:
+        if segment.get("type") != "image":
+            continue
+        data = segment.get("data")
+        if not isinstance(data, Mapping):
+            continue
+        for key in ("url", "file"):
+            value = data.get(key)
+            if value is not None and str(value).strip():
+                return str(value).strip()
+    return None
+
+
+def _reply_message_id_from_segments(segments: Iterable[Mapping[str, Any]]) -> int | str | None:
+    for segment in segments:
+        if segment.get("type") != "reply":
+            continue
+        data = segment.get("data")
+        if not isinstance(data, Mapping):
+            continue
+        for key in ("id", "message_id"):
+            value = data.get(key)
+            if value is not None and str(value).strip():
+                return value
+    return None
+
+
+def _coerce_segments(value: Any) -> tuple[dict[str, Any], ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return tuple(_cq_image_segments(value))
+    if isinstance(value, Mapping):
+        if "type" in value:
+            data = value.get("data", {})
+            return ({"type": value.get("type"), "data": dict(data or {})},)
+        if "message" in value:
+            return _coerce_segments(value.get("message"))
+        return ()
+
+    result: list[dict[str, Any]] = []
+    try:
+        iterator = iter(value)
+    except TypeError:
+        return ()
+    for item in iterator:
+        if isinstance(item, Mapping):
+            data = item.get("data", {})
+            result.append({"type": item.get("type"), "data": dict(data or {})})
+        else:
+            segment_type = getattr(item, "type", None)
+            data = getattr(item, "data", {})
+            if segment_type is not None:
+                result.append({"type": segment_type, "data": dict(data or {})})
+    return tuple(result)
+
+
+def _cq_image_segments(message: str) -> list[dict[str, Any]]:
+    segments = []
+    for match in re.finditer(r"\[CQ:image,([^\]]+)\]", str(message)):
+        data = {}
+        for item in match.group(1).split(","):
+            key, sep, value = item.partition("=")
+            if sep:
+                data[key.strip()] = value.strip()
+        segments.append({"type": "image", "data": data})
+    return segments
+
+
+def _mirror_image_source(image_source: str, direction: str, timeout_seconds: float) -> str | None:
+    normalized_direction = direction.strip().casefold()
+    if normalized_direction not in {"top", "bottom", "left", "right"}:
+        raise ValueError("direction must be top, bottom, left, or right")
+
+    with tempfile.TemporaryDirectory(prefix="qqbot-mirror-") as temp_dir:
+        try:
+            relpath = cache_image(
+                image_source,
+                recipe_id="source",
+                image_dir=Path(temp_dir),
+            )
+        except Exception as exc:
+            logger.warning(f"Lua: failed to cache image for mirror operation: {exc}")
+            return None
+        if not relpath:
+            return None
+
+        source_path = Path(temp_dir) / relpath
+        try:
+            output = _mirror_image_file(source_path, normalized_direction)
+        except Exception as exc:
+            logger.warning(f"Lua: failed to mirror image {source_path}: {exc}")
+            return None
+        return "[CQ:image,file=base64://" + base64.b64encode(output).decode("ascii") + "]"
+
+
+def _mirror_image_file(image_path: Path, direction: str) -> bytes:
+    from PIL import Image, ImageOps
+
+    with Image.open(image_path) as image:
+        result = image.convert("RGBA")
+    width, height = result.size
+    if width <= 0 or height <= 0:
+        raise ValueError("image has invalid dimensions")
+
+    if direction == "left":
+        strip_width = width // 2
+        source = result.crop((0, 0, strip_width, height))
+        result.paste(ImageOps.mirror(source), (width - strip_width, 0))
+    elif direction == "right":
+        strip_width = width // 2
+        source = result.crop((width - strip_width, 0, width, height))
+        result.paste(ImageOps.mirror(source), (0, 0))
+    elif direction == "top":
+        strip_height = height // 2
+        source = result.crop((0, 0, width, strip_height))
+        result.paste(ImageOps.flip(source), (0, height - strip_height))
+    elif direction == "bottom":
+        strip_height = height // 2
+        source = result.crop((0, height - strip_height, width, height))
+        result.paste(ImageOps.flip(source), (0, 0))
+
+    output = io.BytesIO()
+    result.save(output, format="PNG")
+    return output.getvalue()
 
 
 def _sandbox(lua: Any) -> None:

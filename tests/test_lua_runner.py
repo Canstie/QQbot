@@ -1,13 +1,17 @@
 ﻿from __future__ import annotations
 
+import base64
+import io
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from qq_personal_bot.core.models import MessageEvent, PolicyDecision
 from qq_personal_bot.lua_runner import pending_lua_command, run_lua_message
-from qq_personal_bot.runtime import reset_runtime
+from qq_personal_bot.runtime import get_store, reset_runtime
 
 
 class FakeBot:
@@ -40,6 +44,24 @@ class RichFakeBot:
         if action == "get_login_info":
             return {"user_id": 99999, "nickname": "bot"}
         raise AssertionError(f"Unexpected action: {action}")
+
+
+class ReplyImageFakeBot(RichFakeBot):
+    def __init__(self, image_path: Path):
+        self.image_path = image_path
+
+    async def call_api(self, action: str, **params):
+        if action == "get_msg":
+            assert params["message_id"] == "quoted-image"
+            return {
+                "message": [
+                    {
+                        "type": "image",
+                        "data": {"file": str(self.image_path)},
+                    }
+                ]
+            }
+        return await super().call_api(action, **params)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -77,6 +99,17 @@ def make_event_at(timestamp: float) -> MessageEvent:
     )
 
 
+def china_timestamp(year: int, month: int, day: int, hour: int, minute: int = 0) -> float:
+    return datetime(
+        year,
+        month,
+        day,
+        hour,
+        minute,
+        tzinfo=timezone(timedelta(hours=8)),
+    ).timestamp()
+
+
 def configure_lua_dir(tmp_path, monkeypatch):
     lua_dir = tmp_path / "scripts" / "lua"
     lua_dir.mkdir(parents=True)
@@ -94,6 +127,27 @@ def configure_builtin_lua_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("QQBOT_LUA_ENABLED", "true")
     reset_runtime()
     return lua_dir
+
+
+def write_test_image(path: Path) -> dict[tuple[int, int], tuple[int, int, int, int]]:
+    image = Image.new("RGBA", (4, 4))
+    pixels = image.load()
+    colors = {}
+    for y in range(4):
+        for x in range(4):
+            color = (x * 50 + 10, y * 50 + 20, (x + y) * 30 + 30, 255)
+            pixels[x, y] = color
+            colors[(x, y)] = color
+    image.save(path)
+    return colors
+
+
+def decode_cq_base64_image(message: str) -> Image.Image:
+    prefix = "[CQ:image,file=base64://"
+    assert message.startswith(prefix)
+    assert message.endswith("]")
+    body = message[len(prefix) : -1]
+    return Image.open(io.BytesIO(base64.b64decode(body))).convert("RGBA")
 
 
 @pytest.mark.asyncio
@@ -699,6 +753,88 @@ async def test_lua_api_local_image_returns_nil_for_missing_file(tmp_path, monkey
     assert "|本地无图菜|nil|invalid" in result.reply
 
 
+@pytest.mark.parametrize(
+    ("command", "expected_pixels"),
+    [
+        (
+            "左对称",
+            {
+                (0, 0): (0, 0),
+                (1, 0): (1, 0),
+                (2, 0): (1, 0),
+                (3, 0): (0, 0),
+            },
+        ),
+        (
+            "右对称",
+            {
+                (0, 0): (3, 0),
+                (1, 0): (2, 0),
+                (2, 0): (2, 0),
+                (3, 0): (3, 0),
+            },
+        ),
+        (
+            "上对称",
+            {
+                (0, 0): (0, 0),
+                (0, 1): (0, 1),
+                (0, 2): (0, 1),
+                (0, 3): (0, 0),
+            },
+        ),
+        (
+            "下对称",
+            {
+                (0, 0): (0, 3),
+                (0, 1): (0, 2),
+                (0, 2): (0, 2),
+                (0, 3): (0, 3),
+            },
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_builtin_image_symmetry_commands_use_quoted_image(
+    tmp_path,
+    monkeypatch,
+    command,
+    expected_pixels,
+):
+    configure_builtin_lua_dir(tmp_path, monkeypatch)
+    image_path = tmp_path / "quoted.png"
+    source_pixels = write_test_image(image_path)
+
+    result = await run_lua_message(
+        ReplyImageFakeBot(image_path),
+        make_event(
+            raw_message=f"~{command}",
+            segments=({"type": "reply", "data": {"id": "quoted-image"}},),
+        ),
+        PolicyDecision(True, "ok", handler="default", normalized_message=command),
+    )
+
+    assert result.quote is True
+    assert result.reply is not None
+    mirrored = decode_cq_base64_image(result.reply)
+    for target, source in expected_pixels.items():
+        assert mirrored.getpixel(target) == source_pixels[source]
+
+
+@pytest.mark.asyncio
+async def test_builtin_image_symmetry_command_requires_quoted_image(tmp_path, monkeypatch):
+    configure_builtin_lua_dir(tmp_path, monkeypatch)
+
+    result = await run_lua_message(
+        RichFakeBot(),
+        make_event(raw_message="~左对称"),
+        PolicyDecision(True, "ok", handler="default", normalized_message="左对称"),
+    )
+
+    assert result.quote is True
+    assert result.reply == "请引用一张图片再发送 ~左对称。"
+
+
 @pytest.mark.asyncio
 async def test_builtin_change_wife_reply_uses_avatar_and_name_only(tmp_path, monkeypatch):
     configure_builtin_lua_dir(tmp_path, monkeypatch)
@@ -833,25 +969,64 @@ async def test_builtin_pick_and_change_wife_skip_claimed_members(tmp_path, monke
 
 
 @pytest.mark.asyncio
-async def test_builtin_group_rank_is_fixed_and_excludes_bot(tmp_path, monkeypatch):
+async def test_builtin_group_summary_reports_daily_activity(tmp_path, monkeypatch):
+    configure_builtin_lua_dir(tmp_path, monkeypatch)
+    store = get_store()
+    event_time = china_timestamp(2026, 6, 19, 22, 0)
+    store.record_group_message_activity(
+        group_id=123,
+        user_id=1,
+        timestamp=china_timestamp(2026, 6, 19, 8, 5),
+        raw_message="早上好",
+        segments=(),
+    )
+    store.record_group_message_activity(
+        group_id=123,
+        user_id=2,
+        timestamp=china_timestamp(2026, 6, 19, 22, 0),
+        raw_message="hello world",
+        segments=(
+            {"type": "image", "data": {"file": "a.jpg"}},
+            {"type": "at", "data": {"qq": "1"}},
+        ),
+    )
+    store.record_group_message_activity(
+        group_id=123,
+        user_id=2,
+        timestamp=china_timestamp(2026, 6, 19, 23, 30),
+        raw_message="晚安",
+        segments=({"type": "image", "data": {"file": "b.jpg"}},),
+    )
+
+    result = await run_lua_message(
+        RichFakeBot(),
+        make_event(raw_message="~群总结", timestamp=event_time),
+        PolicyDecision(True, "ok", handler="default", normalized_message="群总结"),
+    )
+
+    assert result.quote is True
+    assert result.reply is not None
+    assert "今日群总结" in result.reply
+    assert "总消息：3 条" in result.reply
+    assert "参与人数：2 人" in result.reply
+    assert "最活跃时段：08:00-09:00（1 条）" in result.reply
+    assert "早鸟：Alpha（08:05）" in result.reply
+    assert "夜猫子：BetaCard（23:30）" in result.reply
+    assert "水群榜\n1. BetaCard：2 条" in result.reply
+    assert "字数榜\n1. BetaCard：13 字" in result.reply
+    assert "发图榜\n1. BetaCard：2 张" in result.reply
+    assert "@人榜\n1. BetaCard：1 次" in result.reply
+
+
+@pytest.mark.asyncio
+async def test_builtin_group_summary_handles_empty_day(tmp_path, monkeypatch):
     configure_builtin_lua_dir(tmp_path, monkeypatch)
 
-    first = await run_lua_message(
+    result = await run_lua_message(
         RichFakeBot(),
-        make_event(),
-        PolicyDecision(True, "ok", handler="default", normalized_message="群排行 摸鱼王"),
-    )
-    second = await run_lua_message(
-        RichFakeBot(),
-        make_event(),
-        PolicyDecision(True, "ok", handler="default", normalized_message="群排行 摸鱼王"),
+        make_event(raw_message="~群总结", timestamp=china_timestamp(2026, 6, 19, 12, 0)),
+        PolicyDecision(True, "ok", handler="default", normalized_message="群总结"),
     )
 
-    assert first.reply == second.reply
-    assert first.quote is True
-    assert first.reply is not None
-    assert "今日「摸鱼王」排行榜" in first.reply
-    assert "1. " in first.reply
-    assert "2. " in first.reply
-    assert "3. " in first.reply
-    assert "Bot" not in first.reply
+    assert result.quote is True
+    assert result.reply == "今天还没有统计到群消息。"

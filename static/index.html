@@ -3,229 +3,467 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>QQ Bot 控制台</title>
+  <title>QQ Bot 控制室</title>
   <link rel="stylesheet" href="./static/styles.css" />
 </head>
 <body>
-  <main>
-    <header class="topbar">
-      <div>
-        <h1>QQ Bot 控制台</h1>
-        <p>策略、回复、Lua、菜单和饭店管理</p>
+  <div class="shell">
+    <aside class="rail">
+      <div class="brand">
+        <p class="eyebrow">QQ Group Bot</p>
+        <h1>控制室</h1>
+        <p class="brand-copy">策略、脚本、菜单、饭店和群典藏统一收口。</p>
       </div>
-      <div class="top-actions">
-        <label>Admin token <input id="token" type="password" autocomplete="off"></label>
-        <button class="secondary" data-action="refresh">刷新</button>
-        <div id="connectionStatus" class="status-pill">加载中</div>
-      </div>
-    </header>
 
-    <nav class="tabs" aria-label="管理页签">
-      <button class="tab active" data-tab="policy">策略</button>
-      <button class="tab" data-tab="replies">回复规则</button>
-      <button class="tab" data-tab="lua">Lua</button>
-      <button class="tab" data-tab="menus">菜单</button>
-      <button class="tab" data-tab="restaurants">饭店</button>
-    </nav>
+      <nav class="nav" aria-label="主导航">
+        <button class="nav-link active" data-view="overview">
+          <span>总览</span>
+          <small>Overview</small>
+        </button>
+        <button class="nav-link" data-view="policy">
+          <span>策略</span>
+          <small>Policy</small>
+        </button>
+        <button class="nav-link" data-view="replies">
+          <span>回复</span>
+          <small>Replies</small>
+        </button>
+        <button class="nav-link" data-view="lua">
+          <span>Lua</span>
+          <small>Scripts</small>
+        </button>
+        <button class="nav-link" data-view="menus">
+          <span>菜单</span>
+          <small>Recipes</small>
+        </button>
+        <button class="nav-link" data-view="restaurants">
+          <span>饭店</span>
+          <small>Places</small>
+        </button>
+        <button class="nav-link" data-view="classics">
+          <span>群典藏</span>
+          <small>Archive</small>
+        </button>
+      </nav>
 
-    <section class="tab-panel active" data-panel="policy">
-      <div class="grid two">
-        <section>
-          <div class="section-head">
-            <h2>核心配置</h2>
-            <button data-action="save-core-config">保存核心配置</button>
+      <section class="rail-note">
+        <p class="eyebrow">Archive Index</p>
+        <strong id="overviewClassicGroupCount">0</strong>
+        <p>个群已经存过典图</p>
+      </section>
+    </aside>
+
+    <main class="workspace">
+      <header class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Bot Control Room</p>
+          <h2>把分散的群管理动作，整理成一个像档案柜一样清楚的前端。</h2>
+          <p class="hero-text">
+            这里保留原有管理能力，但界面重排为系统配置、内容编辑和群典藏三条主线。
+            “存的典”现在是独立入口，可以直接进入具体群号查看对应图片。
+          </p>
+          <div class="hero-actions">
+            <button data-view="policy">调整策略</button>
+            <button class="secondary" data-view="classics">查看群典藏</button>
           </div>
-          <div class="form-grid">
-            <label>模式
-              <select id="mode">
-                <option value="allowlist">allowlist</option>
-                <option value="blocklist">blocklist</option>
-              </select>
-            </label>
-            <p class="hint">allowlist：只有启用群响应；blocklist：除屏蔽群外都响应。</p>
-            <label>触发前缀
-              <input id="prefixesInput" placeholder="~,#bot">
-            </label>
-            <p class="hint">多个前缀用英文逗号分隔；留空会自动使用 ~。</p>
-            <label class="checkbox"><input id="mentionTrigger" type="checkbox"> 允许 @ bot 触发</label>
-            <p class="hint">开启后，群成员 @ bot 的消息会进入回复逻辑；关闭后只响应前缀和免前缀规则。</p>
-            <label>免前缀关键词触发概率
-              <input id="directTriggerPercent" type="number" min="0" max="100" step="1" placeholder="10">
-            </label>
-            <p class="hint">默认 10%；只影响“免前缀关键词应答”。吃什么/csm 等免前缀 Lua、前缀指令、@ 触发不受影响。</p>
-            <div class="grid two">
-              <label>群限流秒数
-                <input id="perGroupSeconds" type="number" min="0" step="0.5" placeholder="5">
-              </label>
-              <label>用户每分钟上限
-                <input id="perUserPerMinute" type="number" min="0" step="1" placeholder="5">
-              </label>
+        </div>
+
+        <section class="hero-console">
+          <div class="console-head">
+            <div>
+              <p class="eyebrow">Admin Access</p>
+              <h3>控制台凭证</h3>
             </div>
-            <p class="hint">群限流控制同一群两次 bot 回复的最小间隔；用户上限控制单个用户每分钟最多触发次数。填 0 表示关闭对应限流。</p>
-            <label>启用群 ID
-              <textarea id="enabledGroupsInput" class="compact-textarea" placeholder="一行一个，或用逗号分隔"></textarea>
-            </label>
-            <p class="hint">allowlist 模式下，只有这些群会响应。</p>
-            <label>屏蔽群 ID
-              <textarea id="blockedGroupsInput" class="compact-textarea" placeholder="一行一个，或用逗号分隔"></textarea>
-            </label>
-            <p class="hint">blocklist 模式下，这些群会静默；allowlist 模式下也可用于显式屏蔽。</p>
-            <label>管理员 QQ
-              <textarea id="adminsInput" class="compact-textarea" placeholder="一行一个，或用逗号分隔"></textarea>
-            </label>
-            <p class="hint">管理员可以使用 /bot 控制命令；网页写操作仍由 Admin token 控制。</p>
-            <div id="configNotice" class="notice">加载中</div>
+            <div id="connectionStatus" class="status-pill">载入中</div>
           </div>
+          <div class="button-row">
+            <button data-action="refresh">同步控制室</button>
+            <button class="secondary" data-action="logout">退出登录</button>
+          </div>
+          <div id="globalNotice" class="notice">正在连接后端...</div>
         </section>
+      </header>
 
-        <section>
-          <div class="section-head"><h2>群聊</h2></div>
-          <div class="form-grid">
-            <label>Group ID <input id="groupId" inputmode="numeric" placeholder="123456789"></label>
+      <section class="summary-grid">
+        <article class="summary-card">
+          <span>策略模式</span>
+          <strong id="overviewMode">-</strong>
+        </article>
+        <article class="summary-card">
+          <span>启用群</span>
+          <strong id="enabledCount">0</strong>
+        </article>
+        <article class="summary-card">
+          <span>屏蔽群</span>
+          <strong id="blockedCount">0</strong>
+        </article>
+        <article class="summary-card">
+          <span>管理员</span>
+          <strong id="adminCount">0</strong>
+        </article>
+        <article class="summary-card">
+          <span>Lua 指令</span>
+          <strong id="overviewLuaCount">0</strong>
+        </article>
+        <article class="summary-card">
+          <span>菜单条目</span>
+          <strong id="overviewMenuCount">0</strong>
+        </article>
+      </section>
+
+      <section class="view active" data-view-panel="overview">
+        <div class="panel-grid">
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">System Snapshot</p>
+                <h3>当前策略快照</h3>
+              </div>
+              <button class="secondary" data-view="policy">前往策略页</button>
+            </div>
+            <pre id="state">Loading...</pre>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Classic Groups</p>
+                <h3>最近有典图的群</h3>
+              </div>
+              <button class="secondary" data-view="classics">打开群典藏</button>
+            </div>
+            <div id="overviewArchiveStrip" class="archive-strip"></div>
+          </section>
+        </div>
+      </section>
+
+      <section class="view" data-view-panel="policy">
+        <div class="panel-grid two-up">
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Core Policy</p>
+                <h3>核心配置</h3>
+              </div>
+              <button data-action="save-core-config">保存核心配置</button>
+            </div>
+
+            <div class="form-grid">
+              <label>模式
+                <select id="mode">
+                  <option value="allowlist">allowlist</option>
+                  <option value="blocklist">blocklist</option>
+                </select>
+              </label>
+              <p class="hint">`allowlist` 仅启用指定群，`blocklist` 仅屏蔽指定群。</p>
+
+              <label>触发前缀
+                <input id="prefixesInput" placeholder="~,#bot" />
+              </label>
+              <p class="hint">多个前缀用英文逗号分隔，留空会自动回退到 `~`。</p>
+
+              <label class="checkbox">
+                <input id="mentionTrigger" type="checkbox" />
+                <span>允许 @ bot 触发</span>
+              </label>
+
+              <label>免前缀关键词触发概率
+                <input id="directTriggerPercent" type="number" min="0" max="100" step="1" placeholder="10" />
+              </label>
+
+              <div class="inline-grid">
+                <label>群限流秒数
+                  <input id="perGroupSeconds" type="number" min="0" step="0.5" placeholder="5" />
+                </label>
+                <label>用户每分钟上限
+                  <input id="perUserPerMinute" type="number" min="0" step="1" placeholder="5" />
+                </label>
+              </div>
+
+              <label>启用群 ID
+                <textarea id="enabledGroupsInput" class="compact-textarea" placeholder="一行一个，或用逗号分隔"></textarea>
+              </label>
+
+              <label>屏蔽群 ID
+                <textarea id="blockedGroupsInput" class="compact-textarea" placeholder="一行一个，或用逗号分隔"></textarea>
+              </label>
+
+              <label>管理员 QQ
+                <textarea id="adminsInput" class="compact-textarea" placeholder="一行一个，或用逗号分隔"></textarea>
+              </label>
+
+              <div id="configNotice" class="notice">等待保存</div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Group Toggle</p>
+                <h3>单群控制</h3>
+              </div>
+            </div>
+
+            <div class="form-grid">
+              <label>Group ID
+                <input id="groupId" inputmode="numeric" placeholder="123456789" />
+              </label>
+              <div class="button-row">
+                <button data-group-action="on">启用</button>
+                <button class="secondary" data-group-action="off">关闭</button>
+                <button class="danger" data-group-action="block">屏蔽</button>
+                <button class="secondary" data-group-action="unblock">解除屏蔽</button>
+              </div>
+              <p class="hint">用于快速切换单个群的启用和屏蔽状态。</p>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section class="view" data-view-panel="replies">
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">Reply Rules</p>
+              <h3>回复规则</h3>
+            </div>
             <div class="button-row">
-              <button data-group-action="on">启用</button>
-              <button class="secondary" data-group-action="off">关闭</button>
-              <button class="danger" data-group-action="block">屏蔽</button>
-              <button class="secondary" data-group-action="unblock">解除屏蔽</button>
+              <button class="secondary" data-action="load-replies">重新读取</button>
+              <button data-action="save-replies">保存回复规则</button>
             </div>
           </div>
+
+          <div class="inline-grid">
+            <label>空内容回复
+              <input id="emptyReply" />
+            </label>
+            <label>默认回复
+              <input id="fallbackReply" placeholder="收到：{message}" />
+            </label>
+          </div>
+
+          <div class="subsection-head">
+            <div>
+              <p class="panel-kicker">Prefixed Rules</p>
+              <h4>前缀触发应答</h4>
+            </div>
+            <button class="secondary" data-add-rule="rules">添加</button>
+          </div>
+          <div class="filter-row">
+            <label>搜索前缀规则
+              <input id="rulesFilter" data-rule-filter="rules" placeholder="按触发内容或回复内容筛选" />
+            </label>
+            <span id="rulesMeta" class="hint">0 条</span>
+          </div>
+          <div id="rulesList" class="rule-list"></div>
+
+          <div class="subsection-head">
+            <div>
+              <p class="panel-kicker">Direct Rules</p>
+              <h4>免前缀关键词应答</h4>
+            </div>
+            <button class="secondary" data-add-rule="direct_rules">添加</button>
+          </div>
+          <div class="filter-row">
+            <label>搜索免前缀规则
+              <input id="directRulesFilter" data-rule-filter="direct_rules" placeholder="按关键词或回复内容筛选" />
+            </label>
+            <span id="directRulesMeta" class="hint">0 条</span>
+          </div>
+          <div id="directRulesList" class="rule-list"></div>
+
+          <div id="editorNotice" class="notice">等待载入</div>
         </section>
-      </div>
-
-      <section>
-        <div class="section-head"><h2>当前状态</h2></div>
-        <div class="metrics">
-          <div class="metric"><span>启用群</span><strong id="enabledCount">0</strong></div>
-          <div class="metric"><span>屏蔽群</span><strong id="blockedCount">0</strong></div>
-          <div class="metric"><span>管理员</span><strong id="adminCount">0</strong></div>
-        </div>
-        <pre id="state">Loading...</pre>
       </section>
-    </section>
 
-    <section class="tab-panel" data-panel="replies">
-      <section>
-        <div class="section-head">
-          <h2>回复规则</h2>
-          <div class="button-row">
-            <button class="secondary" data-action="load-replies">重新读取</button>
-            <button data-action="save-replies">保存回复规则</button>
+      <section class="view" data-view-panel="lua">
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">Lua Scripts</p>
+              <h3>Lua 指令脚本</h3>
+            </div>
+            <div class="button-row">
+              <label class="file-button">导入 Lua<input id="luaImport" type="file" accept=".lua,text/plain" /></label>
+              <button class="secondary" data-action="load-lua">刷新列表</button>
+              <button class="danger" data-action="delete-lua">删除</button>
+              <button data-action="save-lua">保存脚本</button>
+            </div>
           </div>
-        </div>
-        <div class="grid two">
-          <label>空内容回复 <input id="emptyReply"></label>
-          <label>默认回复 <input id="fallbackReply" placeholder="收到：{message}"></label>
-        </div>
-        <div class="section-head subhead">
-          <h3>前缀触发应答</h3>
-          <button class="secondary" data-add-rule="rules">添加</button>
-        </div>
-        <div class="rule-toolbar">
-          <label>搜索前缀规则 <input id="rulesFilter" data-rule-filter="rules" placeholder="按触发内容或回复内容筛选"></label>
-          <span id="rulesMeta" class="hint">0 条</span>
-        </div>
-        <div id="rulesList" class="rule-list"></div>
-        <div class="section-head subhead">
-          <h3>免前缀关键词应答</h3>
-          <button class="secondary" data-add-rule="direct_rules">添加</button>
-        </div>
-        <div class="rule-toolbar">
-          <label>搜索免前缀规则 <input id="directRulesFilter" data-rule-filter="direct_rules" placeholder="按关键词或回复内容筛选"></label>
-          <span id="directRulesMeta" class="hint">0 条</span>
-        </div>
-        <div id="directRulesList" class="rule-list"></div>
-        <div id="editorNotice" class="notice">加载中</div>
-      </section>
-    </section>
 
-    <section class="tab-panel" data-panel="lua">
-      <section>
-        <div class="section-head">
-          <h2>Lua 指令脚本</h2>
-          <div class="button-row">
-            <label class="file-button">导入 Lua <input id="luaImport" type="file" accept=".lua,text/plain"></label>
-            <button class="secondary" data-action="load-lua">刷新列表</button>
-            <button class="danger" data-action="delete-lua">删除</button>
-            <button data-action="save-lua">保存脚本</button>
-          </div>
-        </div>
-        <div class="lua-grid">
-          <aside class="side-panel">
-            <label>新建/打开指令 <input id="luaCommandInput" placeholder="抽群老婆"></label>
-            <button data-action="create-lua-command">打开指令</button>
-            <div class="hint" id="luaListMeta">加载中</div>
-            <div id="luaCommandList" class="lua-command-list"></div>
-          </aside>
-          <div class="editor-panel">
-            <div class="hint" id="luaMeta">加载中</div>
-            <label>当前指令 <input id="luaCurrentCommand" readonly></label>
-            <textarea id="luaEditor" class="code-editor" spellcheck="false"></textarea>
-            <div id="luaNotice" class="notice">加载中</div>
-          </div>
-          <aside class="side-panel">
-            <h3>常用接口</h3>
-            <pre class="docs-code">api.get_group_member_list(group_id)
+          <div class="lua-layout">
+            <aside class="subpanel">
+              <label>新建或打开指令
+                <input id="luaCommandInput" placeholder="抽群老婆" />
+              </label>
+              <button data-action="create-lua-command">打开指令</button>
+              <div id="luaListMeta" class="hint">载入中</div>
+              <div id="luaCommandList" class="command-list"></div>
+            </aside>
+
+            <div class="editor-stack">
+              <div id="luaMeta" class="hint">载入中</div>
+              <label>当前指令
+                <input id="luaCurrentCommand" readonly />
+              </label>
+              <textarea id="luaEditor" class="code-editor" spellcheck="false"></textarea>
+              <div id="luaNotice" class="notice">等待载入</div>
+            </div>
+
+            <aside class="subpanel">
+              <p class="panel-kicker">API</p>
+              <h4>常用接口</h4>
+              <pre class="docs-code">api.get_group_member_list(group_id)
 api.get_login_info()
 api.send_group_message(group_id, message)
 api.get_state(key, namespace)
 api.set_state(key, value, namespace)
 api.call("send_group_msg", { group_id = event.group_id, message = "hello" })</pre>
-          </aside>
-        </div>
-      </section>
-    </section>
-
-    <section class="tab-panel" data-panel="menus">
-      <section>
-        <div class="section-head">
-          <h2>菜单</h2>
-          <div class="button-row">
-            <button class="secondary" data-action="load-menus">刷新</button>
-            <button class="danger" data-action="prune-menus">清理无图 HowToCook</button>
+            </aside>
           </div>
-        </div>
-        <div class="grid two">
-          <label>搜索 <input id="menuSearch" placeholder="菜名/分类/标签"></label>
-          <label>菜单名 <input id="menuTitle" placeholder="番茄炒蛋"></label>
-        </div>
-        <div class="grid two">
-          <label>菜单图片 <input id="menuImage" type="file" accept="image/*"></label>
-          <label class="checkbox"><input id="menuEnabled" type="checkbox" checked> 启用</label>
-        </div>
-        <div class="button-row">
-          <button data-action="save-menu">保存菜单</button>
-          <button class="secondary" data-action="new-menu">新建</button>
-        </div>
-        <input id="menuCurrentId" type="hidden">
-        <div id="menuNotice" class="notice">加载中</div>
-        <div id="menuList" class="item-list"></div>
+        </section>
       </section>
-    </section>
 
-    <section class="tab-panel" data-panel="restaurants">
-      <section>
-        <div class="section-head">
-          <h2>饭店</h2>
-          <button class="secondary" data-action="load-restaurants">刷新</button>
+      <section class="view" data-view-panel="menus">
+        <div class="panel-grid two-up">
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Recipe Editor</p>
+                <h3>菜单编辑</h3>
+              </div>
+              <div class="button-row">
+                <button class="secondary" data-action="load-menus">刷新</button>
+                <button class="danger" data-action="prune-menus">清理无图 HowToCook</button>
+              </div>
+            </div>
+
+            <div class="form-grid">
+              <label>搜索菜单
+                <input id="menuSearch" placeholder="菜名 / 分类 / 标签" />
+              </label>
+              <label>菜单名
+                <input id="menuTitle" placeholder="番茄炒蛋" />
+              </label>
+              <label>菜单图片
+                <input id="menuImage" type="file" accept="image/*" />
+              </label>
+              <label class="checkbox">
+                <input id="menuEnabled" type="checkbox" checked />
+                <span>启用</span>
+              </label>
+              <div class="button-row">
+                <button data-action="save-menu">保存菜单</button>
+                <button class="secondary" data-action="new-menu">新建</button>
+              </div>
+              <input id="menuCurrentId" type="hidden" />
+              <div id="menuNotice" class="notice">等待载入</div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Recipe Library</p>
+                <h3>菜单列表</h3>
+              </div>
+            </div>
+            <div id="menuList" class="item-list"></div>
+          </section>
         </div>
-        <div class="grid two">
-          <label>Group ID <input id="restaurantGroupId" inputmode="numeric" placeholder="123456789"></label>
-          <label>饭店名 <input id="restaurantName" placeholder="楼下小馆"></label>
-        </div>
-        <label>招牌菜，每行一道
-          <textarea id="restaurantDishes" placeholder="红烧肉&#10;干锅牛蛙"></textarea>
-        </label>
-        <label class="checkbox"><input id="restaurantEnabled" type="checkbox" checked> 启用</label>
-        <div class="button-row">
-          <button data-action="save-restaurant">保存饭店</button>
-          <button class="secondary" data-action="new-restaurant">新建</button>
-        </div>
-        <input id="restaurantCurrentId" type="hidden">
-        <div id="restaurantNotice" class="notice">加载中</div>
-        <div id="restaurantList" class="item-list"></div>
       </section>
-    </section>
-  </main>
+
+      <section class="view" data-view-panel="restaurants">
+        <div class="panel-grid two-up">
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Group Restaurants</p>
+                <h3>饭店编辑</h3>
+              </div>
+              <button class="secondary" data-action="load-restaurants">刷新</button>
+            </div>
+
+            <div class="form-grid">
+              <label>筛选群号
+                <input id="restaurantFilterGroupId" inputmode="numeric" placeholder="留空查看全部群" />
+              </label>
+              <label>编辑目标群号
+                <input id="restaurantGroupId" inputmode="numeric" placeholder="123456789" />
+              </label>
+              <label>饭店名
+                <input id="restaurantName" placeholder="楼下小馆" />
+              </label>
+              <label>招牌菜，每行一个
+                <textarea id="restaurantDishes" placeholder="红烧肉&#10;干锅牛蛙"></textarea>
+              </label>
+              <label class="checkbox">
+                <input id="restaurantEnabled" type="checkbox" checked />
+                <span>启用</span>
+              </label>
+              <div class="button-row">
+                <button data-action="save-restaurant">保存饭店</button>
+                <button class="secondary" data-action="new-restaurant">新建</button>
+              </div>
+              <input id="restaurantCurrentId" type="hidden" />
+              <div id="restaurantNotice" class="notice">等待载入</div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Group Places</p>
+                <h3>饭店列表</h3>
+              </div>
+            </div>
+            <div id="restaurantList" class="item-list"></div>
+          </section>
+        </div>
+      </section>
+
+      <section class="view" data-view-panel="classics">
+        <div class="panel-grid two-up classics-layout">
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Classic Group Index</p>
+                <h3>有典图的群</h3>
+              </div>
+              <button class="secondary" data-action="load-classics-groups">刷新群列表</button>
+            </div>
+
+            <div class="form-grid">
+              <label>搜索群号
+                <input id="classicsGroupSearch" placeholder="例如 123456789" />
+              </label>
+              <div id="classicsGroupsMeta" class="hint">载入中</div>
+            </div>
+            <div id="classicsGroupsList" class="archive-grid"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Classic Detail</p>
+                <h3 id="classicsActiveGroup">选择一个群查看存的典</h3>
+              </div>
+              <div class="button-row">
+                <button class="secondary" data-action="clear-classics-group">返回列表</button>
+                <button class="secondary" data-action="reload-classics-group">刷新当前群</button>
+                <button class="danger" data-action="delete-current-classics-group">删除整群</button>
+              </div>
+            </div>
+
+            <div id="classicsDetailMeta" class="hint">群内典图会在这里显示。</div>
+            <div id="classicsGallery" class="gallery-grid"></div>
+            <div id="classicsNotice" class="notice">等待载入</div>
+          </section>
+        </div>
+      </section>
+    </main>
+  </div>
+
   <script src="./static/app.js"></script>
 </body>
 </html>

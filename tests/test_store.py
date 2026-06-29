@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.settings import AppSettings
+from tools.qqbot_launcher import DEFAULT_LOG_RETENTION_DAYS, cleanup_logs
 
 
 GIF_1PX = (
@@ -19,6 +22,23 @@ def _write_seed(path: Path, *records: dict[str, object]) -> None:
         "\n".join(json.dumps(record, ensure_ascii=False) for record in records),
         encoding="utf-8",
     )
+
+
+def _china_timestamp(
+    year: int,
+    month: int,
+    day: int,
+    hour: int,
+    minute: int = 0,
+) -> float:
+    return datetime(
+        year,
+        month,
+        day,
+        hour,
+        minute,
+        tzinfo=timezone(timedelta(hours=8)),
+    ).timestamp()
 
 
 def test_store_persists_policy_state(tmp_path):
@@ -505,3 +525,101 @@ def test_restaurants_upsert_by_group_and_name(tmp_path):
     assert updated["dishes"] == ["干锅牛蛙"]
     assert other_group["id"] != first["id"]
     assert store.pick_restaurant(1, 0)["name"] == "楼下小馆"
+
+
+def test_group_daily_summary_counts_activity_by_day(tmp_path):
+    db_path = tmp_path / "policy.sqlite3"
+    store = PolicyStore(db_path)
+    store.initialize(AppSettings(db_path=db_path, admins=(10000,)))
+
+    store.record_group_message_activity(
+        group_id=123,
+        user_id=1,
+        timestamp=_china_timestamp(2026, 6, 19, 8, 10),
+        raw_message="早上好",
+        segments=(),
+    )
+    store.record_group_message_activity(
+        group_id=123,
+        user_id=1,
+        timestamp=_china_timestamp(2026, 6, 19, 23, 58),
+        raw_message="最后一条",
+        segments=({"type": "image", "data": {"file": "a.jpg"}},),
+    )
+    store.record_group_message_activity(
+        group_id=123,
+        user_id=2,
+        timestamp=_china_timestamp(2026, 6, 19, 12, 0),
+        raw_message="hello world",
+        segments=(
+            {"type": "at", "data": {"qq": "1"}},
+            {"type": "reply", "data": {"id": "42"}},
+        ),
+    )
+    store.record_group_message_activity(
+        group_id=123,
+        user_id=2,
+        timestamp=_china_timestamp(2026, 6, 20, 0, 1),
+        raw_message="next day",
+        segments=(),
+    )
+
+    summary = store.get_group_daily_summary(123, "2026-06-19", limit=5)
+
+    assert summary["total_messages"] == 3
+    assert summary["active_users"] == 2
+    assert summary["top_messages"][0]["user_id"] == 1
+    assert summary["top_messages"][0]["message_count"] == 2
+    assert summary["top_text_chars"][0]["user_id"] == 2
+    assert summary["top_images"] == [
+        {
+            "user_id": 1,
+            "message_count": 2,
+            "text_chars": 7,
+            "image_count": 1,
+            "at_count": 0,
+            "reply_count": 0,
+            "first_timestamp": _china_timestamp(2026, 6, 19, 8, 10),
+            "last_timestamp": _china_timestamp(2026, 6, 19, 23, 58),
+            "first_time": "08:10",
+            "last_time": "23:58",
+        }
+    ]
+    assert summary["top_mentions"][0]["user_id"] == 2
+    assert summary["top_mentions"][0]["at_count"] == 1
+    assert summary["peak_hour"] == {"hour": 8, "message_count": 1}
+    assert summary["early_bird"]["user_id"] == 1
+    assert summary["early_bird"]["first_time"] == "08:10"
+    assert summary["night_owl"]["user_id"] == 1
+    assert summary["night_owl"]["last_time"] == "23:58"
+
+    next_day = store.get_group_daily_summary(123, "2026-06-20", limit=5)
+    assert next_day["total_messages"] == 1
+    assert next_day["active_users"] == 1
+
+
+def test_launcher_log_cleanup_keeps_recent_two_days(tmp_path):
+    assert DEFAULT_LOG_RETENTION_DAYS == 2
+
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    today = date.today()
+    kept_today = logs_dir / f"qqbot-{today.isoformat()}.log"
+    kept_yesterday = logs_dir / f"qqbot-{(today - timedelta(days=1)).isoformat()}.log"
+    deleted_old = logs_dir / f"qqbot-{(today - timedelta(days=2)).isoformat()}.log"
+    legacy_log = logs_dir / "qqbot.log"
+    for path in (kept_today, kept_yesterday, deleted_old, legacy_log):
+        path.write_text("log", encoding="utf-8")
+
+    old_timestamp = datetime.combine(
+        today - timedelta(days=2),
+        datetime.min.time(),
+    ).timestamp()
+    os.utime(legacy_log, (old_timestamp, old_timestamp))
+
+    cleanup_logs(logs_dir, retention_days=2)
+
+    assert kept_today.exists()
+    assert kept_yesterday.exists()
+    assert not deleted_old.exists()
+    assert not legacy_log.exists()
