@@ -396,7 +396,7 @@ def test_web_login_session_when_token_configured(tmp_path, monkeypatch):
     bad_login = client.post("/login", data={"password": "bad"})
 
     assert index_response.status_code == 303
-    assert index_response.headers["location"] == "./login?next=%2F"
+    assert index_response.headers["location"] == "./login"
     assert api_response.status_code == 401
     assert bad_login.status_code == 401
 
@@ -456,7 +456,7 @@ def test_llbot_proxy_requires_web_login_and_forwards_when_authenticated(
     allowed = client.get("/llbot/", headers={"x-admin-token": "secret"})
 
     assert blocked.status_code == 303
-    assert blocked.headers["location"] == "/qqbot/login?next=%2Fqqbot%2Fllbot%2F"
+    assert blocked.headers["location"] == "./login"
     assert allowed.status_code == 200
     assert "LLBot" in allowed.text
     assert 'src="/qqbot/llbot/assets/app.js"' in allowed.text

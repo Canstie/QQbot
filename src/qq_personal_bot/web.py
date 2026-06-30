@@ -103,7 +103,7 @@ def create_app():
             return await call_next(request)
         if _is_api_path(request):
             return JSONResponse({"detail": "login required"}, status_code=401)
-        return RedirectResponse(_login_url(request), status_code=303)
+        return RedirectResponse("./login", status_code=303)
 
     def require_token(request: Request) -> None:
         if not _is_authenticated(request):
@@ -115,24 +115,22 @@ def create_app():
 
     @app.get("/login")
     async def login_page(request: Request) -> Response:
-        next_url = _safe_next_url(request)
         if _is_authenticated(request):
-            return RedirectResponse(next_url or _admin_root_url(request), status_code=303)
-        return HTMLResponse(_login_page_html(next_url=next_url))
+            return RedirectResponse("./", status_code=303)
+        return HTMLResponse(_login_page_html())
 
     @app.post("/login")
     async def login(request: Request) -> Response:
         expected = get_settings().web_token
-        next_url = _safe_next_url(request)
         if not expected:
-            return RedirectResponse(next_url or _admin_root_url(request), status_code=303)
+            return RedirectResponse("./", status_code=303)
 
         body = (await request.body()).decode("utf-8", errors="ignore")
         password = parse_qs(body).get("password", [""])[0]
         if not hmac.compare_digest(password, expected):
-            return HTMLResponse(_login_page_html("token 不正确", next_url=next_url), status_code=401)
+            return HTMLResponse(_login_page_html("token 不正确"), status_code=401)
 
-        response = RedirectResponse(next_url or _admin_root_url(request), status_code=303)
+        response = RedirectResponse("./", status_code=303)
         response.set_cookie(
             _SESSION_COOKIE_NAME,
             _sign_session_cookie(expected),
@@ -145,7 +143,7 @@ def create_app():
 
     @app.post("/logout")
     async def logout(request: Request) -> Response:
-        response = RedirectResponse(_admin_login_path(request), status_code=303)
+        response = RedirectResponse("./login", status_code=303)
         response.delete_cookie(_SESSION_COOKIE_NAME, path=_cookie_path(request))
         return response
 
@@ -678,48 +676,12 @@ def _cookie_path(request: Request) -> str:
     return str(request.scope.get("root_path") or "/")
 
 
-def _admin_root_url(request: Request) -> str:
-    root_path = str(request.scope.get("root_path") or "").rstrip("/")
-    return f"{root_path}/" if root_path else "./"
-
-
-def _admin_login_path(request: Request) -> str:
-    root_path = str(request.scope.get("root_path") or "").rstrip("/")
-    return f"{root_path}/login" if root_path else "./login"
-
-
-def _current_public_path(request: Request) -> str:
-    root_path = str(request.scope.get("root_path") or "").rstrip("/")
-    path = str(request.scope.get("path") or "/")
-    query = request.url.query
-    public_path = f"{root_path}{path}" if root_path else path
-    return f"{public_path}?{query}" if query else public_path
-
-
-def _safe_next_url(request: Request) -> str:
-    value = str(request.query_params.get("next") or "")
-    if not value:
-        return ""
-    root_path = str(request.scope.get("root_path") or "").rstrip("/")
-    allowed_prefix = f"{root_path}/" if root_path else "/"
-    if value.startswith(allowed_prefix) and not value.startswith("//"):
-        return value
-    return ""
-
-
-def _login_url(request: Request) -> str:
-    return f"{_admin_login_path(request)}?next={quote(_current_public_path(request), safe='')}"
-
-
-def _login_page_html(error: str = "", next_url: str = "") -> str:
+def _login_page_html(error: str = "") -> str:
     error_html = (
         f'<div class="error">{html.escape(error)}</div>'
         if error
         else '<p class="hint">请输入服务器 .env 中的 QQBOT_WEB_TOKEN。</p>'
     )
-    action = "./login"
-    if next_url:
-        action = f"./login?next={quote(next_url, safe='')}"
     return f"""<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -825,7 +787,7 @@ def _login_page_html(error: str = "", next_url: str = "") -> str:
     <p class="eyebrow">QQ Bot Admin</p>
     <h1>登录控制台</h1>
     {error_html}
-    <form method="post" action="{html.escape(action)}">
+    <form method="post" action="./login">
       <label>Web Token
         <input name="password" type="password" autocomplete="current-password" autofocus required />
       </label>
