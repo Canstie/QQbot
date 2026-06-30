@@ -67,7 +67,6 @@ class AppSettings:
     menu_provider: str = "auto"
     jisu_recipe_appkey: str = ""
     web_token: str | None = None
-    llbot_web_url: str = "http://127.0.0.1:3080"
     nonebot_driver: str = "~fastapi"
     host: str = "127.0.0.1"
     port: int = 8080
@@ -100,7 +99,6 @@ class AppSettings:
             menu_provider=env.get("QQBOT_MENU_PROVIDER", "auto").strip().lower() or "auto",
             jisu_recipe_appkey=env.get("QQBOT_JISU_RECIPE_APPKEY", "").strip(),
             web_token=web_token,
-            llbot_web_url=env.get("QQBOT_LLBOT_WEB_URL", "http://127.0.0.1:3080").rstrip("/"),
             nonebot_driver=env.get("DRIVER", "~fastapi"),
             host=env.get("HOST", "127.0.0.1"),
             port=_env_int(env.get("PORT"), 8080),

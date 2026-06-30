@@ -11,8 +11,7 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import parse_qs, quote
 
-import httpx
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -77,16 +76,6 @@ class RestaurantPayload(BaseModel):
 
 _SESSION_COOKIE_NAME = "qqbot_admin_session"
 _SESSION_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
-_HOP_BY_HOP_HEADERS = {
-    "connection",
-    "keep-alive",
-    "proxy-authenticate",
-    "proxy-authorization",
-    "te",
-    "trailer",
-    "transfer-encoding",
-    "upgrade",
-}
 
 
 def create_app():
@@ -146,17 +135,6 @@ def create_app():
         response = RedirectResponse("./login", status_code=303)
         response.delete_cookie(_SESSION_COOKIE_NAME, path=_cookie_path(request))
         return response
-
-    @app.api_route(
-        "/llbot/{path:path}",
-        methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
-    )
-    async def llbot_proxy(path: str, request: Request) -> Response:
-        return await _proxy_llbot_http(path, request)
-
-    @app.websocket("/llbot/{path:path}")
-    async def llbot_proxy_websocket(path: str, websocket: WebSocket) -> None:
-        await _proxy_llbot_websocket(path, websocket)
 
     @app.get("/api/policy")
     async def get_policy() -> dict:
@@ -498,152 +476,6 @@ def _is_authenticated(request: Request) -> bool:
         return True
 
     return _verify_session_cookie(request.cookies.get(_SESSION_COOKIE_NAME), expected)
-
-
-def _is_websocket_authenticated(websocket: WebSocket) -> bool:
-    expected = get_settings().web_token
-    if not expected:
-        return True
-
-    provided = websocket.headers.get("x-admin-token") or websocket.query_params.get("token")
-    if provided and hmac.compare_digest(provided, expected):
-        return True
-
-    return _verify_session_cookie(websocket.cookies.get(_SESSION_COOKIE_NAME), expected)
-
-
-def _llbot_target_url(path: str, query: str = "") -> str:
-    base = get_settings().llbot_web_url.rstrip("/")
-    normalized_path = path.lstrip("/")
-    target = f"{base}/{normalized_path}" if normalized_path else f"{base}/"
-    if query:
-        target = f"{target}?{query}"
-    return target
-
-
-def _proxy_request_headers(request: Request) -> dict[str, str]:
-    return {
-        key: value
-        for key, value in request.headers.items()
-        if key.lower() not in _HOP_BY_HOP_HEADERS and key.lower() != "host"
-    }
-
-
-def _proxy_response_headers(response: httpx.Response) -> dict[str, str]:
-    return {
-        key: value
-        for key, value in response.headers.items()
-        if key.lower() not in _HOP_BY_HOP_HEADERS
-        and key.lower() not in {"content-encoding", "content-length"}
-    }
-
-
-async def _proxy_llbot_http(path: str, request: Request) -> Response:
-    request_path = str(request.scope.get("path", ""))
-    if request_path.rstrip("/").endswith("/llbot") and not request_path.endswith("/"):
-        return RedirectResponse("./llbot/", status_code=307)
-
-    public_prefix = _llbot_public_prefix(request)
-    target = _llbot_target_url(path, request.url.query)
-    try:
-        async with httpx.AsyncClient(follow_redirects=False, timeout=30.0) as client:
-            upstream = await client.request(
-                request.method,
-                target,
-                content=await request.body(),
-                headers=_proxy_request_headers(request),
-            )
-    except httpx.RequestError as exc:
-        raise HTTPException(status_code=502, detail=f"LLBot WebUI unavailable: {exc}") from exc
-
-    headers = _proxy_response_headers(upstream)
-    location = headers.get("location")
-    if location:
-        headers["location"] = _rewrite_llbot_location(location, public_prefix)
-    body = _rewrite_llbot_body(upstream.content, upstream.headers.get("content-type", ""), public_prefix)
-
-    return Response(
-        content=body,
-        status_code=upstream.status_code,
-        headers=headers,
-        media_type=upstream.headers.get("content-type"),
-    )
-
-
-async def _proxy_llbot_websocket(path: str, websocket: WebSocket) -> None:
-    if not _is_websocket_authenticated(websocket):
-        await websocket.close(code=1008)
-        return
-
-    target = _llbot_target_url(path, str(websocket.url.query)).replace("http://", "ws://", 1)
-    target = target.replace("https://", "wss://", 1)
-    await websocket.accept()
-
-    try:
-        import asyncio
-        import websockets
-
-        async with websockets.connect(target) as upstream:
-            async def client_to_upstream() -> None:
-                while True:
-                    message = await websocket.receive()
-                    if message["type"] == "websocket.disconnect":
-                        await upstream.close()
-                        return
-                    if "text" in message:
-                        await upstream.send(message["text"])
-                    elif "bytes" in message:
-                        await upstream.send(message["bytes"])
-
-            async def upstream_to_client() -> None:
-                async for message in upstream:
-                    if isinstance(message, bytes):
-                        await websocket.send_bytes(message)
-                    else:
-                        await websocket.send_text(message)
-
-            await asyncio.gather(client_to_upstream(), upstream_to_client())
-    except WebSocketDisconnect:
-        return
-    except Exception:
-        await websocket.close(code=1011)
-
-
-def _llbot_public_prefix(request: Request) -> str:
-    root_path = str(request.scope.get("root_path") or "").rstrip("/")
-    return f"{root_path}/llbot"
-
-
-def _rewrite_llbot_location(location: str, public_prefix: str) -> str:
-    if location.startswith(("http://127.0.0.1:3080", "http://localhost:3080")):
-        suffix = location.rsplit(":3080", 1)[-1] or "/"
-        return f"{public_prefix}{suffix}"
-    if location.startswith("/"):
-        return f"{public_prefix}{location}"
-    return location
-
-
-def _rewrite_llbot_body(body: bytes, content_type: str, public_prefix: str) -> bytes:
-    normalized_type = content_type.split(";", 1)[0].strip().lower()
-    if normalized_type not in {
-        "text/html",
-        "text/css",
-        "text/javascript",
-        "application/javascript",
-        "application/x-javascript",
-    }:
-        return body
-
-    try:
-        text = body.decode("utf-8")
-    except UnicodeDecodeError:
-        return body
-
-    for quote_char in ('"', "'", "`"):
-        text = text.replace(f"{quote_char}/api", f"{quote_char}{public_prefix}/api")
-        text = text.replace(f"{quote_char}/assets", f"{quote_char}{public_prefix}/assets")
-    text = text.replace("url(/assets", f"url({public_prefix}/assets")
-    return text.encode("utf-8")
 
 
 def _sign_session_cookie(secret: str, now: int | None = None) -> str:

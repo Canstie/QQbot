@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import json
 
-import httpx
 from fastapi.testclient import TestClient
 
 from qq_personal_bot.runtime import reset_runtime
@@ -417,51 +416,6 @@ def test_web_login_session_when_token_configured(tmp_path, monkeypatch):
 
     assert logout_response.status_code == 303
     assert client.get("/api/policy").status_code == 401
-
-
-def test_llbot_proxy_requires_web_login_and_forwards_when_authenticated(
-    tmp_path,
-    monkeypatch,
-):
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("QQBOT_WEB_TOKEN", "secret")
-    monkeypatch.setenv("QQBOT_DB_PATH", str(tmp_path / "policy.sqlite3"))
-    reset_runtime()
-
-    seen: dict[str, str] = {}
-
-    class FakeAsyncClient:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        async def request(self, method, url, **kwargs):
-            seen["method"] = method
-            seen["url"] = url
-            return httpx.Response(
-                200,
-                content=b'<html><script src="/assets/app.js"></script><script>fetch(`/api/status`)</script>LLBot</html>',
-                headers={"content-type": "text/html"},
-            )
-
-    monkeypatch.setattr("qq_personal_bot.web.httpx.AsyncClient", FakeAsyncClient)
-    client = TestClient(create_app(), root_path="/qqbot")
-
-    blocked = client.get("/llbot/", follow_redirects=False)
-    allowed = client.get("/llbot/", headers={"x-admin-token": "secret"})
-
-    assert blocked.status_code == 303
-    assert blocked.headers["location"] == "./login"
-    assert allowed.status_code == 200
-    assert "LLBot" in allowed.text
-    assert 'src="/qqbot/llbot/assets/app.js"' in allowed.text
-    assert "fetch(`/qqbot/llbot/api/status`)" in allowed.text
-    assert seen == {"method": "GET", "url": "http://127.0.0.1:3080/"}
 
 
 def test_classics_api_lists_groups_reads_group_and_serves_images(tmp_path, monkeypatch):
