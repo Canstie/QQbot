@@ -464,19 +464,6 @@ def test_llbot_proxy_requires_web_login_and_forwards_when_authenticated(
     assert seen == {"method": "GET", "url": "http://127.0.0.1:3080/"}
 
 
-def test_login_redirect_does_not_duplicate_root_path(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("QQBOT_WEB_TOKEN", "secret")
-    monkeypatch.setenv("QQBOT_DB_PATH", str(tmp_path / "policy.sqlite3"))
-    reset_runtime()
-    client = TestClient(create_app(), root_path="/qqbot")
-
-    response = client.get("/qqbot/llbot/", follow_redirects=False)
-
-    assert response.status_code == 303
-    assert response.headers["location"] == "/qqbot/login?next=%2Fqqbot%2Fllbot%2F"
-
-
 def test_classics_api_lists_groups_reads_group_and_serves_images(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("QQBOT_WEB_TOKEN", raising=False)

@@ -692,10 +692,7 @@ def _current_public_path(request: Request) -> str:
     root_path = str(request.scope.get("root_path") or "").rstrip("/")
     path = str(request.scope.get("path") or "/")
     query = request.url.query
-    if root_path and not path.startswith(f"{root_path}/") and path != root_path:
-        public_path = f"{root_path}{path}"
-    else:
-        public_path = path
+    public_path = f"{root_path}{path}" if root_path else path
     return f"{public_path}?{query}" if query else public_path
 
 
