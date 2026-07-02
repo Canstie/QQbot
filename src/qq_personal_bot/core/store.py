@@ -1290,9 +1290,16 @@ class PolicyStore:
         return count
 
     def _message_text_length(self, raw_message: str, segments: Any) -> int:
-        text_from_segments = self._text_from_segments(segments)
-        if text_from_segments is not None:
-            return len(text_from_segments.strip())
+        iterated_segments = self._iter_segments(segments)
+        if iterated_segments:
+            parts = []
+            for segment in iterated_segments:
+                if str(segment.get("type") or "") != "text":
+                    continue
+                data = segment.get("data")
+                if isinstance(data, Mapping):
+                    parts.append(str(data.get("text", "")))
+            return len("".join(parts).strip())
         return len(_strip_cq_segments(str(raw_message or "")).strip())
 
     def _text_from_segments(self, segments: Any) -> str | None:

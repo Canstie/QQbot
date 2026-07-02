@@ -398,6 +398,7 @@ def _run_lua_message_sync(
 
     full_message = decision.normalized_message.strip()
     date = _china_date(event.timestamp)
+    yesterday_date = _china_date(event.timestamp - 24 * 60 * 60)
     lua_event = _to_lua(
         lua,
         {
@@ -416,6 +417,7 @@ def _run_lua_message_sync(
             "is_at_bot": event.is_at_bot,
             "timestamp": event.timestamp,
             "date": date,
+            "yesterday_date": yesterday_date,
         },
     )
     api = LuaApi(lua, bot, loop, event, command, timeout_seconds)

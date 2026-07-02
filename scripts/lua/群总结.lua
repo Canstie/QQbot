@@ -1,8 +1,8 @@
 -- Command: 群总结
 -- Trigger: ~群总结
 
-local function quote_reply(message)
-  return {quote = true, reply = message}
+local function plain_reply(message)
+  return {reply = message}
 end
 
 local function display_name(member)
@@ -67,17 +67,17 @@ end
 
 function on_command(event, api)
   if event.group_id == nil then
-    return quote_reply("这个功能只能在群聊里使用。")
+    return plain_reply("这个功能只能在群聊里使用。")
   end
 
-  local summary = api.get_group_daily_summary(event.group_id, event.date, 5)
+  local summary = api.get_group_daily_summary(event.group_id, event.yesterday_date, 5)
   if summary == nil or tonumber(summary.total_messages or 0) <= 0 then
-    return quote_reply("今天还没有统计到群消息。")
+    return plain_reply("昨天还没有统计到群消息。")
   end
 
   local names = member_names(event, api)
   local lines = {
-    "今日群总结",
+    "昨日群总结（" .. tostring(summary.date or event.yesterday_date) .. "）",
     "总消息：" .. tostring(summary.total_messages) .. " 条",
     "参与人数：" .. tostring(summary.active_users) .. " 人",
   }
@@ -114,9 +114,9 @@ function on_command(event, api)
   table.insert(lines, "")
   append_rank(lines, "字数榜", summary.top_text_chars, "text_chars", " 字", names)
   table.insert(lines, "")
-  append_rank(lines, "发图榜", summary.top_images, "image_count", " 张", names, "今天还没人发图")
+  append_rank(lines, "发图榜", summary.top_images, "image_count", " 张", names, "昨天还没有人发图")
   table.insert(lines, "")
-  append_rank(lines, "@人榜", summary.top_mentions, "at_count", " 次", names, "今天还没人@人")
+  append_rank(lines, "@人榜", summary.top_mentions, "at_count", " 次", names, "昨天还没有人@别人")
 
-  return quote_reply(table.concat(lines, "\n"))
+  return plain_reply(table.concat(lines, "\n"))
 end
