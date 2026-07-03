@@ -425,6 +425,7 @@ def _run_lua_message_sync(
             "group_id": event.group_id,
             "user_id": event.user_id,
             "raw_message": event.raw_message,
+            "platform_raw_message": event.platform_raw_message,
             "segments": event.segments,
             "message": args,
             "full_message": full_message,

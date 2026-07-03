@@ -99,6 +99,7 @@ def make_event(
     user_id: int = 456,
     message_id: int | str = 1,
     raw_message: str = "~hello",
+    platform_raw_message: str | None = None,
     segments=(),
     timestamp: float = 1,
 ) -> MessageEvent:
@@ -108,6 +109,7 @@ def make_event(
         group_id=123,
         user_id=user_id,
         raw_message=raw_message,
+        platform_raw_message=platform_raw_message or raw_message,
         segments=segments,
         is_at_bot=False,
         timestamp=timestamp,
@@ -638,9 +640,11 @@ async def test_builtin_daily_yiji_is_fixed(tmp_path, monkeypatch):
     assert first.reply != next_day.reply
     assert first.quote is True
     assert first.reply is not None
-    assert "今日宜：" in first.reply
-    assert "今日忌：" in first.reply
-    assert "今日签语：" in first.reply
+    assert "黄历宜：" in first.reply
+    assert "黄历忌：" in first.reply
+    assert "补充宜：" in first.reply
+    assert "补充忌：" in first.reply
+    assert "补充说明：" in first.reply
     assert "农历正月初一" in first.reply
 
 
@@ -1144,6 +1148,30 @@ async def test_builtin_force_marry_bot_still_works_when_bot_missing_from_member_
     result = await run_lua_message(
         NoBotInMemberListFakeBot(),
         make_event(raw_message="~强娶 [CQ:at,qq=99999]", segments=target_at),
+        PolicyDecision(True, "ok", handler="default", normalized_message="强娶"),
+    )
+
+    assert result.quote is True
+    assert result.reply is not None
+    assert "bot" in result.reply
+    assert "nk=99999" in result.reply
+    assert "强娶成功!" in result.reply
+    assert "和我是没有好结果的哟" in result.reply
+
+
+@pytest.mark.asyncio
+async def test_builtin_force_marry_bot_uses_platform_raw_message_when_at_segment_is_missing(
+    tmp_path, monkeypatch
+):
+    configure_builtin_lua_dir(tmp_path, monkeypatch)
+
+    result = await run_lua_message(
+        NoBotInMemberListFakeBot(),
+        make_event(
+            raw_message="~强娶",
+            platform_raw_message="~强娶[at:qq=99999,name=mfkn] ",
+            segments=(),
+        ),
         PolicyDecision(True, "ok", handler="default", normalized_message="强娶"),
     )
 

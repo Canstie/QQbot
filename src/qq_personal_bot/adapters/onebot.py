@@ -11,6 +11,7 @@ def onebot_to_internal(event: Any, self_id: int | str) -> MessageEvent:
     text_parts: list[str] = []
     is_at_bot = bool(getattr(event, "to_me", False))
     message = getattr(event, "message", None)
+    platform_raw_message = str(getattr(event, "raw_message", "") or getattr(event, "message", "") or "")
 
     if message is not None:
         for segment in message:
@@ -52,6 +53,7 @@ def onebot_to_internal(event: Any, self_id: int | str) -> MessageEvent:
         group_id=group_id,
         user_id=int(getattr(event, "user_id")),
         raw_message=raw_message,
+        platform_raw_message=platform_raw_message,
         segments=tuple(segments),
         is_at_bot=is_at_bot,
         timestamp=float(getattr(event, "time", time.time())),

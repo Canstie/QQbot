@@ -18,6 +18,7 @@ class FakeEvent:
 
     def __init__(self, message):
         self.message = message
+        self.raw_message = str(message)
 
 
 class FakeReply:
@@ -43,6 +44,7 @@ def test_onebot_event_conversion_detects_at_and_text():
     assert converted.user_id == 10000
     assert converted.is_at_bot is True
     assert converted.raw_message == "~hello"
+    assert converted.platform_raw_message == str(event.message)
 
 
 def test_onebot_event_conversion_keeps_reply_segment():
@@ -57,6 +59,7 @@ def test_onebot_event_conversion_keeps_reply_segment():
 
     assert converted.raw_message == "~左对称"
     assert converted.segments[0] == {"type": "reply", "data": {"id": "123456"}}
+    assert converted.platform_raw_message == str(event.message)
 
 
 def test_onebot_event_conversion_keeps_event_reply_message():
@@ -73,3 +76,4 @@ def test_onebot_event_conversion_keeps_event_reply_message():
             "message": [{"type": "image", "data": {"url": "https://example.test/a.png"}}],
         },
     }
+    assert converted.platform_raw_message == str(event.message)

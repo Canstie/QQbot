@@ -11,6 +11,7 @@ class MessageEvent:
     group_id: int | None
     user_id: int
     raw_message: str
+    platform_raw_message: str = ""
     segments: Sequence[Mapping[str, Any]] = field(default_factory=tuple)
     is_at_bot: bool = False
     timestamp: float = 0.0

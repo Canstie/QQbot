@@ -3,6 +3,42 @@
 
 local NAMESPACE = "今日宜忌"
 
+local huangli_yi_pool = {
+  "祭祀",
+  "祈福",
+  "纳采",
+  "嫁娶",
+  "开市",
+  "交易",
+  "出行",
+  "会友",
+  "求医",
+  "修造",
+  "扫舍",
+  "沐浴",
+  "纳财",
+  "读书",
+  "安床",
+}
+
+local huangli_ji_pool = {
+  "动土",
+  "破土",
+  "安葬",
+  "词讼",
+  "远行",
+  "迁徙",
+  "开仓",
+  "掘井",
+  "伐木",
+  "置产",
+  "探病",
+  "针灸",
+  "争执",
+  "失信",
+  "熬夜",
+}
+
 local yi_pool = {
   "清理待办",
   "推进小改动",
@@ -98,14 +134,18 @@ local function build_reply(event, api)
   end
 
   math.randomseed(hash_text(seed_key))
+  local huangli_yi = pick_unique(huangli_yi_pool, 4)
+  local huangli_ji = pick_unique(huangli_ji_pool, 4)
   local yi = pick_unique(yi_pool, 3)
   local ji = pick_unique(ji_pool, 3)
   local sign = sign_pool[math.random(#sign_pool)]
 
   return title ..
-    "\n今日宜：" .. join(yi) ..
-    "\n今日忌：" .. join(ji) ..
-    "\n今日签语：" .. sign
+    "\n黄历宜：" .. join(huangli_yi) ..
+    "\n黄历忌：" .. join(huangli_ji) ..
+    "\n补充宜：" .. join(yi) ..
+    "\n补充忌：" .. join(ji) ..
+    "\n补充说明：" .. sign
 end
 
 function on_command(event, api)

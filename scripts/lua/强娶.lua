@@ -85,6 +85,15 @@ local function bot_member_from_login(login)
   }
 end
 
+local function extract_target_id(text)
+  if text == nil then
+    return nil
+  end
+  local value = tostring(text)
+  return string.match(value, "%[CQ:at,qq=(%d+)") or
+    string.match(value, "%[at:qq=(%d+)")
+end
+
 local function target_from_at(event)
   if event.segments == nil then
     return nil
@@ -92,15 +101,30 @@ local function target_from_at(event)
 
   for i = 1, #event.segments do
     local segment = event.segments[i]
-    if segment ~= nil and segment.type == "at" and segment.data ~= nil then
-      local qq = segment.data.qq
-      if qq ~= nil and tostring(qq) ~= "all" then
-        return tostring(qq)
+    if segment ~= nil then
+      local segment_type = tostring(segment.type or "")
+      local segment_data = segment.data
+      if segment_type == "at" and segment_data ~= nil then
+        local qq = segment_data.qq
+        if qq ~= nil and tostring(qq) ~= "all" then
+          return tostring(qq)
+        end
+      end
+
+      if segment_data ~= nil then
+        local from_text = extract_target_id(segment_data.text) or extract_target_id(segment_data.raw)
+        if from_text ~= nil then
+          return from_text
+        end
       end
     end
   end
 
   return nil
+end
+
+local function target_from_source_message(event)
+  return extract_target_id(event.platform_raw_message) or extract_target_id(event.raw_message)
 end
 
 local function target_from_args(event)
@@ -115,7 +139,7 @@ function on_command(event, api)
     return quote_reply("这个功能只能在群聊里使用。")
   end
 
-  local target_id = target_from_at(event) or target_from_args(event)
+  local target_id = target_from_at(event) or target_from_source_message(event) or target_from_args(event)
   if target_id == nil or target_id == "" then
     return quote_reply("请@要强娶的群成员，或输入 QQ 号。")
   end
