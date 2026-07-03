@@ -74,6 +74,17 @@ local function find_member(members, user_id)
   return nil
 end
 
+local function bot_member_from_login(login)
+  if login == nil or login.user_id == nil then
+    return nil
+  end
+  return {
+    user_id = login.user_id,
+    nickname = login.nickname or "Bot",
+    card = "",
+  }
+end
+
 local function target_from_at(event)
   if event.segments == nil then
     return nil
@@ -114,12 +125,15 @@ function on_command(event, api)
     members = {}
   end
 
+  local login = api.get_login_info()
   local target_member = find_member(members, target_id)
+  if target_member == nil and login ~= nil and tostring(target_id) == tostring(login.user_id) then
+    target_member = bot_member_from_login(login)
+  end
   if target_member == nil then
     return quote_reply("没有在群成员列表里找到这个人。")
   end
 
-  local login = api.get_login_info()
   local bot_warning = nil
 
   local caller_id = tostring(event.user_id)
@@ -142,7 +156,7 @@ function on_command(event, api)
   save_claims(event, api, claims)
 
   if tostring(target_id) == tostring(login.user_id) then
-    bot_warning = "和我是没有好结果的"
+    bot_warning = "和我是没有好结果的哟"
   end
 
   return wife_reply(target_member, bot_warning)
