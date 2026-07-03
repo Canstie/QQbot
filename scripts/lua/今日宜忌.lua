@@ -1,7 +1,7 @@
 -- Command: 今日宜忌
 -- Trigger: ~今日宜忌
 
-local NAMESPACE = "今日宜忌"
+local NAMESPACE = "今日宜忌:v2"
 
 local yi_pool = {
   "清理待办",
