@@ -1,41 +1,41 @@
--- Command: 今日宜忌
--- Trigger: ~今日宜忌
+﻿-- Command: 浠婃棩瀹滃繉
+-- Trigger: ~浠婃棩瀹滃繉
 
-local NAMESPACE = "今日宜忌"
+local NAMESPACE = "浠婃棩瀹滃繉"
 
 local yi_pool = {
-  "摸鱼但不被发现",
-  "早点下班",
-  "主动喝水",
-  "整理桌面",
-  "打开任务先做两分钟",
-  "夸群友一句",
-  "点一杯刚刚好的饮料",
-  "把收藏夹里的教程看完一页",
-  "保存文件",
-  "给自己留十分钟空档",
+  "鎽搁奔浣嗕笉琚彂鐜?",
+  "鏃╃偣涓嬬彮",
+  "涓诲姩鍠濇按",
+  "鏁寸悊妗岄潰",
+  "鎵撳紑浠诲姟鍏堝仛涓ゅ垎閽?",
+  "澶哥兢鍙嬩竴鍙?",
+  "鐐逛竴鏉垰鍒氬ソ鐨勯ギ鏂?",
+  "鎶婃敹钘忓す閲岀殑鏁欑▼鐪嬪畬涓€椤?",
+  "淇濆瓨鏂囦欢",
+  "缁欒嚜宸辩暀鍗佸垎閽熺┖妗?",
 }
 
 local ji_pool = {
-  "嘴硬",
-  "凌晨做重大决定",
-  "和电梯门比速度",
-  "空腹喝冰的",
-  "把 bug 说成小问题",
-  "连续撤回三次消息",
-  "刚醒就开会",
-  "在群里立太满的 flag",
-  "忘记带钥匙",
-  "边走路边回长消息",
+  "鍢寸‖",
+  "鍑屾櫒鍋氶噸澶у喅瀹?",
+  "鍜岀數姊棬姣旈€熷害",
+  "绌鸿吂鍠濆啺鐨?",
+  "鎶?bug 璇存垚灏忛棶棰?",
+  "杩炵画鎾ゅ洖涓夋娑堟伅",
+  "鍒氶啋灏卞紑浼?",
+  "鍦ㄧ兢閲岀珛澶弧鐨?flag",
+  "蹇樿甯﹂挜鍖?",
+  "杈硅蛋璺竟鍥為暱娑堟伅",
 }
 
 local sign_pool = {
-  "今天主打一个稳中带皮，先把能赢的小局拿下。",
-  "别急着证明自己，先证明午饭很好吃。",
-  "遇到麻烦先截图，世界会奖励有证据的人。",
-  "保持礼貌，但不要把脑子借给别人开车。",
-  "今天适合慢慢来，慢慢来也算前进。",
-  "情绪不要预支，快乐可以分期。",
+  "浠婂ぉ涓绘墦涓€涓ǔ涓甫鐨紝鍏堟妸鑳借耽鐨勫皬灞€鎷夸笅銆?",
+  "鍒€ョ潃璇佹槑鑷繁锛屽厛璇佹槑鍗堥キ寰堝ソ鍚冦€?",
+  "閬囧埌楹荤儲鍏堟埅鍥撅紝涓栫晫浼氬鍔辨湁璇佹嵁鐨勪汉銆?",
+  "淇濇寔绀艰矊锛屼絾涓嶈鎶婅剳瀛愬€锺?",
+  "浠婂ぉ閫傚悎鎱㈡參鏉ワ紝鎱㈡參鏉ヤ篃绠楀墠杩涖€?",
+  "鎯呯华涓嶈棰勬敮锛屽揩涔?",
 }
 
 local function quote_reply(message)
@@ -73,18 +73,35 @@ local function pick_unique(source, count)
 end
 
 local function join(items)
-  return table.concat(items, "、")
+  return table.concat(items, "，")
 end
 
-local function build_reply(key)
+local function get_lunar_info(event, api)
+  local date_str = os.date("%Y-%m-%d", event.timestamp)
+  local url = "https://www.sojson.com/open/api/lunar/json.shtml?date=" .. api.url_encode(date_str)
+  local ok, data = pcall(api.http_get_json, url)
+  if not ok or type(data) ~= "table" then
+    return nil
+  end
+  local payload = data.data or data
+  return { month = payload.lunarMonth or payload.moonMonth, day = payload.lunarDay or payload.moonDay }
+end
+
+local function build_reply(event, api, key)
   math.randomseed(hash_text(key))
   local yi = pick_unique(yi_pool, 3)
   local ji = pick_unique(ji_pool, 3)
   local sign = sign_pool[math.random(#sign_pool)]
 
-  return "今日宜：" .. join(yi) ..
-    "\n今日忌：" .. join(ji) ..
-    "\n今日签语：" .. sign
+  local lunar = get_lunar_info(event, api)
+  local lunar_desc = ""
+  if lunar then
+    lunar_desc = "\n农历" .. lunar.month .. "月" .. lunar.day .. "日"
+  end
+
+  return "浠婃棩瀹滐細" .. join(yi) ..
+    "\n浠婃棩蹇岋細" .. join(ji) ..
+    "\n浠婃棩绛捐锛?" .. sign .. lunar_desc
 end
 
 function on_command(event, api)
@@ -94,7 +111,7 @@ function on_command(event, api)
     return quote_reply(saved)
   end
 
-  local message = build_reply(key)
+  local message = build_reply(event, api, key)
   api.set_state(key, message, NAMESPACE)
   return quote_reply(message)
 end
