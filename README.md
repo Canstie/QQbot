@@ -184,7 +184,7 @@ scripts/lua/抽群老婆.lua
 - `~强娶 @群成员`：指定一个群成员作为今天的群老婆；抽、换、强娶都会避开当天已经成为别人群老婆的人。
 - `~今日天气 北京`：查询指定地点天气。
 - `~今日人品`：每天固定生成 0-100 的人品值和一句短评。
-- `~今日宜忌`：每天固定生成“宜/忌/签语”。
+- `~今日宜忌`：按当天农历生成统一的“宜/忌/签语”。
 - `~今日菜单`：优先使用国内的 极速数据/JisuAPI 菜谱大全接口随机推荐菜单，返回 `pic` 图片时会缓存并附图；未配置 key 或接口失败时回退到本地中文菜谱库。
 - `~今日菜单` 后面的文字不再按地区筛选，菜单库也不再维护地区分类；本地回退只按菜名、别名、菜系、分类和标签做内部匹配。
   JisuAPI 需要在 `.env` 设置 `QQBOT_JISU_RECIPE_APPKEY`，并保持 `QQBOT_MENU_PROVIDER=auto` 或 `jisu`。本地数据保存在 SQLite，命中有效本地图片时会附图；启动时会自动清理旧的 `今日菜单:cache:v1/v2` Lua 缓存命名空间。
@@ -250,6 +250,7 @@ end
 - `api.delete_state(key, namespace)`：删除 Lua 持久化状态
 - `api.url_encode(value)`：URL 编码文本
 - `api.http_get_json(url)`：请求 HTTP/HTTPS JSON 接口，返回 Lua table
+- `api.today_lunar()`：返回当天农历信息，包含年月日、中文月日和稳定 key
 - `api.json_encode(value)`：把 Lua table 编码为 JSON 字符串，便于保存到状态
 - `api.json_decode(value)`：把 JSON 字符串解码为 Lua table
 - `api.call(action, params)`：调用其他 OneBot API

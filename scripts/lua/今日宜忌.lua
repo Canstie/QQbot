@@ -1,49 +1,49 @@
-﻿-- Command: 浠婃棩瀹滃繉
--- Trigger: ~浠婃棩瀹滃繉
+-- Command: 今日宜忌
+-- Trigger: ~今日宜忌
 
-local NAMESPACE = "浠婃棩瀹滃繉"
+local NAMESPACE = "今日宜忌"
 
 local yi_pool = {
-  "鎽搁奔浣嗕笉琚彂鐜?",
-  "鏃╃偣涓嬬彮",
-  "涓诲姩鍠濇按",
-  "鏁寸悊妗岄潰",
-  "鎵撳紑浠诲姟鍏堝仛涓ゅ垎閽?",
-  "澶哥兢鍙嬩竴鍙?",
-  "鐐逛竴鏉垰鍒氬ソ鐨勯ギ鏂?",
-  "鎶婃敹钘忓す閲岀殑鏁欑▼鐪嬪畬涓€椤?",
-  "淇濆瓨鏂囦欢",
-  "缁欒嚜宸辩暀鍗佸垎閽熺┖妗?",
+  "清理待办",
+  "推进小改动",
+  "补测试",
+  "整理桌面",
+  "早点收工",
+  "备份重要文件",
+  "复盘旧问题",
+  "给朋友回消息",
+  "喝水散步",
+  "把拖延的事先做五分钟",
+  "整理聊天记录",
+  "把临时想法写下来",
 }
 
 local ji_pool = {
-  "鍢寸‖",
-  "鍑屾櫒鍋氶噸澶у喅瀹?",
-  "鍜岀數姊棬姣旈€熷害",
-  "绌鸿吂鍠濆啺鐨?",
-  "鎶?bug 璇存垚灏忛棶棰?",
-  "杩炵画鎾ゅ洖涓夋娑堟伅",
-  "鍒氶啋灏卞紑浼?",
-  "鍦ㄧ兢閲岀珛澶弧鐨?flag",
-  "蹇樿甯﹂挜鍖?",
-  "杈硅蛋璺竟鍥為暱娑堟伅",
+  "深夜改配置",
+  "空腹猛灌咖啡",
+  "带着情绪回消息",
+  "临上线前再大改",
+  "没看日志就下结论",
+  "连续撤回三次消息",
+  "把小 bug 说成没事",
+  "答应过多临时需求",
+  "边走路边看群消息",
+  "忘记保存文件",
+  "起床就开会",
+  "把锅甩给网络环境",
 }
 
 local sign_pool = {
-  "浠婂ぉ涓绘墦涓€涓ǔ涓甫鐨紝鍏堟妸鑳借耽鐨勫皬灞€鎷夸笅銆?",
-  "鍒€ョ潃璇佹槑鑷繁锛屽厛璇佹槑鍗堥キ寰堝ソ鍚冦€?",
-  "閬囧埌楹荤儲鍏堟埅鍥撅紝涓栫晫浼氬鍔辨湁璇佹嵁鐨勪汉銆?",
-  "淇濇寔绀艰矊锛屼絾涓嶈鎶婅剳瀛愬€锺?",
-  "浠婂ぉ閫傚悎鎱㈡參鏉ワ紝鎱㈡參鏉ヤ篃绠楀墠杩涖€?",
-  "鎯呯华涓嶈棰勬敮锛屽揩涔?",
+  "先把手上的小事做稳，今天自然越走越顺。",
+  "今天适合慢一点，但别停下来。",
+  "先整理，再推进，很多麻烦会自己缩小。",
+  "不必硬拼速度，稳定输出比冲一波更赚。",
+  "今天贵在少折腾，做完比做满更重要。",
+  "把该补的坑补掉，晚点会轻松很多。",
 }
 
 local function quote_reply(message)
-  return {quote = true, reply = message}
-end
-
-local function state_key(event)
-  return tostring(event.date) .. ":" .. tostring(event.user_id)
+  return { quote = true, reply = message }
 end
 
 local function hash_text(text)
@@ -76,42 +76,47 @@ local function join(items)
   return table.concat(items, "，")
 end
 
-local function get_lunar_info(event, api)
-  local date_str = os.date("%Y-%m-%d", event.timestamp)
-  local url = "https://www.sojson.com/open/api/lunar/json.shtml?date=" .. api.url_encode(date_str)
-  local ok, data = pcall(api.http_get_json, url)
-  if not ok or type(data) ~= "table" then
+local function get_lunar_info(api)
+  local ok, lunar = pcall(api.today_lunar)
+  if not ok or type(lunar) ~= "table" then
     return nil
   end
-  local payload = data.data or data
-  return { month = payload.lunarMonth or payload.moonMonth, day = payload.lunarDay or payload.moonDay }
+  if lunar.display == nil or lunar.key == nil then
+    return nil
+  end
+  return lunar
 end
 
-local function build_reply(event, api, key)
-  math.randomseed(hash_text(key))
+local function build_reply(event, api)
+  local lunar = get_lunar_info(api)
+  local seed_key = tostring(event.date)
+  local title = "今日宜忌"
+
+  if lunar ~= nil then
+    seed_key = lunar.key
+    title = "今日宜忌（农历" .. lunar.display .. "）"
+  end
+
+  math.randomseed(hash_text(seed_key))
   local yi = pick_unique(yi_pool, 3)
   local ji = pick_unique(ji_pool, 3)
   local sign = sign_pool[math.random(#sign_pool)]
 
-  local lunar = get_lunar_info(event, api)
-  local lunar_desc = ""
-  if lunar then
-    lunar_desc = "\n农历" .. lunar.month .. "月" .. lunar.day .. "日"
-  end
-
-  return "浠婃棩瀹滐細" .. join(yi) ..
-    "\n浠婃棩蹇岋細" .. join(ji) ..
-    "\n浠婃棩绛捐锛?" .. sign .. lunar_desc
+  return title ..
+    "\n今日宜：" .. join(yi) ..
+    "\n今日忌：" .. join(ji) ..
+    "\n今日签语：" .. sign
 end
 
 function on_command(event, api)
-  local key = state_key(event)
+  local lunar = get_lunar_info(api)
+  local key = lunar and lunar.key or tostring(event.date)
   local saved = api.get_state(key, NAMESPACE)
   if saved ~= nil and saved ~= "" then
     return quote_reply(saved)
   end
 
-  local message = build_reply(event, api, key)
+  local message = build_reply(event, api)
   api.set_state(key, message, NAMESPACE)
   return quote_reply(message)
 end

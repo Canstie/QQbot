@@ -540,6 +540,32 @@ async def test_lua_json_encode_decode_helpers(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_lua_today_lunar_helper_returns_expected_chinese_date(tmp_path, monkeypatch):
+    lua_dir = configure_lua_dir(tmp_path, monkeypatch)
+    (lua_dir / "lunar.lua").write_text(
+        """
+        function on_command(event, api)
+          local lunar = api.today_lunar()
+          return lunar.year .. "|" .. lunar.month .. "|" .. lunar.day .. "|" ..
+            lunar.month_label .. "|" .. lunar.day_label .. "|" .. tostring(lunar.is_leap_month)
+        end
+        """,
+        encoding="utf-8",
+    )
+
+    result = await run_lua_message(
+        FakeBot(),
+        make_event(
+            raw_message="~lunar",
+            timestamp=china_timestamp(2024, 2, 10, 12),
+        ),
+        PolicyDecision(True, "ok", handler="default", normalized_message="lunar"),
+    )
+
+    assert result.reply == "2024|1|1|正月|初一|false"
+
+
+@pytest.mark.asyncio
 async def test_builtin_today_personality_replaces_luck_command(tmp_path, monkeypatch):
     lua_dir = configure_builtin_lua_dir(tmp_path, monkeypatch)
     assert (lua_dir / "今日人品.lua").is_file()
@@ -574,21 +600,34 @@ async def test_builtin_daily_yiji_is_fixed(tmp_path, monkeypatch):
 
     first = await run_lua_message(
         RichFakeBot(),
-        make_event(),
+        make_event(timestamp=china_timestamp(2024, 2, 10, 12)),
         PolicyDecision(True, "ok", handler="default", normalized_message="今日宜忌"),
     )
     second = await run_lua_message(
         RichFakeBot(),
-        make_event(),
+        make_event(timestamp=china_timestamp(2024, 2, 10, 12)),
+        PolicyDecision(True, "ok", handler="default", normalized_message="今日宜忌"),
+    )
+    third = await run_lua_message(
+        RichFakeBot(),
+        make_event(user_id=789, timestamp=china_timestamp(2024, 2, 10, 12)),
+        PolicyDecision(True, "ok", handler="default", normalized_message="今日宜忌"),
+    )
+    next_day = await run_lua_message(
+        RichFakeBot(),
+        make_event(timestamp=china_timestamp(2024, 2, 11, 12)),
         PolicyDecision(True, "ok", handler="default", normalized_message="今日宜忌"),
     )
 
     assert first.reply == second.reply
+    assert second.reply == third.reply
+    assert first.reply != next_day.reply
     assert first.quote is True
     assert first.reply is not None
     assert "今日宜：" in first.reply
     assert "今日忌：" in first.reply
     assert "今日签语：" in first.reply
+    assert "农历正月初一" in first.reply
 
 
 @pytest.mark.asyncio
@@ -1114,7 +1153,7 @@ async def test_builtin_pick_and_change_wife_skip_claimed_members(tmp_path, monke
 async def test_builtin_group_summary_reports_daily_activity(tmp_path, monkeypatch):
     configure_builtin_lua_dir(tmp_path, monkeypatch)
     store = get_store()
-    event_time = china_timestamp(2026, 6, 19, 22, 0)
+    event_time = china_timestamp(2026, 6, 20, 22, 0)
     store.record_group_message_activity(
         group_id=123,
         user_id=1,
@@ -1152,7 +1191,7 @@ async def test_builtin_group_summary_reports_daily_activity(tmp_path, monkeypatc
 
     assert result.quote is True
     assert result.reply is not None
-    assert "今日群总结" in result.reply
+    assert "昨日群总结" in result.reply
     assert "总消息：3 条" in result.reply
     assert "参与人数：2 人" in result.reply
     assert "最活跃时段：08:00-09:00（1 条）" in result.reply
@@ -1175,7 +1214,7 @@ async def test_builtin_group_summary_handles_empty_day(tmp_path, monkeypatch):
     )
 
     assert result.quote is True
-    assert result.reply == "今天还没有统计到群消息。"
+    assert result.reply == "昨天还没有统计到群消息。"
 
 
 @pytest.mark.asyncio

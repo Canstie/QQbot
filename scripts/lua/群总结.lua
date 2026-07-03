@@ -1,8 +1,8 @@
 -- Command: 群总结
 -- Trigger: ~群总结
 
-local function plain_reply(message)
-  return {reply = message}
+local function quote_reply(message)
+  return { quote = true, reply = message }
 end
 
 local function display_name(member)
@@ -58,21 +58,18 @@ local function append_rank(lines, title, rows, metric, unit, names, empty_text)
   for index = 1, #rows do
     local row = rows[index]
     local value = tonumber(row[metric]) or 0
-    table.insert(
-      lines,
-      tostring(index) .. ". " .. name_for(names, row.user_id) .. "：" .. tostring(value) .. unit
-    )
+    table.insert(lines, tostring(index) .. ". " .. name_for(names, row.user_id) .. "：" .. tostring(value) .. unit)
   end
 end
 
 function on_command(event, api)
   if event.group_id == nil then
-    return plain_reply("这个功能只能在群聊里使用。")
+    return quote_reply("这个功能只能在群聊里使用。")
   end
 
   local summary = api.get_group_daily_summary(event.group_id, event.yesterday_date, 5)
   if summary == nil or tonumber(summary.total_messages or 0) <= 0 then
-    return plain_reply("昨天还没有统计到群消息。")
+    return quote_reply("昨天还没有统计到群消息。")
   end
 
   local names = member_names(event, api)
@@ -118,5 +115,5 @@ function on_command(event, api)
   table.insert(lines, "")
   append_rank(lines, "@人榜", summary.top_mentions, "at_count", " 次", names, "昨天还没有人@别人")
 
-  return plain_reply(table.concat(lines, "\n"))
+  return quote_reply(table.concat(lines, "\n"))
 end

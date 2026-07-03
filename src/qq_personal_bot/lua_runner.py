@@ -18,6 +18,7 @@ from nonebot import logger
 from nonebot.adapters.onebot.v11 import Bot
 
 from qq_personal_bot.core.models import MessageEvent, PolicyDecision
+from qq_personal_bot.lunar import solar_to_lunar
 from qq_personal_bot.menu_recipes import (
     cache_image,
     fetch_jisu_recipe,
@@ -168,6 +169,23 @@ class LuaApi:
         with urlopen(request, timeout=self._timeout_seconds) as response:
             body = response.read(1_000_000)
         return _to_lua(self._lua, json.loads(body.decode("utf-8")))
+
+    def today_lunar(self) -> Any:
+        target_date = datetime.fromtimestamp(self._event.timestamp, tz=_CHINA_TZ).date()
+        lunar = solar_to_lunar(target_date)
+        return _to_lua(
+            self._lua,
+            {
+                "year": lunar.year,
+                "month": lunar.month,
+                "day": lunar.day,
+                "is_leap_month": lunar.is_leap_month,
+                "month_label": lunar.month_label,
+                "day_label": lunar.day_label,
+                "display": lunar.display,
+                "key": lunar.key,
+            },
+        )
 
     def json_encode(self, value: Any) -> str:
         return json.dumps(_from_lua(value), ensure_ascii=False, separators=(",", ":"))
@@ -519,7 +537,8 @@ def _pending_lua_key(event: MessageEvent) -> str:
 
 
 def _china_date(timestamp: float) -> str:
-    return datetime.fromtimestamp(float(timestamp or 0), _CHINA_TZ).date().isoformat()
+    instant = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(seconds=float(timestamp or 0))
+    return instant.astimezone(_CHINA_TZ).date().isoformat()
 
 
 def _safe_image_id(value: str) -> str:

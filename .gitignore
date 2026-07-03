@@ -4,11 +4,10 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .ruff_cache/
+logs/
+sync-backups/
+data/qqbot.sqlite3*
 data/*
-!data/menu_images/
-data/menu_images/*
-!data/menu_images/white-cut-chicken.gif
-!data/menu_images/fatty-beef-hotpot.gif
 !data/recipes_seed.jsonl
 dist/
 build/
