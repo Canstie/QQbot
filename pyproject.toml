@@ -11,6 +11,7 @@ requires-python = ">=3.11"
 dependencies = [
   "nonebot2[fastapi,httpx,websockets]>=2.4.0",
   "nonebot-adapter-onebot>=2.4.0",
+  "lunar_python>=1.4.8,<2",
   "lupa>=2.8",
   "Pillow>=10.0.0",
   "pydantic>=2.7.0",

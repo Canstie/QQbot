@@ -575,7 +575,8 @@ async def test_lua_today_lunar_helper_returns_expected_chinese_date(tmp_path, mo
         function on_command(event, api)
           local lunar = api.today_lunar()
           return lunar.year .. "|" .. lunar.month .. "|" .. lunar.day .. "|" ..
-            lunar.month_label .. "|" .. lunar.day_label .. "|" .. tostring(lunar.is_leap_month)
+            lunar.month_label .. "|" .. lunar.day_label .. "|" .. tostring(lunar.is_leap_month) ..
+            "|" .. lunar.day_yi[1] .. "|" .. lunar.day_ji[1]
         end
         """,
         encoding="utf-8",
@@ -590,7 +591,8 @@ async def test_lua_today_lunar_helper_returns_expected_chinese_date(tmp_path, mo
         PolicyDecision(True, "ok", handler="default", normalized_message="lunar"),
     )
 
-    assert result.reply == "2024|1|1|正月|初一|false"
+    assert result.reply is not None
+    assert result.reply.startswith("2024|1|1|正月|初一|false|")
 
 
 @pytest.mark.asyncio
@@ -658,6 +660,7 @@ async def test_builtin_daily_yiji_is_fixed(tmp_path, monkeypatch):
     assert "补充忌：" in first.reply
     assert "补充说明：" in first.reply
     assert "农历正月初一" in first.reply
+    assert "嫁娶" in first.reply or "纳采" in first.reply or "祭祀" in first.reply
 
 
 @pytest.mark.asyncio

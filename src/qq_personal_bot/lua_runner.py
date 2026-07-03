@@ -184,6 +184,8 @@ class LuaApi:
                 "day_label": lunar.day_label,
                 "display": lunar.display,
                 "key": lunar.key,
+                "day_yi": list(lunar.day_yi),
+                "day_ji": list(lunar.day_ji),
             },
         )
 
