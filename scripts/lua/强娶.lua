@@ -23,7 +23,7 @@ local function quote_reply(message)
 end
 
 local function wife_reply(member, extra_line)
-  local message = "你今天亲爱的群老婆是\n" .. avatar_message(member.user_id) .. "\n" .. display_name(member) .. "\n强娶成功!"
+  local message = "强娶成功!\n你今天亲爱的群老婆是\n" .. avatar_message(member.user_id) .. "\n" .. display_name(member)
   if extra_line ~= nil and extra_line ~= "" then
     message = message .. "\n" .. extra_line
   end
