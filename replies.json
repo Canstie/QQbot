@@ -5,23 +5,43 @@
   "direct_rules": [
     {
       "type": "contains",
+      "pattern": "机厅",
+      "reply": "欧耶~该去机厅咯~"
+    },
+    {
+      "type": "contains",
+      "pattern": "出勤",
+      "reply": "欧耶~出出的勤~"
+    },
+    {
+      "type": "contains",
+      "pattern": "扶她",
+      "reply": "欧耶~扶扶的她~"
+    },
+    {
+      "type": "contains",
+      "pattern": "咯咯哒",
+      "reply": "欧耶~咯咯的哒哒~"
+    },
+    {
+      "type": "contains",
+      "pattern": "qzx",
+      "reply": "欧耶~梓梓的轩~"
+    },
+    {
+      "type": "contains",
       "pattern": "怪猎",
       "reply": "哦耶~怪怪的猎~"
     },
     {
       "type": "contains",
-      "pattern": "张雪峰",
+      "pattern": "雪峰",
       "reply": "张雪峰老师~我还记得你~"
     },
     {
       "type": "contains",
-      "pattern": "锁",
-      "reply": "哦耶~丝丝的锁~"
-    },
-    {
-      "type": "contains",
       "pattern": "🍬",
-      "reply": "你好糖"
+      "reply": "糖糖糖"
     },
     {
       "type": "contains",
@@ -32,11 +52,6 @@
       "type": "contains",
       "pattern": "张旭",
       "reply": "张旭工程师~我还记得你~"
-    },
-    {
-      "type": "contains",
-      "pattern": "哈！",
-      "reply": "哦耶~哈哈的气~"
     },
     {
       "type": "contains",
@@ -57,6 +72,26 @@
       "type": "contains",
       "pattern": "沙东滚吧",
       "reply": "给我这个活着考不上编死不瞑目，上了酒桌不喝到脑死亡不算尽孝，生不出儿子等于白来人间一趟，最后还被煎饼硌掉最后一颗牙的沙东人看笑了"
+    },
+    {
+      "type": "contains",
+      "pattern": "梓轩",
+      "reply": "欧耶~梓梓的轩~"
+    },
+    {
+      "type": "contains",
+      "pattern": "锁",
+      "reply": "欧耶~丝丝的锁~"
+    },
+    {
+      "type": "contains",
+      "pattern": "巧乐兹",
+      "reply": "欧耶~雪雪的峰~"
+    },
+    {
+      "type": "contains",
+      "pattern": "诈骗",
+      "reply": "欧耶~炸炸的骗~"
     }
   ],
   "direct_lua_rules": [

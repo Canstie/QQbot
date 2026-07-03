@@ -1114,7 +1114,7 @@ async def test_builtin_pick_and_change_wife_skip_claimed_members(tmp_path, monke
 async def test_builtin_group_summary_reports_daily_activity(tmp_path, monkeypatch):
     configure_builtin_lua_dir(tmp_path, monkeypatch)
     store = get_store()
-    event_time = china_timestamp(2026, 6, 19, 22, 0)
+    event_time = china_timestamp(2026, 6, 20, 22, 0)
     store.record_group_message_activity(
         group_id=123,
         user_id=1,
@@ -1150,9 +1150,9 @@ async def test_builtin_group_summary_reports_daily_activity(tmp_path, monkeypatc
         PolicyDecision(True, "ok", handler="default", normalized_message="群总结"),
     )
 
-    assert result.quote is True
+    assert result.quote is False
     assert result.reply is not None
-    assert "今日群总结" in result.reply
+    assert "昨日群总结（2026-06-19）" in result.reply
     assert "总消息：3 条" in result.reply
     assert "参与人数：2 人" in result.reply
     assert "最活跃时段：08:00-09:00（1 条）" in result.reply
@@ -1174,8 +1174,8 @@ async def test_builtin_group_summary_handles_empty_day(tmp_path, monkeypatch):
         PolicyDecision(True, "ok", handler="default", normalized_message="群总结"),
     )
 
-    assert result.quote is True
-    assert result.reply == "今天还没有统计到群消息。"
+    assert result.quote is False
+    assert result.reply == "昨天还没有统计到群消息。"
 
 
 @pytest.mark.asyncio
