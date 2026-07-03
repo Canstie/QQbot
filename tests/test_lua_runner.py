@@ -1196,7 +1196,7 @@ async def test_builtin_force_marry_bot_uses_platform_raw_message_when_at_segment
 
 
 @pytest.mark.asyncio
-async def test_builtin_pick_wife_can_pick_bot_with_warning(tmp_path, monkeypatch):
+async def test_builtin_pick_wife_excludes_bot(tmp_path, monkeypatch):
     configure_builtin_lua_dir(tmp_path, monkeypatch)
 
     result = await run_lua_message(
@@ -1206,11 +1206,7 @@ async def test_builtin_pick_wife_can_pick_bot_with_warning(tmp_path, monkeypatch
     )
 
     assert result.quote is True
-    assert result.reply is not None
-    assert result.reply.startswith("你今天亲爱的群老婆是\n[CQ:image,file=https://q1.qlogo.cn/")
-    assert "Bot" in result.reply
-    assert "nk=99999" in result.reply
-    assert "和我是没有好结果的哟" in result.reply
+    assert result.reply == "没有可抽取的群老婆。"
 
 
 @pytest.mark.asyncio

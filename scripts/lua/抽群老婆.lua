@@ -33,12 +33,8 @@ local function quote_reply(message)
   return {quote = true, reply = message}
 end
 
-local function wife_reply(member, extra_line)
-  local message = "你今天亲爱的群老婆是\n" .. avatar_message(member.user_id) .. "\n" .. display_name(member)
-  if extra_line ~= nil and extra_line ~= "" then
-    message = message .. "\n" .. extra_line
-  end
-  return quote_reply(message)
+local function wife_reply(member)
+  return quote_reply("你今天亲爱的群老婆是\n" .. avatar_message(member.user_id) .. "\n" .. display_name(member))
 end
 
 local function state_key(event)
@@ -106,7 +102,8 @@ local function candidate_members(event, api, claims, exclude_user_id)
   for i = 1, #members do
     local member_id = tostring(members[i].user_id)
     local owner_id = claim_owner(claims, member_id)
-    if member_id ~= caller_id and
+    if member_id ~= self_id and
+        member_id ~= caller_id and
         member_id ~= exclude_id and
         (owner_id == nil or tostring(owner_id) == caller_id) then
       table.insert(candidates, members[i])
@@ -126,14 +123,6 @@ local function pick_wife(event, api, claims, exclude_user_id)
   return candidates[math.random(#candidates)]
 end
 
-local function bot_warning(member, api)
-  local login = api.get_login_info()
-  if login ~= nil and tostring(member.user_id) == tostring(login.user_id) then
-    return "和我是没有好结果的哟"
-  end
-  return nil
-end
-
 function on_command(event, api)
   if event.group_id == nil then
     return quote_reply("这个功能只能在群聊里使用。")
@@ -144,15 +133,17 @@ function on_command(event, api)
   local members = load_members(event, api)
   local claims = load_claims(event, api)
   local caller_id = tostring(event.user_id)
+  local login = api.get_login_info()
+  local self_id = login and tostring(login.user_id) or nil
 
   if saved_user_id ~= nil and saved_user_id ~= "" then
     local saved_member = find_member(members, saved_user_id)
-    if saved_member ~= nil then
+    if saved_member ~= nil and tostring(saved_user_id) ~= self_id then
       local owner_id = claim_owner(claims, saved_user_id)
       if owner_id == nil or tostring(owner_id) == caller_id then
         assign_claim(claims, saved_user_id, caller_id)
         save_claims(event, api, claims)
-        return wife_reply(saved_member, bot_warning(saved_member, api))
+        return wife_reply(saved_member)
       end
     end
     api.delete_state(key, NAMESPACE)
@@ -166,5 +157,5 @@ function on_command(event, api)
   api.set_state(key, tostring(picked.user_id), NAMESPACE)
   assign_claim(claims, picked.user_id, caller_id)
   save_claims(event, api, claims)
-  return wife_reply(picked, bot_warning(picked, api))
+  return wife_reply(picked)
 end
