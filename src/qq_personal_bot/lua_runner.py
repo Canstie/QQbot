@@ -256,6 +256,23 @@ class LuaApi:
         )
         return f"{group_id}/{relpath}" if relpath else None
 
+    def save_referenced_classic_image(
+        self,
+        group_id: int,
+        image_id: str | None = None,
+    ) -> str | None:
+        image_source = _first_image_source_from_segments(self._event.segments)
+        if image_source is None:
+            image_source = _first_embedded_reply_image_source(self._event.segments)
+        if image_source is None:
+            reply_message_id = _reply_message_id_from_segments(self._event.segments)
+            if reply_message_id is not None:
+                payload = self._call_api_raw("get_msg", message_id=reply_message_id)
+                image_source = _first_image_source_from_message(payload)
+        if image_source is None:
+            return None
+        return self.save_classic_image(group_id, image_source, image_id)
+
     def pick_classic_image(self, group_id: int, seed: int) -> str | None:
         group_id = int(group_id)
         group_dir = get_settings().classics_image_dir / str(group_id)

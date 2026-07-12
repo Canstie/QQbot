@@ -1077,23 +1077,16 @@ async def test_builtin_store_and_blast_classic_lua(tmp_path, monkeypatch):
         b"\x00\x02\x02D\x01\x00;"
     )
 
-    start = await run_lua_message(
-        RichFakeBot(),
-        make_event(raw_message="~存典"),
+    store_event = make_event(
+        raw_message="~存典",
+        segments=({"type": "reply", "data": {"id": "quoted-image"}},),
+    )
+    saved = await run_lua_message(
+        ReplyImageFakeBot(image_path),
+        store_event,
         PolicyDecision(True, "ok", handler="default", normalized_message="存典"),
     )
-    image_event = make_event(
-        raw_message="[CQ:image,file=classic.gif]",
-        segments=({"type": "image", "data": {"file": str(image_path)}},),
-    )
-    assert start.reply == "请发出你要存的典或发送'取消'以取消"
-    assert pending_lua_command(image_event) == "存典"
 
-    saved = await run_lua_message(
-        RichFakeBot(),
-        image_event,
-        PolicyDecision(True, "ok", handler="lua", normalized_message="存典"),
-    )
     blasted = await run_lua_message(
         RichFakeBot(),
         make_event(raw_message="~爆典", message_id=2),
@@ -1102,11 +1095,27 @@ async def test_builtin_store_and_blast_classic_lua(tmp_path, monkeypatch):
 
     saved_images = list((tmp_path / "classics" / "123").iterdir())
     assert saved.reply == "存典成功"
-    assert pending_lua_command(image_event) is None
+    assert pending_lua_command(store_event) is None
     assert len(saved_images) == 1
     assert blasted.reply is not None
     assert blasted.reply.startswith("[CQ:image,file=file:///")
     assert saved_images[0].name in blasted.reply
+
+
+@pytest.mark.asyncio
+async def test_builtin_store_classic_requires_referenced_image(tmp_path, monkeypatch):
+    monkeypatch.setenv("QQBOT_CLASSICS_IMAGE_DIR", str(tmp_path / "classics"))
+    configure_builtin_lua_dir(tmp_path, monkeypatch)
+
+    result = await run_lua_message(
+        RichFakeBot(),
+        make_event(raw_message="~存典"),
+        PolicyDecision(True, "ok", handler="default", normalized_message="存典"),
+    )
+
+    assert result.quote is True
+    assert result.reply == "请引用一张图片后再发送~存典。"
+    assert pending_lua_command(make_event(raw_message="~存典")) is None
 
 
 @pytest.mark.asyncio
