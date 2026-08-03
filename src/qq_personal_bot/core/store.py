@@ -430,6 +430,32 @@ class PolicyStore:
             {"role": str(row["role"]), "content": str(row["content"])} for row in rows
         ]
 
+    def expire_dsapi_chat_history(
+        self,
+        group_id: int,
+        *,
+        idle_seconds: int,
+        now: float | None = None,
+    ) -> int:
+        normalized_idle_seconds = int(idle_seconds)
+        if normalized_idle_seconds <= 0:
+            raise ValueError("idle_seconds must be > 0")
+        cutoff = (time.time() if now is None else float(now)) - normalized_idle_seconds
+        with self._connect() as conn:
+            deleted = conn.execute(
+                """
+                DELETE FROM dsapi_chat_history
+                WHERE group_id = ?
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM dsapi_chat_history
+                      WHERE group_id = ? AND created_at >= ?
+                  )
+                """,
+                (int(group_id), int(group_id), cutoff),
+            ).rowcount
+        return int(deleted)
+
     def record_dsapi_exchange(
         self,
         *,

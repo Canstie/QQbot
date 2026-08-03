@@ -176,6 +176,39 @@ def test_dsapi_config_and_history_are_group_scoped_and_pruned(tmp_path):
     assert store.get_dsapi_config()["history_messages"] == 0
 
 
+def test_dsapi_history_expires_after_group_is_idle(tmp_path):
+    db_path = tmp_path / "policy.sqlite3"
+    store = PolicyStore(db_path)
+    store.initialize(AppSettings(db_path=db_path, admins=()))
+    store.record_dsapi_exchange(
+        group_id=123,
+        user_content="旧问题",
+        assistant_content="旧回答",
+        history_turns=2,
+    )
+    store.record_dsapi_exchange(
+        group_id=456,
+        user_content="新问题",
+        assistant_content="新回答",
+        history_turns=2,
+    )
+    with store._connect() as conn:
+        conn.execute(
+            "UPDATE dsapi_chat_history SET created_at = ? WHERE group_id = ?",
+            (100.0, 123),
+        )
+        conn.execute(
+            "UPDATE dsapi_chat_history SET created_at = ? WHERE group_id = ?",
+            (1300.0, 456),
+        )
+
+    assert store.expire_dsapi_chat_history(123, idle_seconds=1200, now=1300.0) == 0
+    assert store.expire_dsapi_chat_history(123, idle_seconds=1200, now=1301.0) == 2
+    assert store.get_dsapi_chat_history(123, 2) == []
+    assert store.expire_dsapi_chat_history(456, idle_seconds=1200, now=1301.0) == 0
+    assert len(store.get_dsapi_chat_history(456, 2)) == 2
+
+
 def test_existing_store_migrates_enabled_groups_to_ai_groups(tmp_path):
     db_path = tmp_path / "policy.sqlite3"
     settings = AppSettings(db_path=db_path, admins=())

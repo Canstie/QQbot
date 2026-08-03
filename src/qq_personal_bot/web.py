@@ -201,6 +201,7 @@ def create_app():
             "api_configured": bool(settings.dsapi_enabled and settings.dsapi_api_key),
             "model": settings.dsapi_model,
             "base_url": settings.dsapi_base_url,
+            "history_idle_seconds": settings.dsapi_history_idle_seconds,
         }
 
     @app.post("/api/dsapi")

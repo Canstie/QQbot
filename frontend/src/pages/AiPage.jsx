@@ -66,6 +66,7 @@ export default function AiPage({ refreshVersion, onChanged }) {
           <Panel title="短期记忆" eyebrow="Context window">
             <Field label="每群保留轮数"><div className="range-value"><input type="range" min="1" max="20" value={form.turns} onChange={(e) => update("turns", e.target.value)} /><strong>{form.turns} 轮</strong></div></Field>
             <Switch checked={form.clear} onChange={(value) => update("clear", value)} label="保存时清空旧上下文" description="切换角色时建议开启" />
+            <p className="quiet-note">连续 {Math.round((data?.history_idle_seconds || 1200) / 60)} 分钟无人对话后，该群上下文自动清空。</p>
             <Button tone="danger" icon={Eraser} onClick={clearHistory}>立即清空全部上下文</Button>
           </Panel>
         </div>

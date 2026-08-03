@@ -72,6 +72,7 @@ class AppSettings:
     dsapi_model: str = "deepseek-v4-flash"
     dsapi_timeout_seconds: float = 30.0
     dsapi_max_tokens: int = 80
+    dsapi_history_idle_seconds: int = 1200
     dsapi_system_prompt: str = (
         "你是 QQ 群里的聊天机器人。直接回答，不要复述问题，不要展开解释；只回复一句简短中文，"
         "通常不超过30个汉字。不要声称看到了未提供的图片、语音、视频或文件。"
@@ -125,6 +126,9 @@ class AppSettings:
             ),
             dsapi_timeout_seconds=_env_float(env.get("QQBOT_DSAPI_TIMEOUT_SECONDS"), 30.0),
             dsapi_max_tokens=_env_int(env.get("QQBOT_DSAPI_MAX_TOKENS"), 80),
+            dsapi_history_idle_seconds=_env_int(
+                env.get("QQBOT_DSAPI_HISTORY_IDLE_SECONDS"), 1200
+            ),
             dsapi_system_prompt=(
                 env.get("QQBOT_DSAPI_SYSTEM_PROMPT", cls.dsapi_system_prompt).strip()
                 or cls.dsapi_system_prompt
@@ -152,3 +156,5 @@ class AppSettings:
             raise ValueError("QQBOT_DSAPI_TIMEOUT_SECONDS must be > 0")
         if self.dsapi_max_tokens <= 0:
             raise ValueError("QQBOT_DSAPI_MAX_TOKENS must be > 0")
+        if self.dsapi_history_idle_seconds <= 0:
+            raise ValueError("QQBOT_DSAPI_HISTORY_IDLE_SECONDS must be > 0")

@@ -214,6 +214,39 @@ async def test_knowledge_and_group_history_are_sent_and_response_is_recorded(tmp
     ]
 
 
+@pytest.mark.asyncio
+async def test_idle_group_history_is_not_sent_to_dsapi(tmp_path, monkeypatch):
+    store = make_store(tmp_path)
+    store.record_dsapi_exchange(
+        group_id=123,
+        user_content="过期问题",
+        assistant_content="过期回答",
+        history_turns=2,
+    )
+    with store._connect() as conn:
+        conn.execute(
+            "UPDATE dsapi_chat_history SET created_at = ? WHERE group_id = ?",
+            (1.0, 123),
+        )
+    captured = {}
+
+    def fake_request(settings, messages):
+        captured["messages"] = messages
+        return "新回答"
+
+    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
+
+    response = await generate_mention_reply(
+        FakeBot(),
+        make_event(text="新问题"),
+        make_settings(tmp_path, dsapi_history_idle_seconds=1200),
+        store,
+    )
+
+    assert response == "新回答"
+    assert captured["messages"][1:] == [{"role": "user", "content": "新问题"}]
+
+
 def test_chat_completion_request_uses_compatible_endpoint(tmp_path, monkeypatch):
     captured = {}
 

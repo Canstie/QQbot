@@ -61,6 +61,10 @@ async def generate_mention_reply(
     system_prompt = f"{system_prompt}\n\n{_BRIEF_REPLY_INSTRUCTION}"
 
     messages = [{"role": "system", "content": system_prompt}]
+    store.expire_dsapi_chat_history(
+        event.group_id,
+        idle_seconds=settings.dsapi_history_idle_seconds,
+    )
     messages.extend(store.get_dsapi_chat_history(event.group_id, config["history_turns"]))
     messages.append({"role": "user", "content": prompt})
 
