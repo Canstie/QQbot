@@ -6,7 +6,7 @@ import { Button, Field, Metric, PageHeader, Panel, Status, Switch } from "../com
 
 export default function AiPage({ refreshVersion, onChanged }) {
   const [data, setData] = useState(null);
-  const [form, setForm] = useState({ enabledGroups: "", turns: 6, enabled: false, prompt: "", clear: true });
+  const [form, setForm] = useState({ enabledGroups: "", turns: 2, enabled: false, prompt: "", clear: true });
   const [notice, setNotice] = useState("正在读取 AI 配置");
 
   const load = () => get("/dsapi").then((result) => {

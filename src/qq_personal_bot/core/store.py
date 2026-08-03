@@ -166,7 +166,7 @@ class PolicyStore:
             "per_user_per_minute": str(settings.per_user_per_minute),
             "dsapi_knowledge_enabled": "false",
             "dsapi_knowledge_prompt": "",
-            "dsapi_history_turns": "6",
+            "dsapi_history_turns": "2",
             "dsapi_enabled_groups": "[]",
         }
         for key, value in defaults.items():
@@ -185,7 +185,7 @@ class PolicyStore:
         defaults = {
             "dsapi_knowledge_enabled": "false",
             "dsapi_knowledge_prompt": "",
-            "dsapi_history_turns": "6",
+            "dsapi_history_turns": "2",
         }
         for key, value in defaults.items():
             conn.execute(
@@ -326,9 +326,9 @@ class PolicyStore:
 
     def get_dsapi_config(self) -> dict[str, Any]:
         try:
-            history_turns = int(self.get_setting("dsapi_history_turns", "6"))
+            history_turns = int(self.get_setting("dsapi_history_turns", "2"))
         except ValueError:
-            history_turns = 6
+            history_turns = 2
         history_turns = max(1, min(history_turns, 20))
         try:
             enabled_groups = self._normalize_int_ids(

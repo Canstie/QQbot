@@ -7,6 +7,7 @@ import pytest
 from qq_personal_bot.core.models import MessageEvent
 from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.dsapi import (
+    _brief_reply,
     _chat_completions_url,
     _request_chat_completion,
     build_mention_prompt,
@@ -199,6 +200,7 @@ async def test_knowledge_and_group_history_are_sent_and_response_is_recorded(tmp
 
     assert response == "本轮回答"
     assert "你是档案管理员" in captured["messages"][0]["content"]
+    assert "只回复一句话" in captured["messages"][0]["content"]
     assert captured["messages"][1:] == [
         {"role": "user", "content": "上一问"},
         {"role": "assistant", "content": "上一答"},
@@ -248,6 +250,8 @@ def test_chat_completion_request_uses_compatible_endpoint(tmp_path, monkeypatch)
     assert captured["url"] == "https://dsapi.example/v1/chat/completions"
     assert captured["authorization"] == "Bearer secret"
     assert captured["payload"]["model"] == "deepseek-test"
+    assert captured["payload"]["max_tokens"] == 80
+    assert captured["payload"]["thinking"] == {"type": "disabled"}
     assert captured["payload"]["stream"] is False
     assert captured["timeout"] == 30.0
 
@@ -257,3 +261,16 @@ def test_full_chat_completion_url_is_not_duplicated():
         _chat_completions_url("https://dsapi.example/v1/chat/completions")
         == "https://dsapi.example/v1/chat/completions"
     )
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        ("第一句话。第二句话。", "第一句话。"),
+        ("第一行\n第二行", "第一行 第二行"),
+        ("很长" * 40, "很长" * 29 + "很。"),
+        ("", None),
+    ],
+)
+def test_brief_reply_keeps_one_short_line(content, expected):
+    assert _brief_reply(content) == expected

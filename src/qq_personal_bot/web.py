@@ -58,7 +58,7 @@ class CoreConfigPayload(BaseModel):
 class DSAPIConfigPayload(BaseModel):
     knowledge_enabled: bool = False
     knowledge_prompt: str = ""
-    history_turns: int = 6
+    history_turns: int = 2
     enabled_groups: list[int] = Field(default_factory=list)
     clear_history: bool = True
 

@@ -28,6 +28,10 @@ _MULTIMODAL_SEGMENT_TYPES = {
     "xml",
 }
 _CQ_SEGMENT_RE = re.compile(r"\[CQ:([a-zA-Z0-9_-]+)(?:,[^\]]*)?\]")
+_SENTENCE_END_RE = re.compile(r"^(.+?[。！？!?])(?:\s|$|.*)", re.DOTALL)
+_BRIEF_REPLY_INSTRUCTION = (
+    "回复格式要求：只回复一句话，通常不超过30个汉字；不要分段、列点、复述问题或补充解释。"
+)
 
 
 class DSAPIError(RuntimeError):
@@ -54,12 +58,14 @@ async def generate_mention_reply(
     system_prompt = settings.dsapi_system_prompt
     if config["knowledge_enabled"] and config["knowledge_prompt"]:
         system_prompt = f"{system_prompt}\n\n角色设定与知识库：\n{config['knowledge_prompt']}"
+    system_prompt = f"{system_prompt}\n\n{_BRIEF_REPLY_INSTRUCTION}"
 
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(store.get_dsapi_chat_history(event.group_id, config["history_turns"]))
     messages.append({"role": "user", "content": prompt})
 
     response = await asyncio.to_thread(_request_chat_completion, settings, messages)
+    response = _brief_reply(response)
     if response:
         store.record_dsapi_exchange(
             group_id=event.group_id,
@@ -109,6 +115,7 @@ def _request_chat_completion(
             "model": settings.dsapi_model,
             "messages": messages,
             "max_tokens": settings.dsapi_max_tokens,
+            "thinking": {"type": "disabled"},
             "stream": False,
         },
         ensure_ascii=False,
@@ -143,6 +150,18 @@ def _request_chat_completion(
     if not isinstance(content, str):
         raise DSAPIError("assistant content is not text")
     return content.strip() or None
+
+
+def _brief_reply(content: str | None) -> str | None:
+    if not content:
+        return None
+    normalized = " ".join(content.split())
+    match = _SENTENCE_END_RE.match(normalized)
+    if match:
+        normalized = match.group(1)
+    if len(normalized) > 60:
+        normalized = normalized[:59].rstrip("，、；：,;: ") + "。"
+    return normalized or None
 
 
 def _chat_completions_url(base_url: str) -> str:
