@@ -151,7 +151,7 @@ async def _handle_onebot_message(
                     matcher,
                     bot,
                     event,
-                    _build_quoted_response(response, event),
+                    response,
                     explicit_group_send=explicit_group_send,
                 )
         return
