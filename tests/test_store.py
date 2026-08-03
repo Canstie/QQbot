@@ -147,10 +147,12 @@ def test_dsapi_config_and_history_are_group_scoped_and_pruned(tmp_path):
         clear_history=False,
         actor_id=10000,
         random_reply_percent=7.5,
+        random_sticker_percent=35,
     )
     assert config["enabled_groups"] == [123, 456]
     assert config["knowledge_prompt"] == "角色设定"
     assert config["random_reply_percent"] == 7.5
+    assert config["random_sticker_percent"] == 35
 
     for index in range(3):
         store.record_dsapi_exchange(

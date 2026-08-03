@@ -1,30 +1,36 @@
 import { useEffect, useState } from "react";
-import { BrainCircuit, Eraser, Save, Sparkles } from "lucide-react";
+import { BrainCircuit, Eraser, ImagePlus, Save, Sparkles, Trash2, Upload } from "lucide-react";
 
-import { formatIds, get, parseIds, post, remove } from "../api";
-import { Button, Field, Metric, PageHeader, Panel, Status, Switch } from "../components/Ui";
+import { fileToDataUrl, formatBytes, formatIds, get, parseIds, post, remove } from "../api";
+import { Button, Empty, Field, IconButton, Metric, PageHeader, Panel, Status, Switch } from "../components/Ui";
 
 export default function AiPage({ refreshVersion, onChanged }) {
   const [data, setData] = useState(null);
-  const [form, setForm] = useState({ enabledGroups: "", turns: 2, randomPercent: 2, enabled: false, prompt: "", clear: true });
+  const [form, setForm] = useState({ enabledGroups: "", turns: 2, randomPercent: 2, stickerPercent: 20, enabled: false, prompt: "", clear: true });
   const [notice, setNotice] = useState("正在读取 AI 配置");
+  const [stickers, setStickers] = useState([]);
+  const [stickerFile, setStickerFile] = useState(null);
 
   const load = () => get("/dsapi").then((result) => {
     setData(result);
-    setForm({ enabledGroups: formatIds(result.enabled_groups), turns: result.history_turns, randomPercent: result.random_reply_percent ?? 2, enabled: result.knowledge_enabled, prompt: result.knowledge_prompt || "", clear: true });
+    setForm({ enabledGroups: formatIds(result.enabled_groups), turns: result.history_turns, randomPercent: result.random_reply_percent ?? 2, stickerPercent: result.random_sticker_percent ?? 20, enabled: result.knowledge_enabled, prompt: result.knowledge_prompt || "", clear: true });
     setNotice("AI 配置已同步");
+  }).catch((error) => setNotice(error.message));
+  const loadStickers = () => get("/stickers").then((result) => {
+    setStickers(result.stickers || []);
   }).catch((error) => setNotice(error.message));
 
   useEffect(() => {
     void load();
+    void loadStickers();
   }, [refreshVersion]);
   const update = (key, value) => setForm((current) => ({ ...current, [key]: value }));
 
   const save = async () => {
     try {
-      const result = await post("/dsapi", { enabled_groups: parseIds(form.enabledGroups), history_turns: Number(form.turns), random_reply_percent: Number(form.randomPercent), knowledge_enabled: form.enabled, knowledge_prompt: form.prompt, clear_history: form.clear });
+      const result = await post("/dsapi", { enabled_groups: parseIds(form.enabledGroups), history_turns: Number(form.turns), random_reply_percent: Number(form.randomPercent), random_sticker_percent: Number(form.stickerPercent), knowledge_enabled: form.enabled, knowledge_prompt: form.prompt, clear_history: form.clear });
       setData(result);
-      setNotice("角色配置已保存，下一条 @bot 消息立即使用新设定");
+      setNotice("AI 配置已保存，下一条群消息立即使用新设定");
       setForm((current) => ({ ...current, clear: false }));
       onChanged();
     } catch (error) { setNotice(error.message); }
@@ -37,6 +43,28 @@ export default function AiPage({ refreshVersion, onChanged }) {
       setData(result);
       setNotice(`已清空 ${result.deleted} 条上下文消息`);
       onChanged();
+    } catch (error) { setNotice(error.message); }
+  };
+
+  const uploadSticker = async () => {
+    if (!stickerFile) { setNotice("请先选择表情包图片"); return; }
+    try {
+      await post("/stickers", {
+        filename: stickerFile.name,
+        image_data_url: await fileToDataUrl(stickerFile),
+      });
+      setStickerFile(null);
+      await loadStickers();
+      setNotice("表情包已上传并加入随机插话库");
+    } catch (error) { setNotice(error.message); }
+  };
+
+  const deleteSticker = async (filename) => {
+    if (!window.confirm(`删除表情包“${filename}”？`)) return;
+    try {
+      await remove(`/stickers/${encodeURIComponent(filename)}`);
+      await loadStickers();
+      setNotice("表情包已删除");
     } catch (error) { setNotice(error.message); }
   };
 
@@ -65,12 +93,31 @@ export default function AiPage({ refreshVersion, onChanged }) {
           </Panel>
           <Panel title="短期记忆" eyebrow="Context window">
             <Field label="每群保留轮数"><div className="range-value"><input type="range" min="1" max="20" value={form.turns} onChange={(e) => update("turns", e.target.value)} /><strong>{form.turns} 轮</strong></div></Field>
-            <Field label="随机引用插话概率" hint="仅监听 AI 启用群的普通纯文本消息；0% 表示关闭。"><div className="range-value"><input type="range" min="0" max="100" step="0.5" value={form.randomPercent} onChange={(e) => update("randomPercent", e.target.value)} /><strong>{form.randomPercent}%</strong></div></Field>
+            <Field label="随机插话概率" hint="仅监听 AI 启用群的普通纯文本消息；0% 表示关闭。"><div className="range-value"><input type="range" min="0" max="100" step="0.5" value={form.randomPercent} onChange={(e) => update("randomPercent", e.target.value)} /><strong>{form.randomPercent}%</strong></div></Field>
+            <Field label="表情包占插话比例" hint="从独立表情包库随机选择；无图时自动回退为文字。"><div className="range-value"><input type="range" min="0" max="100" step="1" value={form.stickerPercent} onChange={(e) => update("stickerPercent", e.target.value)} /><strong>{form.stickerPercent}%</strong></div></Field>
             <Switch checked={form.clear} onChange={(value) => update("clear", value)} label="保存时清空旧上下文" description="切换角色时建议开启" />
             <p className="quiet-note">连续 {Math.round((data?.history_idle_seconds || 1200) / 60)} 分钟无人对话后，该群上下文自动清空。</p>
             <Button tone="danger" icon={Eraser} onClick={clearHistory}>立即清空全部上下文</Button>
           </Panel>
         </div>
+        <Panel title="随机表情包库" eyebrow="Sticker pool" className="span-12" actions={<Button icon={Upload} onClick={uploadSticker}>上传表情包</Button>}>
+          <div className="sticker-upload">
+            <label className="image-drop">
+              <ImagePlus /><span>{stickerFile ? stickerFile.name : "选择 JPG、PNG、GIF 或 WebP，最大 10 MB"}</span>
+              <input type="file" accept="image/jpeg,image/png,image/gif,image/webp" onChange={(e) => setStickerFile(e.target.files?.[0] || null)} />
+            </label>
+            <span className="quiet-note">共 {stickers.length} 张；随机插话不会读取群典藏图片。</span>
+          </div>
+          {!stickers.length && <Empty title="表情包库为空" description="上传图片后，随机插话才可能发送表情包。" />}
+          <div className="sticker-grid">
+            {stickers.map((item) => (
+              <figure key={item.filename}>
+                <img src={item.image_url} alt={item.filename} loading="lazy" />
+                <figcaption><span>{formatBytes(item.size)}</span><IconButton label="删除表情包" icon={Trash2} tone="danger" onClick={() => deleteSticker(item.filename)} /></figcaption>
+              </figure>
+            ))}
+          </div>
+        </Panel>
         <div className="span-12 panel-footer panel-footer--standalone"><Status>{notice}</Status><span className="quiet-note">多模态消息仍会在本地直接丢弃，不调用 API</span></div>
       </div>
     </>

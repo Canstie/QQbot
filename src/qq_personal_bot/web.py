@@ -60,6 +60,7 @@ class DSAPIConfigPayload(BaseModel):
     knowledge_prompt: str = ""
     history_turns: int = 2
     random_reply_percent: float = 2.0
+    random_sticker_percent: float = 20.0
     enabled_groups: list[int] = Field(default_factory=list)
     clear_history: bool = True
 
@@ -73,6 +74,11 @@ class MenuPayload(BaseModel):
     enabled: bool = True
     image_data_url: str | None = None
     image_url: str | None = None
+
+
+class StickerPayload(BaseModel):
+    filename: str = "sticker"
+    image_data_url: str
 
 
 class RestaurantPayload(BaseModel):
@@ -214,6 +220,7 @@ def create_app():
                 knowledge_prompt=payload.knowledge_prompt,
                 history_turns=payload.history_turns,
                 random_reply_percent=payload.random_reply_percent,
+                random_sticker_percent=payload.random_sticker_percent,
                 enabled_groups=payload.enabled_groups,
                 clear_history=payload.clear_history,
                 actor_id=0,
@@ -371,6 +378,34 @@ def create_app():
         return {
             "deleted": get_store().prune_howtocook_without_images(get_settings().menu_image_dir)
         }
+
+    @app.get("/api/stickers")
+    async def get_stickers() -> dict:
+        return {"stickers": _list_stickers(), "root": str(get_settings().sticker_dir)}
+
+    @app.get("/api/sticker-images/{filename}")
+    async def get_sticker_image(filename: str) -> FileResponse:
+        path = _resolve_sticker(filename)
+        if not path.is_file() or not is_supported_image_file(path):
+            raise HTTPException(status_code=404, detail="sticker not found")
+        return FileResponse(path)
+
+    @app.post("/api/stickers")
+    async def create_sticker(payload: StickerPayload, request: Request) -> dict:
+        require_token(request)
+        try:
+            return _save_sticker(payload.filename, payload.image_data_url)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.delete("/api/stickers/{filename}")
+    async def delete_sticker(filename: str, request: Request) -> dict:
+        require_token(request)
+        path = _resolve_sticker(filename)
+        if not path.is_file() or not is_supported_image_file(path):
+            raise HTTPException(status_code=404, detail="sticker not found")
+        path.unlink()
+        return {"deleted": True, "filename": path.name}
 
     @app.get("/api/restaurants")
     async def get_restaurants(group_id: int | None = None, search: str = "", limit: int = 200) -> dict:
@@ -794,6 +829,56 @@ def _menu_for_api(menu: dict[str, Any], image_dir: Path) -> dict[str, Any]:
         image_path = (image_dir / image_relpath).resolve(strict=False)
         image_url = f"./api/menu-images/{image_relpath}" if image_path.is_file() else ""
     return {**menu, "image_url": image_url}
+
+
+def _list_stickers() -> list[dict[str, Any]]:
+    root = get_settings().sticker_dir
+    if not root.is_dir():
+        return []
+    images = sorted(
+        [path for path in root.iterdir() if path.is_file() and is_supported_image_file(path)],
+        key=lambda path: (path.stat().st_mtime, path.name),
+        reverse=True,
+    )
+    return [_sticker_for_api(path) for path in images]
+
+
+def _sticker_for_api(path: Path) -> dict[str, Any]:
+    stat = path.stat()
+    return {
+        "filename": path.name,
+        "image_url": f"./api/sticker-images/{quote(path.name)}",
+        "size": stat.st_size,
+        "modified_at": datetime.fromtimestamp(stat.st_mtime, UTC).isoformat(),
+    }
+
+
+def _save_sticker(filename: str, data_url: str) -> dict[str, Any]:
+    body, suffix = _decode_image_payload(data_url)
+    if body is None:
+        raise ValueError("sticker image is required")
+    if len(body) > 10 * 1024 * 1024:
+        raise ValueError("sticker image must not exceed 10 MB")
+
+    stem = re.sub(r"[^0-9A-Za-z._-]+", "-", Path(filename).stem).strip("-._")[:64]
+    stem = stem or "sticker"
+    digest = hashlib.sha256(body).hexdigest()[:12]
+    root = get_settings().sticker_dir.resolve(strict=False)
+    root.mkdir(parents=True, exist_ok=True)
+    target = root / f"{stem}-{digest}{suffix.lower()}"
+    target.write_bytes(body)
+    if not is_supported_image_file(target):
+        target.unlink(missing_ok=True)
+        raise ValueError("unsupported sticker image; use JPG, PNG, GIF, or WebP")
+    return _sticker_for_api(target)
+
+
+def _resolve_sticker(filename: str) -> Path:
+    root = get_settings().sticker_dir.resolve(strict=False)
+    path = (root / filename).resolve(strict=False)
+    if path.parent != root:
+        raise HTTPException(status_code=404, detail="sticker not found")
+    return path
 
 
 def _list_classic_groups(search: str = "", limit: int = 200) -> list[dict[str, Any]]:

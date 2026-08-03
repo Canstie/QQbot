@@ -64,6 +64,7 @@ class AppSettings:
     menu_seed_path: Path = Path("data/recipes_seed.jsonl")
     menu_image_dir: Path = Path("data/menu_images")
     classics_image_dir: Path = Path("data/classics")
+    sticker_dir: Path = Path("data/stickers")
     menu_provider: str = "auto"
     jisu_recipe_appkey: str = ""
     dsapi_enabled: bool = True
@@ -107,6 +108,7 @@ class AppSettings:
             menu_seed_path=Path(env.get("QQBOT_MENU_SEED_PATH", "data/recipes_seed.jsonl")),
             menu_image_dir=Path(env.get("QQBOT_MENU_IMAGE_DIR", "data/menu_images")),
             classics_image_dir=Path(env.get("QQBOT_CLASSICS_IMAGE_DIR", "data/classics")),
+            sticker_dir=Path(env.get("QQBOT_STICKER_DIR", "data/stickers")),
             menu_provider=env.get("QQBOT_MENU_PROVIDER", "auto").strip().lower() or "auto",
             jisu_recipe_appkey=env.get("QQBOT_JISU_RECIPE_APPKEY", "").strip(),
             dsapi_enabled=_env_bool(env.get("QQBOT_DSAPI_ENABLED"), True),

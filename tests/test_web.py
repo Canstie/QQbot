@@ -140,6 +140,7 @@ def test_dsapi_config_api_roundtrip_and_clear_history(tmp_path, monkeypatch):
             "enabled_groups": [123, 456],
             "history_turns": 8,
             "random_reply_percent": 7.5,
+            "random_sticker_percent": 35,
             "knowledge_enabled": True,
             "knowledge_prompt": "扮演档案管理员",
             "clear_history": False,
@@ -152,6 +153,7 @@ def test_dsapi_config_api_roundtrip_and_clear_history(tmp_path, monkeypatch):
     assert data["enabled_groups"] == [123, 456]
     assert data["history_turns"] == 8
     assert data["random_reply_percent"] == 7.5
+    assert data["random_sticker_percent"] == 35
     assert data["knowledge_enabled"] is True
     assert data["knowledge_prompt"] == "扮演档案管理员"
 
@@ -172,6 +174,35 @@ def test_dsapi_config_api_roundtrip_and_clear_history(tmp_path, monkeypatch):
     response = client.delete("/api/dsapi/history")
     assert response.status_code == 200
     assert response.json()["deleted"] == 0
+
+
+def test_sticker_api_uploads_serves_and_deletes_images(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("QQBOT_WEB_TOKEN", raising=False)
+    monkeypatch.setenv("QQBOT_DB_PATH", str(tmp_path / "policy.sqlite3"))
+    monkeypatch.setenv("QQBOT_STICKER_DIR", str(tmp_path / "stickers"))
+    reset_runtime()
+    client = TestClient(create_app())
+
+    created = client.post(
+        "/api/stickers",
+        json={"filename": "开心.gif", "image_data_url": GIF_DATA_URL},
+    )
+
+    assert created.status_code == 200
+    sticker = created.json()
+    assert sticker["filename"].endswith(".gif")
+    listing = client.get("/api/stickers")
+    assert listing.status_code == 200
+    assert listing.json()["stickers"][0]["filename"] == sticker["filename"]
+    image = client.get(sticker["image_url"].removeprefix("."))
+    assert image.status_code == 200
+    assert image.content.startswith(b"GIF89a")
+
+    deleted = client.delete(f"/api/stickers/{sticker['filename']}")
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted"] is True
+    assert client.get("/api/stickers").json()["stickers"] == []
 
 
 def test_core_policy_api_updates_full_config(tmp_path, monkeypatch):

@@ -11,6 +11,7 @@ from urllib.request import Request, urlopen
 
 from qq_personal_bot.core.models import MessageEvent
 from qq_personal_bot.core.store import PolicyStore
+from qq_personal_bot.menu_recipes import is_supported_image_file
 from qq_personal_bot.settings import AppSettings
 
 
@@ -89,6 +90,14 @@ async def generate_random_group_reply(
     if not _random_reply_selected(event, config["random_reply_percent"]):
         return None
 
+    sticker = _pick_random_sticker(
+        event,
+        settings,
+        config["random_sticker_percent"],
+    )
+    if sticker:
+        return sticker
+
     return await _generate_text_reply(
         event,
         settings,
@@ -135,14 +144,24 @@ async def _generate_text_reply(
     return response
 
 
-def _random_reply_selected(event: MessageEvent, percent: float) -> bool:
+def _random_reply_selected(
+    event: MessageEvent,
+    percent: float,
+    *,
+    salt: str = "reply",
+) -> bool:
     normalized_percent = max(0.0, min(float(percent), 100.0))
     if normalized_percent <= 0:
         return False
     if normalized_percent >= 100:
         return True
+    return _event_bucket(event, salt) < int(normalized_percent * 100)
+
+
+def _event_bucket(event: MessageEvent, salt: str) -> int:
     source = "|".join(
         [
+            salt,
             str(event.group_id),
             str(event.user_id),
             str(event.message_id),
@@ -150,8 +169,34 @@ def _random_reply_selected(event: MessageEvent, percent: float) -> bool:
             event.raw_message.strip(),
         ]
     )
-    bucket = int(hashlib.sha256(source.encode("utf-8")).hexdigest()[:8], 16) % 10000
-    return bucket < int(normalized_percent * 100)
+    return int(hashlib.sha256(source.encode("utf-8")).hexdigest()[:8], 16) % 10000
+
+
+def _pick_random_sticker(
+    event: MessageEvent,
+    settings: AppSettings,
+    percent: float,
+) -> str | None:
+    if event.group_id is None or not _random_reply_selected(
+        event,
+        percent,
+        salt="sticker",
+    ):
+        return None
+
+    root = settings.sticker_dir.resolve(strict=False)
+    if not root.is_dir():
+        return None
+
+    images = [
+        path
+        for path in sorted(root.iterdir())
+        if path.is_file() and is_supported_image_file(path)
+    ]
+    if not images:
+        return None
+    image = images[_event_bucket(event, "sticker-file") % len(images)]
+    return f"[CQ:image,file={image.as_uri()}]"
 
 
 async def build_mention_prompt(bot: Any, event: MessageEvent) -> str | None:

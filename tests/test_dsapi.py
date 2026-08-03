@@ -9,6 +9,7 @@ from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.dsapi import (
     _brief_reply,
     _chat_completions_url,
+    _pick_random_sticker,
     _random_reply_selected,
     _request_chat_completion,
     build_mention_prompt,
@@ -28,10 +29,10 @@ class FakeBot:
         return self.payload
 
 
-def make_event(*, text="帮我回复", segments=(), is_at_bot=True):
+def make_event(*, text="帮我回复", segments=(), is_at_bot=True, message_id=1):
     return MessageEvent(
         platform="onebot.v11",
-        message_id=1,
+        message_id=message_id,
         group_id=123,
         user_id=456,
         raw_message=text,
@@ -45,6 +46,7 @@ def make_settings(tmp_path, **overrides):
         "db_path": tmp_path / "qqbot.sqlite3",
         "admins": (),
         "dsapi_api_key": "secret",
+        "sticker_dir": tmp_path / "stickers",
     }
     values.update(overrides)
     return AppSettings(**values)
@@ -56,6 +58,7 @@ def make_store(
     enabled_groups=(123,),
     knowledge_prompt="",
     random_reply_percent=2,
+    random_sticker_percent=20,
 ):
     settings = make_settings(tmp_path)
     store = PolicyStore(settings.db_path)
@@ -68,6 +71,7 @@ def make_store(
         clear_history=False,
         actor_id=0,
         random_reply_percent=random_reply_percent,
+        random_sticker_percent=random_sticker_percent,
     )
     return store
 
@@ -311,6 +315,50 @@ def test_random_reply_probability_boundaries():
 
     assert _random_reply_selected(event, 0) is False
     assert _random_reply_selected(event, 100) is True
+
+
+def test_sticker_ratio_varies_across_messages():
+    outcomes = {
+        _random_reply_selected(
+            make_event(text="普通消息", is_at_bot=False, message_id=message_id),
+            50,
+            salt="sticker",
+        )
+        for message_id in range(100)
+    }
+
+    assert outcomes == {False, True}
+
+
+@pytest.mark.asyncio
+async def test_random_group_reply_can_send_sticker_without_dsapi_call(tmp_path, monkeypatch):
+    sticker_dir = tmp_path / "stickers"
+    sticker_dir.mkdir()
+    sticker = sticker_dir / "happy.gif"
+    sticker.write_bytes(b"GIF89a" + b"\x00" * 20)
+    requested = False
+
+    def fake_request(*args, **kwargs):
+        nonlocal requested
+        requested = True
+
+    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
+    event = make_event(text="好耶", is_at_bot=False)
+    settings = make_settings(tmp_path, sticker_dir=sticker_dir)
+
+    response = await generate_random_group_reply(
+        event,
+        settings,
+        make_store(
+            tmp_path,
+            random_reply_percent=100,
+            random_sticker_percent=100,
+        ),
+    )
+
+    assert response == f"[CQ:image,file={sticker.as_uri()}]"
+    assert _pick_random_sticker(event, settings, 100) == response
+    assert requested is False
 
 
 def test_chat_completion_request_uses_compatible_endpoint(tmp_path, monkeypatch):
