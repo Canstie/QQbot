@@ -49,12 +49,10 @@ def test_index_serves_static_frontend(tmp_path, monkeypatch):
 
     assert response.status_code == 200
     assert "QQ Bot" in response.text
-    assert "static/app.js" in response.text
-    assert "classicsGroupsList" in response.text
-    assert "overviewArchiveStrip" in response.text
-    assert 'data-view="classics"' in response.text
-    assert 'data-view="dsapi"' in response.text
-    assert 'id="dsapiKnowledgePrompt"' in response.text
+    assert '<div id="root"></div>' in response.text
+    assert "/qqbot/static/assets/index-" in response.text
+    assert ".js" in response.text
+    assert ".css" in response.text
 
 
 def test_replies_api_still_accepts_raw_json(tmp_path, monkeypatch):

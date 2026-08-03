@@ -11,4 +11,6 @@ data/*
 !data/recipes_seed.jsonl
 dist/
 build/
+frontend/node_modules/
+frontend/.vite/
 *.egg-info/
