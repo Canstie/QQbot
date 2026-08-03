@@ -66,6 +66,16 @@ class AppSettings:
     classics_image_dir: Path = Path("data/classics")
     menu_provider: str = "auto"
     jisu_recipe_appkey: str = ""
+    dsapi_enabled: bool = True
+    dsapi_base_url: str = "https://api.deepseek.com"
+    dsapi_api_key: str = ""
+    dsapi_model: str = "deepseek-v4-flash"
+    dsapi_timeout_seconds: float = 30.0
+    dsapi_max_tokens: int = 512
+    dsapi_system_prompt: str = (
+        "你是 QQ 群里的聊天机器人。请直接、自然、简洁地回复用户，不要声称看到了未提供的图片、"
+        "语音、视频或文件。"
+    )
     web_token: str | None = None
     nonebot_driver: str = "~fastapi"
     host: str = "127.0.0.1"
@@ -98,6 +108,27 @@ class AppSettings:
             classics_image_dir=Path(env.get("QQBOT_CLASSICS_IMAGE_DIR", "data/classics")),
             menu_provider=env.get("QQBOT_MENU_PROVIDER", "auto").strip().lower() or "auto",
             jisu_recipe_appkey=env.get("QQBOT_JISU_RECIPE_APPKEY", "").strip(),
+            dsapi_enabled=_env_bool(env.get("QQBOT_DSAPI_ENABLED"), True),
+            dsapi_base_url=(
+                env.get("QQBOT_DSAPI_BASE_URL", "https://api.deepseek.com").strip()
+                or "https://api.deepseek.com"
+            ),
+            dsapi_api_key=(
+                env.get("QQBOT_DSAPI_API_KEY")
+                or env.get("DEEPSEEK_API_KEY")
+                or env.get("DS_API_KEY")
+                or ""
+            ).strip(),
+            dsapi_model=(
+                env.get("QQBOT_DSAPI_MODEL", "deepseek-v4-flash").strip()
+                or "deepseek-v4-flash"
+            ),
+            dsapi_timeout_seconds=_env_float(env.get("QQBOT_DSAPI_TIMEOUT_SECONDS"), 30.0),
+            dsapi_max_tokens=_env_int(env.get("QQBOT_DSAPI_MAX_TOKENS"), 512),
+            dsapi_system_prompt=(
+                env.get("QQBOT_DSAPI_SYSTEM_PROMPT", cls.dsapi_system_prompt).strip()
+                or cls.dsapi_system_prompt
+            ),
             web_token=web_token,
             nonebot_driver=env.get("DRIVER", "~fastapi"),
             host=env.get("HOST", "127.0.0.1"),
@@ -117,3 +148,7 @@ class AppSettings:
             raise ValueError("QQBOT_LUA_TIMEOUT_SECONDS must be > 0")
         if self.menu_provider not in {"auto", "local", "jisu"}:
             raise ValueError("QQBOT_MENU_PROVIDER must be auto, local, or jisu")
+        if self.dsapi_timeout_seconds <= 0:
+            raise ValueError("QQBOT_DSAPI_TIMEOUT_SECONDS must be > 0")
+        if self.dsapi_max_tokens <= 0:
+            raise ValueError("QQBOT_DSAPI_MAX_TOKENS must be > 0")

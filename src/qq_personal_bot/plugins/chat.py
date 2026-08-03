@@ -9,10 +9,11 @@ from nonebot.adapters.onebot.v11 import Bot, Event, GroupMessageEvent, Message, 
 
 from qq_personal_bot.adapters.onebot import onebot_to_internal
 from qq_personal_bot.core.models import PolicyDecision
+from qq_personal_bot.dsapi import DSAPIError, generate_mention_reply
 from qq_personal_bot.lua_runner import pending_lua_command, run_lua_message
 from qq_personal_bot.plugins.custom_flows import handle_custom_flow
 from qq_personal_bot.replies import build_reply
-from qq_personal_bot.runtime import get_policy_engine, get_store
+from qq_personal_bot.runtime import get_policy_engine, get_settings, get_store
 
 chat = on_message(priority=50, block=False)
 self_sent = on("message_sent", priority=50, block=False)
@@ -141,7 +142,23 @@ async def _handle_onebot_message(
     if lua_result.stop:
         return
 
-    if decision.handler in {"mention", "lua"}:
+    if decision.handler == "mention":
+        try:
+            response = await generate_mention_reply(bot, internal_event, get_settings())
+        except DSAPIError as exc:
+            logger.warning(f"DSAPI mention reply failed: {exc}")
+            return
+        if response:
+            await _finish_with_response(
+                matcher,
+                bot,
+                event,
+                response,
+                explicit_group_send=explicit_group_send,
+            )
+        return
+
+    if decision.handler == "lua":
         return
 
     if decision.handler == "default":

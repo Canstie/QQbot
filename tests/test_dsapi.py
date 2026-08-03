@@ -1,0 +1,176 @@
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from qq_personal_bot.core.models import MessageEvent
+from qq_personal_bot.dsapi import (
+    _chat_completions_url,
+    _request_chat_completion,
+    build_mention_prompt,
+    generate_mention_reply,
+)
+from qq_personal_bot.settings import AppSettings
+
+
+class FakeBot:
+    def __init__(self, payload=None):
+        self.payload = payload
+        self.calls = []
+
+    async def call_api(self, action, **params):
+        self.calls.append((action, params))
+        return self.payload
+
+
+def make_event(*, text="帮我回复", segments=()):
+    return MessageEvent(
+        platform="onebot.v11",
+        message_id=1,
+        group_id=123,
+        user_id=456,
+        raw_message=text,
+        segments=segments,
+        is_at_bot=True,
+    )
+
+
+def make_settings(tmp_path, **overrides):
+    values = {
+        "db_path": tmp_path / "qqbot.sqlite3",
+        "admins": (),
+        "dsapi_api_key": "secret",
+    }
+    values.update(overrides)
+    return AppSettings(**values)
+
+
+@pytest.mark.asyncio
+async def test_plain_text_mention_builds_prompt_without_onebot_lookup():
+    bot = FakeBot()
+
+    prompt = await build_mention_prompt(
+        bot,
+        make_event(text="你好", segments=({"type": "at", "data": {"qq": "999"}},)),
+    )
+
+    assert prompt == "你好"
+    assert bot.calls == []
+
+
+@pytest.mark.asyncio
+async def test_quoted_text_is_included_in_prompt():
+    bot = FakeBot(
+        {"message": [{"type": "text", "data": {"text": "昨天是谁值班？"}}]}
+    )
+    event = make_event(
+        text="回答一下",
+        segments=({"type": "reply", "data": {"id": "42"}},),
+    )
+
+    prompt = await build_mention_prompt(bot, event)
+
+    assert prompt == "被引用的消息：\n昨天是谁值班？\n\n用户的问题或补充：\n回答一下"
+    assert bot.calls == [("get_msg", {"message_id": "42"})]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("segment_type", ["image", "record", "video", "file", "json", "forward"])
+async def test_current_multimodal_message_is_discarded(segment_type):
+    bot = FakeBot()
+    event = make_event(
+        segments=(
+            {"type": "at", "data": {"qq": "999"}},
+            {"type": segment_type, "data": {"url": "https://example.test/content"}},
+            {"type": "text", "data": {"text": "解释一下"}},
+        )
+    )
+
+    assert await build_mention_prompt(bot, event) is None
+    assert bot.calls == []
+
+
+@pytest.mark.asyncio
+async def test_quoted_multimodal_message_is_discarded_before_dsapi_call(tmp_path, monkeypatch):
+    bot = FakeBot({"message": [{"type": "image", "data": {"file": "a.jpg"}}]})
+    event = make_event(segments=({"type": "reply", "data": {"id": 42}},))
+    requested = False
+
+    def fake_request(*args, **kwargs):
+        nonlocal requested
+        requested = True
+
+    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
+
+    assert await generate_mention_reply(bot, event, make_settings(tmp_path)) is None
+    assert requested is False
+
+
+@pytest.mark.asyncio
+async def test_missing_api_key_does_not_resolve_quote_or_call_dsapi(tmp_path, monkeypatch):
+    bot = FakeBot()
+    requested = False
+
+    def fake_request(*args, **kwargs):
+        nonlocal requested
+        requested = True
+
+    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
+
+    response = await generate_mention_reply(
+        bot,
+        make_event(segments=({"type": "reply", "data": {"id": 42}},)),
+        make_settings(tmp_path, dsapi_api_key=""),
+    )
+
+    assert response is None
+    assert requested is False
+    assert bot.calls == []
+
+
+def test_chat_completion_request_uses_compatible_endpoint(tmp_path, monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self):
+            return json.dumps(
+                {"choices": [{"message": {"content": "  模型回复  "}}]},
+                ensure_ascii=False,
+            ).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["authorization"] = request.headers["Authorization"]
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr("qq_personal_bot.dsapi.urlopen", fake_urlopen)
+    settings = make_settings(
+        tmp_path,
+        dsapi_base_url="https://dsapi.example/v1/",
+        dsapi_model="deepseek-test",
+    )
+
+    response = _request_chat_completion(settings, [{"role": "user", "content": "你好"}])
+
+    assert response == "模型回复"
+    assert captured["url"] == "https://dsapi.example/v1/chat/completions"
+    assert captured["authorization"] == "Bearer secret"
+    assert captured["payload"]["model"] == "deepseek-test"
+    assert captured["payload"]["stream"] is False
+    assert captured["timeout"] == 30.0
+
+
+def test_full_chat_completion_url_is_not_duplicated():
+    assert (
+        _chat_completions_url("https://dsapi.example/v1/chat/completions")
+        == "https://dsapi.example/v1/chat/completions"
+    )
