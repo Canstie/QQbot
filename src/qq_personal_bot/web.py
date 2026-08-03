@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, quote
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from qq_personal_bot.lua_runner import (
     default_lua_command_script,
@@ -53,6 +53,14 @@ class CoreConfigPayload(BaseModel):
     admins: list[int]
     trigger: dict[str, Any]
     limits: dict[str, Any]
+
+
+class DSAPIConfigPayload(BaseModel):
+    knowledge_enabled: bool = False
+    knowledge_prompt: str = ""
+    history_turns: int = 6
+    enabled_groups: list[int] = Field(default_factory=list)
+    clear_history: bool = True
 
 
 class LuaPayload(BaseModel):
@@ -183,6 +191,39 @@ def create_app():
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return get_store().snapshot()
+
+    @app.get("/api/dsapi")
+    async def get_dsapi_config() -> dict:
+        config = get_store().get_dsapi_config()
+        settings = get_settings()
+        return {
+            **config,
+            "api_configured": bool(settings.dsapi_enabled and settings.dsapi_api_key),
+            "model": settings.dsapi_model,
+            "base_url": settings.dsapi_base_url,
+        }
+
+    @app.post("/api/dsapi")
+    async def save_dsapi_config(payload: DSAPIConfigPayload, request: Request) -> dict:
+        require_token(request)
+        try:
+            get_store().set_dsapi_config(
+                knowledge_enabled=payload.knowledge_enabled,
+                knowledge_prompt=payload.knowledge_prompt,
+                history_turns=payload.history_turns,
+                enabled_groups=payload.enabled_groups,
+                clear_history=payload.clear_history,
+                actor_id=0,
+            )
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return await get_dsapi_config()
+
+    @app.delete("/api/dsapi/history")
+    async def clear_dsapi_history(request: Request) -> dict:
+        require_token(request)
+        deleted = get_store().clear_dsapi_chat_history(actor_id=0)
+        return {"deleted": deleted, **(await get_dsapi_config())}
 
     @app.get("/api/replies")
     async def get_replies() -> dict:

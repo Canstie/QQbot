@@ -53,6 +53,8 @@ def test_index_serves_static_frontend(tmp_path, monkeypatch):
     assert "classicsGroupsList" in response.text
     assert "overviewArchiveStrip" in response.text
     assert 'data-view="classics"' in response.text
+    assert 'data-view="dsapi"' in response.text
+    assert 'id="dsapiKnowledgePrompt"' in response.text
 
 
 def test_replies_api_still_accepts_raw_json(tmp_path, monkeypatch):
@@ -124,6 +126,38 @@ def test_direct_trigger_percent_api_roundtrip(tmp_path, monkeypatch):
 
     assert response.status_code == 400
     assert "between 0 and 100" in response.json()["detail"]
+
+
+def test_dsapi_config_api_roundtrip_and_clear_history(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("QQBOT_WEB_TOKEN", raising=False)
+    monkeypatch.setenv("QQBOT_DB_PATH", str(tmp_path / "policy.sqlite3"))
+    monkeypatch.setenv("QQBOT_DSAPI_API_KEY", "secret")
+    reset_runtime()
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/dsapi",
+        json={
+            "enabled_groups": [123, 456],
+            "history_turns": 8,
+            "knowledge_enabled": True,
+            "knowledge_prompt": "扮演档案管理员",
+            "clear_history": False,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["api_configured"] is True
+    assert data["enabled_groups"] == [123, 456]
+    assert data["history_turns"] == 8
+    assert data["knowledge_enabled"] is True
+    assert data["knowledge_prompt"] == "扮演档案管理员"
+
+    response = client.delete("/api/dsapi/history")
+    assert response.status_code == 200
+    assert response.json()["deleted"] == 0
 
 
 def test_core_policy_api_updates_full_config(tmp_path, monkeypatch):

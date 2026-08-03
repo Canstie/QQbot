@@ -8,6 +8,7 @@ const ruleTypes = [
 const validViews = new Set([
   "overview",
   "policy",
+  "dsapi",
   "replies",
   "lua",
   "menus",
@@ -314,6 +315,55 @@ async function groupAction(action) {
     headers: headers(),
   });
   await loadPolicy();
+}
+
+async function loadDsapi() {
+  const data = await requestJson("./api/dsapi", { headers: headers() });
+  byId("dsapiEnabledGroups").value = formatIdList(data.enabled_groups);
+  byId("dsapiHistoryTurns").value = data.history_turns ?? 6;
+  byId("dsapiKnowledgeEnabled").checked = Boolean(data.knowledge_enabled);
+  byId("dsapiKnowledgePrompt").value = data.knowledge_prompt || "";
+  byId("dsapiModel").value = data.model || "";
+  byId("dsapiBaseUrl").value = data.base_url || "";
+  setNotice(
+    "dsapiApiStatus",
+    data.api_configured ? "DSAPI 已配置，可接受纯文本请求" : "DSAPI 未配置密钥",
+    data.api_configured ? "ok" : "error",
+  );
+  setNotice(
+    "dsapiHistoryStats",
+    `已保存 ${data.history_messages ?? 0} 条上下文消息，涉及 ${data.history_groups ?? 0} 个群`,
+  );
+  setNotice("dsapiNotice", "AI 角色配置已加载", "ok");
+  return data;
+}
+
+async function saveDsapi() {
+  const payload = {
+    enabled_groups: parseIdList(byId("dsapiEnabledGroups").value),
+    history_turns: Number(byId("dsapiHistoryTurns").value),
+    knowledge_enabled: byId("dsapiKnowledgeEnabled").checked,
+    knowledge_prompt: byId("dsapiKnowledgePrompt").value,
+    clear_history: byId("dsapiClearOnSave").checked,
+  };
+  await requestJson("./api/dsapi", {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify(payload),
+  });
+  byId("dsapiClearOnSave").checked = false;
+  await loadDsapi();
+  setNotice("dsapiNotice", "AI 角色配置已保存，下一次 @bot 立即生效", "ok");
+}
+
+async function clearDsapiHistory() {
+  if (!confirm("确定清空所有群的 AI 短期上下文吗？")) return;
+  const data = await requestJson("./api/dsapi/history", {
+    method: "DELETE",
+    headers: headers(),
+  });
+  await loadDsapi();
+  setNotice("dsapiNotice", `已清空 ${data.deleted ?? 0} 条上下文消息`, "ok");
 }
 
 async function loadReplies() {
@@ -778,6 +828,7 @@ async function refreshAll() {
 
   const tasks = [
     loadPolicy(),
+    loadDsapi(),
     loadReplies(),
     loadLuaCommands(),
     loadMenus(),
@@ -866,6 +917,9 @@ document.addEventListener("click", (event) => {
     refresh: refreshAll,
     logout,
     "save-core-config": saveCoreConfig,
+    "load-dsapi": loadDsapi,
+    "save-dsapi": saveDsapi,
+    "clear-dsapi-history": clearDsapiHistory,
     "load-replies": loadReplies,
     "save-replies": saveReplies,
     "load-lua": loadLuaCommands,

@@ -9,6 +9,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from qq_personal_bot.core.models import MessageEvent
+from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.settings import AppSettings
 
 
@@ -37,19 +38,36 @@ async def generate_mention_reply(
     bot: Any,
     event: MessageEvent,
     settings: AppSettings,
+    store: PolicyStore,
 ) -> str | None:
     if not settings.dsapi_enabled or not settings.dsapi_api_key:
+        return None
+
+    config = store.get_dsapi_config()
+    if event.group_id is None or event.group_id not in config["enabled_groups"]:
         return None
 
     prompt = await build_mention_prompt(bot, event)
     if prompt is None:
         return None
 
-    messages = [
-        {"role": "system", "content": settings.dsapi_system_prompt},
-        {"role": "user", "content": prompt},
-    ]
-    return await asyncio.to_thread(_request_chat_completion, settings, messages)
+    system_prompt = settings.dsapi_system_prompt
+    if config["knowledge_enabled"] and config["knowledge_prompt"]:
+        system_prompt = f"{system_prompt}\n\n角色设定与知识库：\n{config['knowledge_prompt']}"
+
+    messages = [{"role": "system", "content": system_prompt}]
+    messages.extend(store.get_dsapi_chat_history(event.group_id, config["history_turns"]))
+    messages.append({"role": "user", "content": prompt})
+
+    response = await asyncio.to_thread(_request_chat_completion, settings, messages)
+    if response:
+        store.record_dsapi_exchange(
+            group_id=event.group_id,
+            user_content=prompt,
+            assistant_content=response,
+            history_turns=config["history_turns"],
+        )
+    return response
 
 
 async def build_mention_prompt(bot: Any, event: MessageEvent) -> str | None:

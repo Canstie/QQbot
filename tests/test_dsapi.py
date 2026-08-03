@@ -5,6 +5,7 @@ import json
 import pytest
 
 from qq_personal_bot.core.models import MessageEvent
+from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.dsapi import (
     _chat_completions_url,
     _request_chat_completion,
@@ -44,6 +45,21 @@ def make_settings(tmp_path, **overrides):
     }
     values.update(overrides)
     return AppSettings(**values)
+
+
+def make_store(tmp_path, *, enabled_groups=(123,), knowledge_prompt=""):
+    settings = make_settings(tmp_path)
+    store = PolicyStore(settings.db_path)
+    store.initialize(settings)
+    store.set_dsapi_config(
+        knowledge_enabled=bool(knowledge_prompt),
+        knowledge_prompt=knowledge_prompt,
+        history_turns=2,
+        enabled_groups=list(enabled_groups),
+        clear_history=False,
+        actor_id=0,
+    )
+    return store
 
 
 @pytest.mark.asyncio
@@ -103,7 +119,12 @@ async def test_quoted_multimodal_message_is_discarded_before_dsapi_call(tmp_path
 
     monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
 
-    assert await generate_mention_reply(bot, event, make_settings(tmp_path)) is None
+    assert await generate_mention_reply(
+        bot,
+        event,
+        make_settings(tmp_path),
+        make_store(tmp_path),
+    ) is None
     assert requested is False
 
 
@@ -122,11 +143,73 @@ async def test_missing_api_key_does_not_resolve_quote_or_call_dsapi(tmp_path, mo
         bot,
         make_event(segments=({"type": "reply", "data": {"id": 42}},)),
         make_settings(tmp_path, dsapi_api_key=""),
+        make_store(tmp_path),
     )
 
     assert response is None
     assert requested is False
     assert bot.calls == []
+
+
+@pytest.mark.asyncio
+async def test_group_without_ai_enabled_does_not_resolve_quote_or_call_dsapi(tmp_path, monkeypatch):
+    bot = FakeBot()
+    requested = False
+
+    def fake_request(*args, **kwargs):
+        nonlocal requested
+        requested = True
+
+    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
+    response = await generate_mention_reply(
+        bot,
+        make_event(segments=({"type": "reply", "data": {"id": 42}},)),
+        make_settings(tmp_path),
+        make_store(tmp_path, enabled_groups=()),
+    )
+
+    assert response is None
+    assert requested is False
+    assert bot.calls == []
+
+
+@pytest.mark.asyncio
+async def test_knowledge_and_group_history_are_sent_and_response_is_recorded(tmp_path, monkeypatch):
+    store = make_store(tmp_path, knowledge_prompt="你是档案管理员，只依据档案回答。")
+    store.record_dsapi_exchange(
+        group_id=123,
+        user_content="上一问",
+        assistant_content="上一答",
+        history_turns=2,
+    )
+    captured = {}
+
+    def fake_request(settings, messages):
+        captured["messages"] = messages
+        return "本轮回答"
+
+    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
+
+    response = await generate_mention_reply(
+        FakeBot(),
+        make_event(text="本轮问题"),
+        make_settings(tmp_path),
+        store,
+    )
+
+    assert response == "本轮回答"
+    assert "你是档案管理员" in captured["messages"][0]["content"]
+    assert captured["messages"][1:] == [
+        {"role": "user", "content": "上一问"},
+        {"role": "assistant", "content": "上一答"},
+        {"role": "user", "content": "本轮问题"},
+    ]
+    assert store.get_dsapi_chat_history(123, 2) == [
+        {"role": "user", "content": "上一问"},
+        {"role": "assistant", "content": "上一答"},
+        {"role": "user", "content": "本轮问题"},
+        {"role": "assistant", "content": "本轮回答"},
+    ]
 
 
 def test_chat_completion_request_uses_compatible_endpoint(tmp_path, monkeypatch):

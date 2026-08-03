@@ -144,7 +144,12 @@ async def _handle_onebot_message(
 
     if decision.handler == "mention":
         try:
-            response = await generate_mention_reply(bot, internal_event, get_settings())
+            response = await generate_mention_reply(
+                bot,
+                internal_event,
+                get_settings(),
+                get_store(),
+            )
         except DSAPIError as exc:
             logger.warning(f"DSAPI mention reply failed: {exc}")
             return

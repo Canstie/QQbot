@@ -24,6 +24,10 @@
           <span>策略</span>
           <small>Policy</small>
         </button>
+        <button class="nav-link" data-view="dsapi">
+          <span>AI 角色</span>
+          <small>Knowledge</small>
+        </button>
         <button class="nav-link" data-view="replies">
           <span>回复</span>
           <small>Replies</small>
@@ -215,6 +219,72 @@
                 <button class="secondary" data-group-action="unblock">解除屏蔽</button>
               </div>
               <p class="hint">用于快速切换单个群的启用和屏蔽状态。</p>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section class="view" data-view-panel="dsapi">
+        <div class="panel-grid two-up">
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">AI Role & Knowledge</p>
+                <h3>角色与知识库</h3>
+              </div>
+              <div class="button-row">
+                <button class="secondary" data-action="load-dsapi">重新读取</button>
+                <button data-action="save-dsapi">保存并生效</button>
+              </div>
+            </div>
+
+            <div class="form-grid">
+              <label>AI 启用群 ID
+                <textarea id="dsapiEnabledGroups" class="compact-textarea" placeholder="一行一个群号，或使用逗号分隔"></textarea>
+              </label>
+              <p class="hint">只有这里列出的群可以通过 @bot 调用大模型；不会影响 Lua 和其他原有功能。</p>
+
+              <label>短期上下文轮数
+                <input id="dsapiHistoryTurns" type="number" min="1" max="20" step="1" value="6" />
+              </label>
+              <p class="hint">按群隔离，只记录成功的大模型问答；每轮包含一条用户消息和一条模型回复。</p>
+
+              <label class="checkbox">
+                <input id="dsapiKnowledgeEnabled" type="checkbox" />
+                <span>启用角色与知识库提示词</span>
+              </label>
+
+              <label>知识库提示词
+                <textarea id="dsapiKnowledgePrompt" class="knowledge-editor" spellcheck="false" placeholder="写入角色身份、说话方式、世界观、人物关系和必须遵守的知识。"></textarea>
+              </label>
+
+              <label class="checkbox">
+                <input id="dsapiClearOnSave" type="checkbox" checked />
+                <span>保存时清空旧的短期上下文</span>
+              </label>
+
+              <div id="dsapiNotice" class="notice">等待载入</div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Runtime</p>
+                <h3>当前运行状态</h3>
+              </div>
+              <button class="danger" data-action="clear-dsapi-history">清空全部短期上下文</button>
+            </div>
+            <div class="form-grid">
+              <div id="dsapiApiStatus" class="notice">检查 API 配置中</div>
+              <label>当前模型
+                <input id="dsapiModel" readonly />
+              </label>
+              <label>接口地址
+                <input id="dsapiBaseUrl" readonly />
+              </label>
+              <div id="dsapiHistoryStats" class="notice">暂无上下文统计</div>
+              <p class="hint">API 密钥只保存在服务器环境变量中，不会显示在这里，也不会写入知识库配置。</p>
             </div>
           </section>
         </div>

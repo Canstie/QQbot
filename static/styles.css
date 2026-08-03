@@ -133,6 +133,12 @@ textarea.compact-textarea {
   min-height: 88px;
 }
 
+textarea.knowledge-editor {
+  min-height: 360px;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 13px;
+}
+
 .shell {
   width: min(1500px, calc(100% - 32px));
   margin: 24px auto 36px;

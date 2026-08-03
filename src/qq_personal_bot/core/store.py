@@ -43,6 +43,7 @@ class PolicyStore:
             has_settings = conn.execute("SELECT 1 FROM settings LIMIT 1").fetchone() is not None
             if first_run or not has_settings:
                 self._seed_defaults(conn, settings)
+            self._initialize_dsapi_settings(conn)
             for admin_id in settings.admins:
                 self.add_admin(admin_id, actor_id=0, conn=conn)
             self.purge_legacy_menu_caches(conn=conn)
@@ -142,6 +143,17 @@ class PolicyStore:
 
             CREATE INDEX IF NOT EXISTS idx_group_daily_stats_group_date
             ON group_daily_stats(group_id, date);
+
+            CREATE TABLE IF NOT EXISTS dsapi_chat_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id INTEGER NOT NULL,
+                role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+                content TEXT NOT NULL,
+                created_at REAL NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_dsapi_chat_history_group_id
+            ON dsapi_chat_history(group_id, id);
             """
         )
 
@@ -152,6 +164,10 @@ class PolicyStore:
             "direct_trigger_percent": str(settings.direct_trigger_percent),
             "per_group_seconds": str(settings.per_group_seconds),
             "per_user_per_minute": str(settings.per_user_per_minute),
+            "dsapi_knowledge_enabled": "false",
+            "dsapi_knowledge_prompt": "",
+            "dsapi_history_turns": "6",
+            "dsapi_enabled_groups": "[]",
         }
         for key, value in defaults.items():
             conn.execute(
@@ -164,6 +180,34 @@ class PolicyStore:
                 (prefix,),
             )
         self.audit("0", "initialize", "store", defaults, conn=conn)
+
+    def _initialize_dsapi_settings(self, conn: sqlite3.Connection) -> None:
+        defaults = {
+            "dsapi_knowledge_enabled": "false",
+            "dsapi_knowledge_prompt": "",
+            "dsapi_history_turns": "6",
+        }
+        for key, value in defaults.items():
+            conn.execute(
+                "INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)",
+                (key, value),
+            )
+
+        has_ai_groups = conn.execute(
+            "SELECT 1 FROM settings WHERE key = 'dsapi_enabled_groups'"
+        ).fetchone()
+        if has_ai_groups:
+            return
+        enabled_groups = [
+            int(row["group_id"])
+            for row in conn.execute(
+                "SELECT group_id FROM groups WHERE enabled = 1 ORDER BY group_id"
+            ).fetchall()
+        ]
+        conn.execute(
+            "INSERT INTO settings(key, value) VALUES ('dsapi_enabled_groups', ?)",
+            (json.dumps(enabled_groups),),
+        )
 
     def get_mode(self) -> str:
         mode = self.get_setting("policy_mode", "allowlist")
@@ -279,6 +323,161 @@ class PolicyStore:
             """,
             (key, value),
         )
+
+    def get_dsapi_config(self) -> dict[str, Any]:
+        try:
+            history_turns = int(self.get_setting("dsapi_history_turns", "6"))
+        except ValueError:
+            history_turns = 6
+        history_turns = max(1, min(history_turns, 20))
+        try:
+            enabled_groups = self._normalize_int_ids(
+                json.loads(self.get_setting("dsapi_enabled_groups", "[]")),
+                "enabled_groups",
+            )
+        except (TypeError, ValueError, json.JSONDecodeError):
+            enabled_groups = []
+        with self._connect() as conn:
+            stats = conn.execute(
+                """
+                SELECT COUNT(*) AS message_count, COUNT(DISTINCT group_id) AS group_count
+                FROM dsapi_chat_history
+                """
+            ).fetchone()
+        return {
+            "knowledge_enabled": self.get_setting(
+                "dsapi_knowledge_enabled", "false"
+            ).lower()
+            in {"1", "true", "yes", "on"},
+            "knowledge_prompt": self.get_setting("dsapi_knowledge_prompt", ""),
+            "history_turns": history_turns,
+            "enabled_groups": enabled_groups,
+            "history_messages": int(stats["message_count"]),
+            "history_groups": int(stats["group_count"]),
+        }
+
+    def set_dsapi_config(
+        self,
+        *,
+        knowledge_enabled: bool,
+        knowledge_prompt: str,
+        history_turns: int,
+        enabled_groups: list[int],
+        clear_history: bool,
+        actor_id: int,
+    ) -> dict[str, Any]:
+        prompt = str(knowledge_prompt).strip()
+        turns = int(history_turns)
+        if turns < 1 or turns > 20:
+            raise ValueError("history_turns must be between 1 and 20")
+        if len(prompt) > 100_000:
+            raise ValueError("knowledge_prompt must not exceed 100000 characters")
+        normalized_enabled_groups = self._normalize_int_ids(enabled_groups, "enabled_groups")
+
+        with self._connect() as conn:
+            self.set_setting(
+                "dsapi_knowledge_enabled",
+                "true" if knowledge_enabled else "false",
+                conn=conn,
+            )
+            self.set_setting("dsapi_knowledge_prompt", prompt, conn=conn)
+            self.set_setting("dsapi_history_turns", str(turns), conn=conn)
+            self.set_setting(
+                "dsapi_enabled_groups",
+                json.dumps(normalized_enabled_groups),
+                conn=conn,
+            )
+            cleared = 0
+            if clear_history:
+                cleared = conn.execute("DELETE FROM dsapi_chat_history").rowcount
+            self.audit(
+                actor_id,
+                "set_dsapi_config",
+                "dsapi",
+                {
+                    "knowledge_enabled": bool(knowledge_enabled),
+                    "knowledge_prompt_chars": len(prompt),
+                    "history_turns": turns,
+                    "enabled_groups": normalized_enabled_groups,
+                    "history_messages_cleared": cleared,
+                },
+                conn=conn,
+            )
+        return self.get_dsapi_config()
+
+    def get_dsapi_chat_history(
+        self,
+        group_id: int,
+        history_turns: int,
+    ) -> list[dict[str, str]]:
+        message_limit = max(1, min(int(history_turns), 20)) * 2
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT role, content
+                FROM (
+                    SELECT id, role, content
+                    FROM dsapi_chat_history
+                    WHERE group_id = ?
+                    ORDER BY id DESC
+                    LIMIT ?
+                )
+                ORDER BY id ASC
+                """,
+                (int(group_id), message_limit),
+            ).fetchall()
+        return [
+            {"role": str(row["role"]), "content": str(row["content"])} for row in rows
+        ]
+
+    def record_dsapi_exchange(
+        self,
+        *,
+        group_id: int,
+        user_content: str,
+        assistant_content: str,
+        history_turns: int,
+    ) -> None:
+        message_limit = max(1, min(int(history_turns), 20)) * 2
+        normalized_group_id = int(group_id)
+        now = time.time()
+        with self._connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO dsapi_chat_history(group_id, role, content, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                [
+                    (normalized_group_id, "user", str(user_content), now),
+                    (normalized_group_id, "assistant", str(assistant_content), now),
+                ],
+            )
+            conn.execute(
+                """
+                DELETE FROM dsapi_chat_history
+                WHERE group_id = ?
+                  AND id NOT IN (
+                      SELECT id
+                      FROM dsapi_chat_history
+                      WHERE group_id = ?
+                      ORDER BY id DESC
+                      LIMIT ?
+                  )
+                """,
+                (normalized_group_id, normalized_group_id, message_limit),
+            )
+
+    def clear_dsapi_chat_history(self, *, actor_id: int) -> int:
+        with self._connect() as conn:
+            deleted = conn.execute("DELETE FROM dsapi_chat_history").rowcount
+            self.audit(
+                actor_id,
+                "clear_dsapi_chat_history",
+                "dsapi",
+                {"deleted": deleted},
+                conn=conn,
+            )
+        return int(deleted)
 
     def get_trigger_mention(self) -> bool:
         return self.get_setting("trigger_mention", "true").lower() in {"1", "true", "yes", "on"}

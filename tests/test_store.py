@@ -134,6 +134,64 @@ def test_empty_prefixes_default_to_tilde(tmp_path):
     assert store.prefixes() == ["~"]
 
 
+def test_dsapi_config_and_history_are_group_scoped_and_pruned(tmp_path):
+    db_path = tmp_path / "policy.sqlite3"
+    store = PolicyStore(db_path)
+    store.initialize(AppSettings(db_path=db_path, admins=()))
+
+    config = store.set_dsapi_config(
+        knowledge_enabled=True,
+        knowledge_prompt="角色设定",
+        history_turns=2,
+        enabled_groups=[123, 123, 456],
+        clear_history=False,
+        actor_id=10000,
+    )
+    assert config["enabled_groups"] == [123, 456]
+    assert config["knowledge_prompt"] == "角色设定"
+
+    for index in range(3):
+        store.record_dsapi_exchange(
+            group_id=123,
+            user_content=f"问{index}",
+            assistant_content=f"答{index}",
+            history_turns=2,
+        )
+    store.record_dsapi_exchange(
+        group_id=456,
+        user_content="另一个群",
+        assistant_content="单独上下文",
+        history_turns=2,
+    )
+
+    assert store.get_dsapi_chat_history(123, 2) == [
+        {"role": "user", "content": "问1"},
+        {"role": "assistant", "content": "答1"},
+        {"role": "user", "content": "问2"},
+        {"role": "assistant", "content": "答2"},
+    ]
+    assert store.get_dsapi_chat_history(456, 2)[0]["content"] == "另一个群"
+    assert store.get_dsapi_config()["history_messages"] == 6
+    assert store.clear_dsapi_chat_history(actor_id=10000) == 6
+    assert store.get_dsapi_config()["history_messages"] == 0
+
+
+def test_existing_store_migrates_enabled_groups_to_ai_groups(tmp_path):
+    db_path = tmp_path / "policy.sqlite3"
+    settings = AppSettings(db_path=db_path, admins=())
+    store = PolicyStore(db_path)
+    store.initialize(settings)
+    store.set_group_enabled(123, True, actor_id=10000)
+    store.set_group_enabled(456, True, actor_id=10000)
+
+    with store._connect() as conn:
+        conn.execute("DELETE FROM settings WHERE key LIKE 'dsapi_%'")
+
+    store.initialize(settings)
+
+    assert store.get_dsapi_config()["enabled_groups"] == [123, 456]
+
+
 def test_menu_recipe_import_and_pick(tmp_path):
     db_path = tmp_path / "policy.sqlite3"
     image_dir = tmp_path / "menu_images"
