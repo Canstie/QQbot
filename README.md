@@ -14,7 +14,7 @@ LLOneBot 或 NapCat Framework 使用。桌面 QQ 客户端可以正常使用，�
   - `/bot off [group_id]`
   - `/bot mode allowlist|blocklist`
   - `/bot status`
-  - `/bot admin add|remove <user_id>`
+  - `/bot admin add <user_id>`（删除管理员仅允许在 Web 管理页操作）
   - `/bot prefix add|remove|list [prefix]`
 - 使用 FastAPI 驱动时，会在 `/qqbot` 挂载本地 Web 管理页和 JSON API；前端文件在 `static/`。
 - 可选 Lua 脚本入口，支持通过 OneBot API 获取群列表、群成员、登录信息等。

@@ -41,11 +41,12 @@ class PolicyStore:
         with self._connect() as conn:
             self._create_schema(conn)
             has_settings = conn.execute("SELECT 1 FROM settings LIMIT 1").fetchone() is not None
-            if first_run or not has_settings:
+            should_seed = first_run or not has_settings
+            if should_seed:
                 self._seed_defaults(conn, settings)
+                for admin_id in settings.admins:
+                    self.add_admin(admin_id, actor_id=0, conn=conn)
             self._initialize_dsapi_settings(conn)
-            for admin_id in settings.admins:
-                self.add_admin(admin_id, actor_id=0, conn=conn)
             self.purge_legacy_menu_caches(conn=conn)
 
     def _connect(self) -> sqlite3.Connection:

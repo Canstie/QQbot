@@ -124,6 +124,32 @@ def test_core_config_replaces_policy_snapshot(tmp_path):
     assert snapshot["limits"] == {"per_group_seconds": 1.5, "per_user_per_minute": 9}
 
 
+def test_bootstrap_admin_is_not_restored_after_web_config_removes_it(tmp_path):
+    db_path = tmp_path / "policy.sqlite3"
+    settings = AppSettings(db_path=db_path, admins=(10000,))
+    store = PolicyStore(db_path)
+    store.initialize(settings)
+    snapshot = store.snapshot()
+
+    store.set_core_config(
+        mode=snapshot["mode"],
+        enabled_groups=snapshot["enabled_groups"],
+        blocked_groups=snapshot["blocked_groups"],
+        admins=[],
+        trigger_mention=snapshot["trigger"]["mention"],
+        prefixes=snapshot["trigger"]["prefixes"],
+        direct_trigger_percent=snapshot["trigger"]["direct_trigger_percent"],
+        per_group_seconds=snapshot["limits"]["per_group_seconds"],
+        per_user_per_minute=snapshot["limits"]["per_user_per_minute"],
+        actor_id=0,
+    )
+
+    reopened = PolicyStore(db_path)
+    reopened.initialize(settings)
+
+    assert reopened.admins() == []
+
+
 def test_empty_prefixes_default_to_tilde(tmp_path):
     db_path = tmp_path / "policy.sqlite3"
     store = PolicyStore(db_path)

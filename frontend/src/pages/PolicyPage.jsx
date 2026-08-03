@@ -107,7 +107,7 @@ export default function PolicyPage({ refreshVersion, onChanged }) {
           <div className="form-grid form-grid--3">
             <Field label="启用群" hint="一行一个群号"><textarea value={form.enabled} onChange={(e) => update("enabled", e.target.value)} /></Field>
             <Field label="屏蔽群" hint="一行一个群号"><textarea value={form.blocked} onChange={(e) => update("blocked", e.target.value)} /></Field>
-            <Field label="管理员 QQ" hint="可使用 /bot 管理命令"><textarea value={form.admins} onChange={(e) => update("admins", e.target.value)} /></Field>
+            <Field label="管理员 QQ" hint="新增可用 /bot admin add；删除仅允许在本页保存"><textarea value={form.admins} onChange={(e) => update("admins", e.target.value)} /></Field>
           </div>
           <div className="panel-footer"><Status icon={ShieldCheck}>{notice}</Status><span className="quiet-note"><Zap size={14} /> 保存后无需重启</span></div>
         </Panel>

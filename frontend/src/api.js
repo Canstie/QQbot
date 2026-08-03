@@ -30,10 +30,15 @@ export const put = (path, body) => api(path, { method: "PUT", body: JSON.stringi
 export const remove = (path) => api(path, { method: "DELETE" });
 
 export function parseIds(value) {
-  return String(value || "")
-    .split(/[\s,，]+/)
-    .map((item) => Number(item.trim()))
-    .filter(Number.isFinite);
+  const parts = String(value || "")
+    .split(/[\s,\uFF0C]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const ids = parts.map(Number);
+  if (ids.some((item) => !Number.isSafeInteger(item) || item <= 0)) {
+    throw new Error("QQ 号和群号必须是正整数");
+  }
+  return [...new Set(ids)];
 }
 
 export function formatIds(values) {

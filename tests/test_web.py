@@ -243,6 +243,25 @@ def test_core_policy_api_updates_full_config(tmp_path, monkeypatch):
     assert data["limits"] == {"per_group_seconds": 2.5, "per_user_per_minute": 8}
 
 
+def test_web_can_remove_bootstrap_admin_permanently(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("QQBOT_WEB_TOKEN", raising=False)
+    monkeypatch.setenv("QQBOT_DB_PATH", str(tmp_path / "policy.sqlite3"))
+    monkeypatch.setenv("QQBOT_ADMINS", "10000")
+    reset_runtime()
+    client = TestClient(create_app())
+    policy = client.get("/api/policy").json()
+
+    policy["admins"] = []
+    response = client.post("/api/policy/core", json=policy)
+
+    assert response.status_code == 200
+    assert response.json()["admins"] == []
+    reset_runtime()
+    restarted_client = TestClient(create_app())
+    assert restarted_client.get("/api/policy").json()["admins"] == []
+
+
 def test_lua_api_returns_example_when_script_missing(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("QQBOT_WEB_TOKEN", raising=False)

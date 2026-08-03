@@ -159,30 +159,29 @@ async def _handle_bot_command(
             )
 
         if command == "admin":
-            if len(parts) != 3 or parts[1] not in {"add", "remove"}:
+            if len(parts) >= 2 and parts[1].lower() == "remove":
                 await _send_control_response(
                     matcher,
                     bot,
                     event,
-                    "Usage: /bot admin add|remove <user_id>",
+                    "Admin removal is Web-only. Use the QQBot admin page.",
+                    explicit_group_send=explicit_group_send,
+                )
+            if len(parts) != 3 or parts[1].lower() != "add":
+                await _send_control_response(
+                    matcher,
+                    bot,
+                    event,
+                    "Usage: /bot admin add <user_id>",
                     explicit_group_send=explicit_group_send,
                 )
             target_user_id = int(parts[2])
-            if parts[1] == "add":
-                store.add_admin(target_user_id, actor_id=actor_id)
-                await _send_control_response(
-                    matcher,
-                    bot,
-                    event,
-                    f"Admin {target_user_id} added.",
-                    explicit_group_send=explicit_group_send,
-                )
-            store.remove_admin(target_user_id, actor_id=actor_id)
+            store.add_admin(target_user_id, actor_id=actor_id)
             await _send_control_response(
                 matcher,
                 bot,
                 event,
-                f"Admin {target_user_id} removed.",
+                f"Admin {target_user_id} added.",
                 explicit_group_send=explicit_group_send,
             )
 
@@ -228,7 +227,7 @@ async def _handle_bot_command(
             event,
             (
                 "Usage: /bot status | on [group_id] | off [group_id] | "
-                "mode allowlist|blocklist | admin add|remove <user_id> | "
+                "mode allowlist|blocklist | admin add <user_id> | "
                 "prefix add|remove|list [prefix]"
             ),
             explicit_group_send=explicit_group_send,
