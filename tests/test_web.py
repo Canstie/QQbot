@@ -139,6 +139,7 @@ def test_dsapi_config_api_roundtrip_and_clear_history(tmp_path, monkeypatch):
         json={
             "enabled_groups": [123, 456],
             "history_turns": 8,
+            "random_reply_percent": 7.5,
             "knowledge_enabled": True,
             "knowledge_prompt": "扮演档案管理员",
             "clear_history": False,
@@ -150,8 +151,23 @@ def test_dsapi_config_api_roundtrip_and_clear_history(tmp_path, monkeypatch):
     assert data["api_configured"] is True
     assert data["enabled_groups"] == [123, 456]
     assert data["history_turns"] == 8
+    assert data["random_reply_percent"] == 7.5
     assert data["knowledge_enabled"] is True
     assert data["knowledge_prompt"] == "扮演档案管理员"
+
+    invalid = client.post(
+        "/api/dsapi",
+        json={
+            "enabled_groups": [123],
+            "history_turns": 2,
+            "random_reply_percent": 101,
+            "knowledge_enabled": False,
+            "knowledge_prompt": "",
+            "clear_history": False,
+        },
+    )
+    assert invalid.status_code == 400
+    assert "between 0 and 100" in invalid.json()["detail"]
 
     response = client.delete("/api/dsapi/history")
     assert response.status_code == 200

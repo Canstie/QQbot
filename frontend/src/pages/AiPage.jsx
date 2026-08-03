@@ -6,12 +6,12 @@ import { Button, Field, Metric, PageHeader, Panel, Status, Switch } from "../com
 
 export default function AiPage({ refreshVersion, onChanged }) {
   const [data, setData] = useState(null);
-  const [form, setForm] = useState({ enabledGroups: "", turns: 2, enabled: false, prompt: "", clear: true });
+  const [form, setForm] = useState({ enabledGroups: "", turns: 2, randomPercent: 2, enabled: false, prompt: "", clear: true });
   const [notice, setNotice] = useState("正在读取 AI 配置");
 
   const load = () => get("/dsapi").then((result) => {
     setData(result);
-    setForm({ enabledGroups: formatIds(result.enabled_groups), turns: result.history_turns, enabled: result.knowledge_enabled, prompt: result.knowledge_prompt || "", clear: true });
+    setForm({ enabledGroups: formatIds(result.enabled_groups), turns: result.history_turns, randomPercent: result.random_reply_percent ?? 2, enabled: result.knowledge_enabled, prompt: result.knowledge_prompt || "", clear: true });
     setNotice("AI 配置已同步");
   }).catch((error) => setNotice(error.message));
 
@@ -22,7 +22,7 @@ export default function AiPage({ refreshVersion, onChanged }) {
 
   const save = async () => {
     try {
-      const result = await post("/dsapi", { enabled_groups: parseIds(form.enabledGroups), history_turns: Number(form.turns), knowledge_enabled: form.enabled, knowledge_prompt: form.prompt, clear_history: form.clear });
+      const result = await post("/dsapi", { enabled_groups: parseIds(form.enabledGroups), history_turns: Number(form.turns), random_reply_percent: Number(form.randomPercent), knowledge_enabled: form.enabled, knowledge_prompt: form.prompt, clear_history: form.clear });
       setData(result);
       setNotice("角色配置已保存，下一条 @bot 消息立即使用新设定");
       setForm((current) => ({ ...current, clear: false }));
@@ -65,6 +65,7 @@ export default function AiPage({ refreshVersion, onChanged }) {
           </Panel>
           <Panel title="短期记忆" eyebrow="Context window">
             <Field label="每群保留轮数"><div className="range-value"><input type="range" min="1" max="20" value={form.turns} onChange={(e) => update("turns", e.target.value)} /><strong>{form.turns} 轮</strong></div></Field>
+            <Field label="随机引用插话概率" hint="仅监听 AI 启用群的普通纯文本消息；0% 表示关闭。"><div className="range-value"><input type="range" min="0" max="100" step="0.5" value={form.randomPercent} onChange={(e) => update("randomPercent", e.target.value)} /><strong>{form.randomPercent}%</strong></div></Field>
             <Switch checked={form.clear} onChange={(value) => update("clear", value)} label="保存时清空旧上下文" description="切换角色时建议开启" />
             <p className="quiet-note">连续 {Math.round((data?.history_idle_seconds || 1200) / 60)} 分钟无人对话后，该群上下文自动清空。</p>
             <Button tone="danger" icon={Eraser} onClick={clearHistory}>立即清空全部上下文</Button>

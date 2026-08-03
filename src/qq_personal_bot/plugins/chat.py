@@ -9,7 +9,11 @@ from nonebot.adapters.onebot.v11 import Bot, Event, GroupMessageEvent, Message, 
 
 from qq_personal_bot.adapters.onebot import onebot_to_internal
 from qq_personal_bot.core.models import PolicyDecision
-from qq_personal_bot.dsapi import DSAPIError, generate_mention_reply
+from qq_personal_bot.dsapi import (
+    DSAPIError,
+    generate_mention_reply,
+    generate_random_group_reply,
+)
 from qq_personal_bot.lua_runner import pending_lua_command, run_lua_message
 from qq_personal_bot.plugins.custom_flows import handle_custom_flow
 from qq_personal_bot.replies import build_reply
@@ -28,6 +32,10 @@ def _build_default_response(content: str, *, direct: bool = False) -> str:
 def _build_lua_response(content: str, event: Any, *, quote: bool) -> str | Message:
     if not quote:
         return content
+    return _build_quoted_response(content, event)
+
+
+def _build_quoted_response(content: str, event: Any) -> Message:
     return MessageSegment.reply(event.message_id) + Message(content)
 
 
@@ -128,6 +136,24 @@ async def _handle_onebot_message(
 
     decision = get_policy_engine().evaluate(internal_event, self_id=bot.self_id)
     if not decision.allowed:
+        if decision.reason == "no_trigger":
+            try:
+                response = await generate_random_group_reply(
+                    internal_event,
+                    get_settings(),
+                    get_store(),
+                )
+            except DSAPIError as exc:
+                logger.warning(f"DSAPI random group reply failed: {exc}")
+                return
+            if response:
+                await _finish_with_response(
+                    matcher,
+                    bot,
+                    event,
+                    _build_quoted_response(response, event),
+                    explicit_group_send=explicit_group_send,
+                )
         return
 
     lua_result = await run_lua_message(bot, internal_event, decision)

@@ -9,9 +9,11 @@ from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.dsapi import (
     _brief_reply,
     _chat_completions_url,
+    _random_reply_selected,
     _request_chat_completion,
     build_mention_prompt,
     generate_mention_reply,
+    generate_random_group_reply,
 )
 from qq_personal_bot.settings import AppSettings
 
@@ -26,7 +28,7 @@ class FakeBot:
         return self.payload
 
 
-def make_event(*, text="帮我回复", segments=()):
+def make_event(*, text="帮我回复", segments=(), is_at_bot=True):
     return MessageEvent(
         platform="onebot.v11",
         message_id=1,
@@ -34,7 +36,7 @@ def make_event(*, text="帮我回复", segments=()):
         user_id=456,
         raw_message=text,
         segments=segments,
-        is_at_bot=True,
+        is_at_bot=is_at_bot,
     )
 
 
@@ -48,7 +50,13 @@ def make_settings(tmp_path, **overrides):
     return AppSettings(**values)
 
 
-def make_store(tmp_path, *, enabled_groups=(123,), knowledge_prompt=""):
+def make_store(
+    tmp_path,
+    *,
+    enabled_groups=(123,),
+    knowledge_prompt="",
+    random_reply_percent=2,
+):
     settings = make_settings(tmp_path)
     store = PolicyStore(settings.db_path)
     store.initialize(settings)
@@ -59,6 +67,7 @@ def make_store(tmp_path, *, enabled_groups=(123,), knowledge_prompt=""):
         enabled_groups=list(enabled_groups),
         clear_history=False,
         actor_id=0,
+        random_reply_percent=random_reply_percent,
     )
     return store
 
@@ -245,6 +254,63 @@ async def test_idle_group_history_is_not_sent_to_dsapi(tmp_path, monkeypatch):
 
     assert response == "新回答"
     assert captured["messages"][1:] == [{"role": "user", "content": "新问题"}]
+
+
+@pytest.mark.asyncio
+async def test_random_group_reply_uses_plain_message_and_random_instruction(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_request(settings, messages):
+        captured["messages"] = messages
+        return "确实有点离谱。"
+
+    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
+    event = make_event(text="今天也太热了", segments=(), is_at_bot=False)
+
+    response = await generate_random_group_reply(
+        event,
+        make_settings(tmp_path),
+        make_store(tmp_path, random_reply_percent=100),
+    )
+
+    assert response == "确实有点离谱。"
+    assert "群聊随机插话" in captured["messages"][0]["content"]
+    assert captured["messages"][-1] == {"role": "user", "content": "今天也太热了"}
+
+
+@pytest.mark.asyncio
+async def test_random_group_reply_respects_zero_percent_and_multimodal(tmp_path, monkeypatch):
+    requested = False
+
+    def fake_request(*args, **kwargs):
+        nonlocal requested
+        requested = True
+
+    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
+    settings = make_settings(tmp_path)
+
+    assert await generate_random_group_reply(
+        make_event(text="普通消息", is_at_bot=False),
+        settings,
+        make_store(tmp_path, random_reply_percent=0),
+    ) is None
+    assert await generate_random_group_reply(
+        make_event(
+            text="看看",
+            segments=({"type": "image", "data": {"file": "a.jpg"}},),
+            is_at_bot=False,
+        ),
+        settings,
+        make_store(tmp_path, random_reply_percent=100),
+    ) is None
+    assert requested is False
+
+
+def test_random_reply_probability_boundaries():
+    event = make_event(text="普通消息", is_at_bot=False)
+
+    assert _random_reply_selected(event, 0) is False
+    assert _random_reply_selected(event, 100) is True
 
 
 def test_chat_completion_request_uses_compatible_endpoint(tmp_path, monkeypatch):

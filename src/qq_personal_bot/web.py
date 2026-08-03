@@ -59,6 +59,7 @@ class DSAPIConfigPayload(BaseModel):
     knowledge_enabled: bool = False
     knowledge_prompt: str = ""
     history_turns: int = 2
+    random_reply_percent: float = 2.0
     enabled_groups: list[int] = Field(default_factory=list)
     clear_history: bool = True
 
@@ -212,6 +213,7 @@ def create_app():
                 knowledge_enabled=payload.knowledge_enabled,
                 knowledge_prompt=payload.knowledge_prompt,
                 history_turns=payload.history_turns,
+                random_reply_percent=payload.random_reply_percent,
                 enabled_groups=payload.enabled_groups,
                 clear_history=payload.clear_history,
                 actor_id=0,

@@ -167,6 +167,7 @@ class PolicyStore:
             "dsapi_knowledge_enabled": "false",
             "dsapi_knowledge_prompt": "",
             "dsapi_history_turns": "2",
+            "dsapi_random_reply_percent": "2",
             "dsapi_enabled_groups": "[]",
         }
         for key, value in defaults.items():
@@ -186,6 +187,7 @@ class PolicyStore:
             "dsapi_knowledge_enabled": "false",
             "dsapi_knowledge_prompt": "",
             "dsapi_history_turns": "2",
+            "dsapi_random_reply_percent": "2",
         }
         for key, value in defaults.items():
             conn.execute(
@@ -331,6 +333,13 @@ class PolicyStore:
             history_turns = 2
         history_turns = max(1, min(history_turns, 20))
         try:
+            random_reply_percent = float(
+                self.get_setting("dsapi_random_reply_percent", "2")
+            )
+        except ValueError:
+            random_reply_percent = 2.0
+        random_reply_percent = max(0.0, min(random_reply_percent, 100.0))
+        try:
             enabled_groups = self._normalize_int_ids(
                 json.loads(self.get_setting("dsapi_enabled_groups", "[]")),
                 "enabled_groups",
@@ -351,6 +360,7 @@ class PolicyStore:
             in {"1", "true", "yes", "on"},
             "knowledge_prompt": self.get_setting("dsapi_knowledge_prompt", ""),
             "history_turns": history_turns,
+            "random_reply_percent": random_reply_percent,
             "enabled_groups": enabled_groups,
             "history_messages": int(stats["message_count"]),
             "history_groups": int(stats["group_count"]),
@@ -365,6 +375,7 @@ class PolicyStore:
         enabled_groups: list[int],
         clear_history: bool,
         actor_id: int,
+        random_reply_percent: float = 2.0,
     ) -> dict[str, Any]:
         prompt = str(knowledge_prompt).strip()
         turns = int(history_turns)
@@ -372,6 +383,9 @@ class PolicyStore:
             raise ValueError("history_turns must be between 1 and 20")
         if len(prompt) > 100_000:
             raise ValueError("knowledge_prompt must not exceed 100000 characters")
+        percent = float(random_reply_percent)
+        if percent < 0 or percent > 100:
+            raise ValueError("random_reply_percent must be between 0 and 100")
         normalized_enabled_groups = self._normalize_int_ids(enabled_groups, "enabled_groups")
 
         with self._connect() as conn:
@@ -382,6 +396,7 @@ class PolicyStore:
             )
             self.set_setting("dsapi_knowledge_prompt", prompt, conn=conn)
             self.set_setting("dsapi_history_turns", str(turns), conn=conn)
+            self.set_setting("dsapi_random_reply_percent", str(percent), conn=conn)
             self.set_setting(
                 "dsapi_enabled_groups",
                 json.dumps(normalized_enabled_groups),
@@ -398,6 +413,7 @@ class PolicyStore:
                     "knowledge_enabled": bool(knowledge_enabled),
                     "knowledge_prompt_chars": len(prompt),
                     "history_turns": turns,
+                    "random_reply_percent": percent,
                     "enabled_groups": normalized_enabled_groups,
                     "history_messages_cleared": cleared,
                 },

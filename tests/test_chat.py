@@ -37,3 +37,13 @@ def test_recent_bot_output_event_is_group_scoped():
     chat._remember_recent_bot_output(original, "~抽群老婆", now=100.0)
 
     assert chat._is_recent_bot_output_event(echoed, now=101.0) is False
+
+
+def test_quoted_response_replies_to_original_message():
+    event = SimpleNamespace(message_id=42)
+
+    response = chat._build_quoted_response("确实。", event)
+
+    assert response[0].type == "reply"
+    assert response[0].data["id"] == "42"
+    assert response.extract_plain_text() == "确实。"

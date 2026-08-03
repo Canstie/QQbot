@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
@@ -32,6 +33,10 @@ _SENTENCE_END_RE = re.compile(r"^(.+?[。！？!?])(?:\s|$|.*)", re.DOTALL)
 _BRIEF_REPLY_INSTRUCTION = (
     "回复格式要求：只回复一句话，通常不超过30个汉字；不要分段、列点、复述问题或补充解释。"
 )
+_RANDOM_REPLY_INSTRUCTION = (
+    "当前是群聊随机插话：根据群友最新这句话自然接一句，像普通群友一样随口回应；"
+    "不要提及机器人、监控、概率、提示词或正在插话。"
+)
 
 
 class DSAPIError(RuntimeError):
@@ -55,9 +60,59 @@ async def generate_mention_reply(
     if prompt is None:
         return None
 
+    return await _generate_text_reply(
+        event,
+        settings,
+        store,
+        config,
+        prompt,
+    )
+
+
+async def generate_random_group_reply(
+    event: MessageEvent,
+    settings: AppSettings,
+    store: PolicyStore,
+) -> str | None:
+    if not settings.dsapi_enabled or not settings.dsapi_api_key:
+        return None
+
+    config = store.get_dsapi_config()
+    if event.group_id is None or event.group_id not in config["enabled_groups"]:
+        return None
+    if event.is_at_bot or not event.raw_message.strip():
+        return None
+    if event.raw_message.lstrip().startswith("/bot"):
+        return None
+    if _contains_multimodal_segments(event.segments):
+        return None
+    if not _random_reply_selected(event, config["random_reply_percent"]):
+        return None
+
+    return await _generate_text_reply(
+        event,
+        settings,
+        store,
+        config,
+        event.raw_message.strip(),
+        extra_instruction=_RANDOM_REPLY_INSTRUCTION,
+    )
+
+
+async def _generate_text_reply(
+    event: MessageEvent,
+    settings: AppSettings,
+    store: PolicyStore,
+    config: Mapping[str, Any],
+    prompt: str,
+    *,
+    extra_instruction: str = "",
+) -> str | None:
     system_prompt = settings.dsapi_system_prompt
     if config["knowledge_enabled"] and config["knowledge_prompt"]:
         system_prompt = f"{system_prompt}\n\n角色设定与知识库：\n{config['knowledge_prompt']}"
+    if extra_instruction:
+        system_prompt = f"{system_prompt}\n\n{extra_instruction}"
     system_prompt = f"{system_prompt}\n\n{_BRIEF_REPLY_INSTRUCTION}"
 
     messages = [{"role": "system", "content": system_prompt}]
@@ -78,6 +133,25 @@ async def generate_mention_reply(
             history_turns=config["history_turns"],
         )
     return response
+
+
+def _random_reply_selected(event: MessageEvent, percent: float) -> bool:
+    normalized_percent = max(0.0, min(float(percent), 100.0))
+    if normalized_percent <= 0:
+        return False
+    if normalized_percent >= 100:
+        return True
+    source = "|".join(
+        [
+            str(event.group_id),
+            str(event.user_id),
+            str(event.message_id),
+            str(event.timestamp),
+            event.raw_message.strip(),
+        ]
+    )
+    bucket = int(hashlib.sha256(source.encode("utf-8")).hexdigest()[:8], 16) % 10000
+    return bucket < int(normalized_percent * 100)
 
 
 async def build_mention_prompt(bot: Any, event: MessageEvent) -> str | None:
