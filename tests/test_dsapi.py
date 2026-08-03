@@ -356,7 +356,7 @@ async def test_random_group_reply_can_send_sticker_without_dsapi_call(tmp_path, 
         ),
     )
 
-    assert response == f"[CQ:image,file={sticker.as_uri()}]"
+    assert response == sticker
     assert _pick_random_sticker(event, settings, 100) == response
     assert requested is False
 

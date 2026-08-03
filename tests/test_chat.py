@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 from qq_personal_bot.plugins import chat
@@ -47,3 +48,11 @@ def test_quoted_response_replies_to_original_message():
     assert response[0].type == "reply"
     assert response[0].data["id"] == "42"
     assert response.extract_plain_text() == "确实。"
+
+
+def test_random_sticker_response_uses_onebot_image_segment(tmp_path):
+    sticker = tmp_path / "sticker.png"
+    response = chat._build_random_group_response(sticker)
+
+    assert response.type == "image"
+    assert response.data["file"] == Path(sticker).resolve().as_uri()

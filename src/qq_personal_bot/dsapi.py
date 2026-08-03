@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -74,7 +75,7 @@ async def generate_random_group_reply(
     event: MessageEvent,
     settings: AppSettings,
     store: PolicyStore,
-) -> str | None:
+) -> str | Path | None:
     if not settings.dsapi_enabled or not settings.dsapi_api_key:
         return None
 
@@ -176,7 +177,7 @@ def _pick_random_sticker(
     event: MessageEvent,
     settings: AppSettings,
     percent: float,
-) -> str | None:
+) -> Path | None:
     if event.group_id is None or not _random_reply_selected(
         event,
         percent,
@@ -195,8 +196,7 @@ def _pick_random_sticker(
     ]
     if not images:
         return None
-    image = images[_event_bucket(event, "sticker-file") % len(images)]
-    return f"[CQ:image,file={image.as_uri()}]"
+    return images[_event_bucket(event, "sticker-file") % len(images)]
 
 
 async def build_mention_prompt(bot: Any, event: MessageEvent) -> str | None:

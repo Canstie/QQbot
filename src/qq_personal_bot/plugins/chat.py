@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from collections import deque
+from pathlib import Path
 from typing import Any
 
 from nonebot import logger, on, on_message
@@ -39,6 +40,12 @@ def _build_quoted_response(content: str, event: Any) -> Message:
     return MessageSegment.reply(event.message_id) + Message(content)
 
 
+def _build_random_group_response(response: str | Path) -> str | MessageSegment:
+    if isinstance(response, Path):
+        return MessageSegment.image(response.resolve().as_uri())
+    return response
+
+
 def _normalize_message_text(value: Any) -> str:
     return str(value or "").strip()
 
@@ -55,7 +62,12 @@ def _prune_recent_bot_outputs(now: float | None = None) -> None:
         _recent_bot_outputs.popleft()
 
 
-def _remember_recent_bot_output(event: Any, response: str | Message, *, now: float | None = None) -> None:
+def _remember_recent_bot_output(
+    event: Any,
+    response: str | Message | MessageSegment,
+    *,
+    now: float | None = None,
+) -> None:
     signature = _recent_output_signature(event, response)
     if not signature[1]:
         return
@@ -78,7 +90,7 @@ async def _finish_with_response(
     matcher: Any,
     bot: Bot,
     event: Any,
-    response: str | Message,
+    response: str | Message | MessageSegment,
     *,
     explicit_group_send: bool,
 ) -> None:
@@ -151,7 +163,7 @@ async def _handle_onebot_message(
                     matcher,
                     bot,
                     event,
-                    response,
+                    _build_random_group_response(response),
                     explicit_group_send=explicit_group_send,
                 )
         return
