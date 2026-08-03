@@ -41,7 +41,9 @@ export default function RepliesPage({ refreshVersion, onChanged }) {
     setConfig({ empty: "", fallback: "", rules: [], direct_rules: [], ...(data.config || {}) });
     setNotice(data.valid ? "回复规则已同步" : data.error);
   }).catch((error) => setNotice(error.message));
-  useEffect(load, [refreshVersion]);
+  useEffect(() => {
+    void load();
+  }, [refreshVersion]);
 
   const updateRule = (kind, index, field, value) => setConfig((current) => ({
     ...current,

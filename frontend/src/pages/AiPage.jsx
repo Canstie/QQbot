@@ -15,7 +15,9 @@ export default function AiPage({ refreshVersion, onChanged }) {
     setNotice("AI 配置已同步");
   }).catch((error) => setNotice(error.message));
 
-  useEffect(load, [refreshVersion]);
+  useEffect(() => {
+    void load();
+  }, [refreshVersion]);
   const update = (key, value) => setForm((current) => ({ ...current, [key]: value }));
 
   const save = async () => {

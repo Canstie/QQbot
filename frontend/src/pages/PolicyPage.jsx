@@ -32,7 +32,9 @@ export default function PolicyPage({ refreshVersion, onChanged }) {
     setNotice("配置已同步");
   }).catch((error) => setNotice(error.message));
 
-  useEffect(load, [refreshVersion]);
+  useEffect(() => {
+    void load();
+  }, [refreshVersion]);
 
   const save = async () => {
     setSaving(true);
