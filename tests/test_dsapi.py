@@ -283,6 +283,62 @@ async def test_random_group_reply_uses_plain_message_and_random_instruction(tmp_
 
 
 @pytest.mark.asyncio
+async def test_random_group_reply_includes_previous_ten_group_messages(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_request(settings, messages):
+        captured["messages"] = messages
+        return "接上了。"
+
+    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
+    settings = make_settings(tmp_path)
+    store = make_store(
+        tmp_path,
+        random_reply_percent=0,
+        random_sticker_percent=0,
+    )
+
+    for index in range(11):
+        response = await generate_random_group_reply(
+            make_event(text=f"消息{index}", is_at_bot=False, message_id=index),
+            settings,
+            store,
+        )
+        assert response is None
+
+    assert [item["content"] for item in store.get_dsapi_group_context(123)] == [
+        f"消息{index}" for index in range(1, 11)
+    ]
+    store.set_dsapi_config(
+        knowledge_enabled=False,
+        knowledge_prompt="",
+        history_turns=2,
+        enabled_groups=[123],
+        clear_history=False,
+        actor_id=0,
+        random_reply_percent=100,
+        random_sticker_percent=0,
+    )
+
+    response = await generate_random_group_reply(
+        make_event(text="最新消息", is_at_bot=False, message_id=99),
+        settings,
+        store,
+    )
+
+    assert response == "接上了。"
+    prompt = captured["messages"][-1]["content"]
+    assert "[QQ 456] 消息0\n" not in prompt
+    for index in range(1, 11):
+        assert f"[QQ 456] 消息{index}" in prompt
+    assert prompt.endswith("[QQ 456] 最新消息")
+    assert store.get_dsapi_chat_history(123, 2) == [
+        {"role": "user", "content": "最新消息"},
+        {"role": "assistant", "content": "接上了。"},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_random_group_reply_respects_zero_percent_and_multimodal(tmp_path, monkeypatch):
     requested = False
 

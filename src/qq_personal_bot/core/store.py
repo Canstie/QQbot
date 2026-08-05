@@ -155,6 +155,17 @@ class PolicyStore:
 
             CREATE INDEX IF NOT EXISTS idx_dsapi_chat_history_group_id
             ON dsapi_chat_history(group_id, id);
+
+            CREATE TABLE IF NOT EXISTS dsapi_group_context (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                created_at REAL NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_dsapi_group_context_group_id
+            ON dsapi_group_context(group_id, id);
             """
         )
 
@@ -357,10 +368,26 @@ class PolicyStore:
         except (TypeError, ValueError, json.JSONDecodeError):
             enabled_groups = []
         with self._connect() as conn:
-            stats = conn.execute(
+            chat_stats = conn.execute(
                 """
                 SELECT COUNT(*) AS message_count, COUNT(DISTINCT group_id) AS group_count
                 FROM dsapi_chat_history
+                """
+            ).fetchone()
+            context_stats = conn.execute(
+                """
+                SELECT COUNT(*) AS message_count, COUNT(DISTINCT group_id) AS group_count
+                FROM dsapi_group_context
+                """
+            ).fetchone()
+            all_group_stats = conn.execute(
+                """
+                SELECT COUNT(*) AS group_count
+                FROM (
+                    SELECT group_id FROM dsapi_chat_history
+                    UNION
+                    SELECT group_id FROM dsapi_group_context
+                )
                 """
             ).fetchone()
         return {
@@ -373,8 +400,9 @@ class PolicyStore:
             "random_reply_percent": random_reply_percent,
             "random_sticker_percent": random_sticker_percent,
             "enabled_groups": enabled_groups,
-            "history_messages": int(stats["message_count"]),
-            "history_groups": int(stats["group_count"]),
+            "history_messages": int(chat_stats["message_count"])
+            + int(context_stats["message_count"]),
+            "history_groups": int(all_group_stats["group_count"]),
         }
 
     def set_dsapi_config(
@@ -421,6 +449,7 @@ class PolicyStore:
             cleared = 0
             if clear_history:
                 cleared = conn.execute("DELETE FROM dsapi_chat_history").rowcount
+                cleared += conn.execute("DELETE FROM dsapi_group_context").rowcount
             self.audit(
                 actor_id,
                 "set_dsapi_config",
@@ -526,9 +555,94 @@ class PolicyStore:
                 (normalized_group_id, normalized_group_id, message_limit),
             )
 
+    def get_dsapi_group_context(
+        self,
+        group_id: int,
+        *,
+        message_limit: int = 10,
+        idle_seconds: int = 1200,
+        now: float | None = None,
+    ) -> list[dict[str, Any]]:
+        normalized_group_id = int(group_id)
+        normalized_limit = max(1, min(int(message_limit), 50))
+        normalized_idle_seconds = int(idle_seconds)
+        if normalized_idle_seconds <= 0:
+            raise ValueError("idle_seconds must be > 0")
+        cutoff = (time.time() if now is None else float(now)) - normalized_idle_seconds
+        with self._connect() as conn:
+            conn.execute(
+                """
+                DELETE FROM dsapi_group_context
+                WHERE group_id = ?
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM dsapi_group_context
+                      WHERE group_id = ? AND created_at >= ?
+                  )
+                """,
+                (normalized_group_id, normalized_group_id, cutoff),
+            )
+            rows = conn.execute(
+                """
+                SELECT user_id, content
+                FROM (
+                    SELECT id, user_id, content
+                    FROM dsapi_group_context
+                    WHERE group_id = ?
+                    ORDER BY id DESC
+                    LIMIT ?
+                )
+                ORDER BY id ASC
+                """,
+                (normalized_group_id, normalized_limit),
+            ).fetchall()
+        return [
+            {"user_id": int(row["user_id"]), "content": str(row["content"])}
+            for row in rows
+        ]
+
+    def record_dsapi_group_message(
+        self,
+        *,
+        group_id: int,
+        user_id: int,
+        content: str,
+        message_limit: int = 10,
+        now: float | None = None,
+    ) -> None:
+        normalized_content = " ".join(str(content).split())[:300]
+        if not normalized_content:
+            return
+        normalized_group_id = int(group_id)
+        normalized_limit = max(1, min(int(message_limit), 50))
+        created_at = time.time() if now is None else float(now)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO dsapi_group_context(group_id, user_id, content, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (normalized_group_id, int(user_id), normalized_content, created_at),
+            )
+            conn.execute(
+                """
+                DELETE FROM dsapi_group_context
+                WHERE group_id = ?
+                  AND id NOT IN (
+                      SELECT id
+                      FROM dsapi_group_context
+                      WHERE group_id = ?
+                      ORDER BY id DESC
+                      LIMIT ?
+                  )
+                """,
+                (normalized_group_id, normalized_group_id, normalized_limit),
+            )
+
     def clear_dsapi_chat_history(self, *, actor_id: int) -> int:
         with self._connect() as conn:
             deleted = conn.execute("DELETE FROM dsapi_chat_history").rowcount
+            deleted += conn.execute("DELETE FROM dsapi_group_context").rowcount
             self.audit(
                 actor_id,
                 "clear_dsapi_chat_history",

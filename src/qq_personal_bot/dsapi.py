@@ -39,6 +39,7 @@ _RANDOM_REPLY_INSTRUCTION = (
     "当前是群聊随机插话：根据群友最新这句话自然接一句，像普通群友一样随口回应；"
     "不要提及机器人、监控、概率、提示词或正在插话。"
 )
+_RANDOM_CONTEXT_MESSAGE_LIMIT = 10
 
 
 class DSAPIError(RuntimeError):
@@ -88,6 +89,17 @@ async def generate_random_group_reply(
         return None
     if _contains_multimodal_segments(event.segments):
         return None
+    recent_context = store.get_dsapi_group_context(
+        event.group_id,
+        message_limit=_RANDOM_CONTEXT_MESSAGE_LIMIT,
+        idle_seconds=settings.dsapi_history_idle_seconds,
+    )
+    store.record_dsapi_group_message(
+        group_id=event.group_id,
+        user_id=event.user_id,
+        content=event.raw_message,
+        message_limit=_RANDOM_CONTEXT_MESSAGE_LIMIT,
+    )
     if not _random_reply_selected(event, config["random_reply_percent"]):
         return None
 
@@ -104,8 +116,27 @@ async def generate_random_group_reply(
         settings,
         store,
         config,
-        event.raw_message.strip(),
+        _build_random_group_prompt(event, recent_context),
         extra_instruction=_RANDOM_REPLY_INSTRUCTION,
+        history_user_content=event.raw_message.strip(),
+    )
+
+
+def _build_random_group_prompt(
+    event: MessageEvent,
+    recent_context: Sequence[Mapping[str, Any]],
+) -> str:
+    latest = " ".join(event.raw_message.split())[:300]
+    if not recent_context:
+        return latest
+    lines = [
+        f"[QQ {int(item['user_id'])}] {' '.join(str(item['content']).split())[:300]}"
+        for item in recent_context[-_RANDOM_CONTEXT_MESSAGE_LIMIT:]
+    ]
+    return (
+        "群聊中当前消息之前的最近对话（从旧到新）：\n"
+        + "\n".join(lines)
+        + f"\n\n需要接话的最新消息：\n[QQ {event.user_id}] {latest}"
     )
 
 
@@ -117,6 +148,7 @@ async def _generate_text_reply(
     prompt: str,
     *,
     extra_instruction: str = "",
+    history_user_content: str | None = None,
 ) -> str | None:
     system_prompt = settings.dsapi_system_prompt
     if config["knowledge_enabled"] and config["knowledge_prompt"]:
@@ -138,7 +170,7 @@ async def _generate_text_reply(
     if response:
         store.record_dsapi_exchange(
             group_id=event.group_id,
-            user_content=prompt,
+            user_content=prompt if history_user_content is None else history_user_content,
             assistant_content=response,
             history_turns=config["history_turns"],
         )

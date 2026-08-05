@@ -96,7 +96,7 @@ export default function AiPage({ refreshVersion, onChanged }) {
             <Field label="随机插话概率" hint="仅监听 AI 启用群的普通纯文本消息；0% 表示关闭。"><div className="range-value"><input type="range" min="0" max="100" step="0.5" value={form.randomPercent} onChange={(e) => update("randomPercent", e.target.value)} /><strong>{form.randomPercent}%</strong></div></Field>
             <Field label="表情包占插话比例" hint="从独立表情包库随机选择；无图时自动回退为文字。"><div className="range-value"><input type="range" min="0" max="100" step="1" value={form.stickerPercent} onChange={(e) => update("stickerPercent", e.target.value)} /><strong>{form.stickerPercent}%</strong></div></Field>
             <Switch checked={form.clear} onChange={(value) => update("clear", value)} label="保存时清空旧上下文" description="切换角色时建议开启" />
-            <p className="quiet-note">连续 {Math.round((data?.history_idle_seconds || 1200) / 60)} 分钟无人对话后，该群上下文自动清空。</p>
+            <p className="quiet-note">随机插话会读取当前消息之前最多 10 句群聊；连续 {Math.round((data?.history_idle_seconds || 1200) / 60)} 分钟无人对话后自动清空。</p>
             <Button tone="danger" icon={Eraser} onClick={clearHistory}>立即清空全部上下文</Button>
           </Panel>
         </div>

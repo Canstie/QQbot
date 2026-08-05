@@ -239,6 +239,37 @@ def test_dsapi_history_expires_after_group_is_idle(tmp_path):
     assert len(store.get_dsapi_chat_history(456, 2)) == 2
 
 
+def test_random_group_context_keeps_ten_messages_and_expires_when_idle(tmp_path):
+    db_path = tmp_path / "policy.sqlite3"
+    store = PolicyStore(db_path)
+    store.initialize(AppSettings(db_path=db_path, admins=()))
+
+    for index in range(12):
+        store.record_dsapi_group_message(
+            group_id=123,
+            user_id=10000 + index,
+            content=f"  消息 {index}  \n  后半句  ",
+            now=1000.0 + index,
+        )
+
+    context = store.get_dsapi_group_context(123, idle_seconds=1200, now=2211.0)
+    assert len(context) == 10
+    assert context[0] == {"user_id": 10002, "content": "消息 2 后半句"}
+    assert context[-1] == {"user_id": 10011, "content": "消息 11 后半句"}
+    assert store.get_dsapi_config()["history_messages"] == 10
+    assert store.get_dsapi_group_context(123, idle_seconds=1200, now=2212.0) == []
+
+
+def test_clear_dsapi_history_also_clears_random_group_context(tmp_path):
+    db_path = tmp_path / "policy.sqlite3"
+    store = PolicyStore(db_path)
+    store.initialize(AppSettings(db_path=db_path, admins=()))
+    store.record_dsapi_group_message(group_id=123, user_id=10000, content="群聊消息")
+
+    assert store.clear_dsapi_chat_history(actor_id=10000) == 1
+    assert store.get_dsapi_group_context(123) == []
+
+
 def test_existing_store_migrates_enabled_groups_to_ai_groups(tmp_path):
     db_path = tmp_path / "policy.sqlite3"
     settings = AppSettings(db_path=db_path, admins=())
