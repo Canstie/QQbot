@@ -55,6 +55,7 @@ def make_settings(tmp_path, **overrides):
 def make_store(
     tmp_path,
     *,
+    enabled=True,
     enabled_groups=(123,),
     knowledge_prompt="",
     random_reply_percent=2,
@@ -64,6 +65,7 @@ def make_store(
     store = PolicyStore(settings.db_path)
     store.initialize(settings)
     store.set_dsapi_config(
+        enabled=enabled,
         knowledge_enabled=bool(knowledge_prompt),
         knowledge_prompt=knowledge_prompt,
         history_turns=2,
@@ -74,6 +76,33 @@ def make_store(
         random_sticker_percent=random_sticker_percent,
     )
     return store
+
+
+@pytest.mark.asyncio
+async def test_ai_master_switch_disables_mentions_and_random_context(tmp_path, monkeypatch):
+    requested = False
+
+    def fake_request(*args, **kwargs):
+        nonlocal requested
+        requested = True
+
+    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
+    settings = make_settings(tmp_path)
+    store = make_store(
+        tmp_path,
+        enabled=False,
+        random_reply_percent=100,
+        random_sticker_percent=100,
+    )
+
+    assert await generate_mention_reply(FakeBot(), make_event(), settings, store) is None
+    assert await generate_random_group_reply(
+        make_event(text="普通群聊", is_at_bot=False),
+        settings,
+        store,
+    ) is None
+    assert store.get_dsapi_group_context(123) == []
+    assert requested is False
 
 
 @pytest.mark.asyncio

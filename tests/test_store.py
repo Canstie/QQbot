@@ -166,6 +166,7 @@ def test_dsapi_config_and_history_are_group_scoped_and_pruned(tmp_path):
     store.initialize(AppSettings(db_path=db_path, admins=()))
 
     config = store.set_dsapi_config(
+        enabled=False,
         knowledge_enabled=True,
         knowledge_prompt="角色设定",
         history_turns=2,
@@ -175,6 +176,7 @@ def test_dsapi_config_and_history_are_group_scoped_and_pruned(tmp_path):
         random_reply_percent=7.5,
         random_sticker_percent=35,
     )
+    assert config["enabled"] is False
     assert config["enabled_groups"] == [123, 456]
     assert config["knowledge_prompt"] == "角色设定"
     assert config["random_reply_percent"] == 7.5

@@ -56,6 +56,7 @@ class CoreConfigPayload(BaseModel):
 
 
 class DSAPIConfigPayload(BaseModel):
+    enabled: bool = True
     knowledge_enabled: bool = False
     knowledge_prompt: str = ""
     history_turns: int = 2
@@ -216,6 +217,7 @@ def create_app():
         require_token(request)
         try:
             get_store().set_dsapi_config(
+                enabled=payload.enabled,
                 knowledge_enabled=payload.knowledge_enabled,
                 knowledge_prompt=payload.knowledge_prompt,
                 history_turns=payload.history_turns,

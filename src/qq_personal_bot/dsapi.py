@@ -56,6 +56,8 @@ async def generate_mention_reply(
         return None
 
     config = store.get_dsapi_config()
+    if not config["enabled"]:
+        return None
     if event.group_id is None or event.group_id not in config["enabled_groups"]:
         return None
 
@@ -81,6 +83,8 @@ async def generate_random_group_reply(
         return None
 
     config = store.get_dsapi_config()
+    if not config["enabled"]:
+        return None
     if event.group_id is None or event.group_id not in config["enabled_groups"]:
         return None
     if event.is_at_bot or not event.raw_message.strip():

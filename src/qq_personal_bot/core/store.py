@@ -176,6 +176,7 @@ class PolicyStore:
             "direct_trigger_percent": str(settings.direct_trigger_percent),
             "per_group_seconds": str(settings.per_group_seconds),
             "per_user_per_minute": str(settings.per_user_per_minute),
+            "dsapi_enabled": "true",
             "dsapi_knowledge_enabled": "false",
             "dsapi_knowledge_prompt": "",
             "dsapi_history_turns": "2",
@@ -197,6 +198,7 @@ class PolicyStore:
 
     def _initialize_dsapi_settings(self, conn: sqlite3.Connection) -> None:
         defaults = {
+            "dsapi_enabled": "true",
             "dsapi_knowledge_enabled": "false",
             "dsapi_knowledge_prompt": "",
             "dsapi_history_turns": "2",
@@ -391,6 +393,8 @@ class PolicyStore:
                 """
             ).fetchone()
         return {
+            "enabled": self.get_setting("dsapi_enabled", "true").lower()
+            in {"1", "true", "yes", "on"},
             "knowledge_enabled": self.get_setting(
                 "dsapi_knowledge_enabled", "false"
             ).lower()
@@ -416,6 +420,7 @@ class PolicyStore:
         actor_id: int,
         random_reply_percent: float = 2.0,
         random_sticker_percent: float = 20.0,
+        enabled: bool = True,
     ) -> dict[str, Any]:
         prompt = str(knowledge_prompt).strip()
         turns = int(history_turns)
@@ -432,6 +437,11 @@ class PolicyStore:
         normalized_enabled_groups = self._normalize_int_ids(enabled_groups, "enabled_groups")
 
         with self._connect() as conn:
+            self.set_setting(
+                "dsapi_enabled",
+                "true" if enabled else "false",
+                conn=conn,
+            )
             self.set_setting(
                 "dsapi_knowledge_enabled",
                 "true" if knowledge_enabled else "false",
@@ -455,6 +465,7 @@ class PolicyStore:
                 "set_dsapi_config",
                 "dsapi",
                 {
+                    "enabled": bool(enabled),
                     "knowledge_enabled": bool(knowledge_enabled),
                     "knowledge_prompt_chars": len(prompt),
                     "history_turns": turns,

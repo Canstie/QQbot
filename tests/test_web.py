@@ -137,6 +137,7 @@ def test_dsapi_config_api_roundtrip_and_clear_history(tmp_path, monkeypatch):
     response = client.post(
         "/api/dsapi",
         json={
+            "enabled": False,
             "enabled_groups": [123, 456],
             "history_turns": 8,
             "random_reply_percent": 7.5,
@@ -150,6 +151,7 @@ def test_dsapi_config_api_roundtrip_and_clear_history(tmp_path, monkeypatch):
     assert response.status_code == 200
     data = response.json()
     assert data["api_configured"] is True
+    assert data["enabled"] is False
     assert data["enabled_groups"] == [123, 456]
     assert data["history_turns"] == 8
     assert data["random_reply_percent"] == 7.5

@@ -6,14 +6,14 @@ import { Button, Empty, Field, IconButton, Metric, PageHeader, Panel, Status, Sw
 
 export default function AiPage({ refreshVersion, onChanged }) {
   const [data, setData] = useState(null);
-  const [form, setForm] = useState({ enabledGroups: "", turns: 2, randomPercent: 2, stickerPercent: 20, enabled: false, prompt: "", clear: true });
+  const [form, setForm] = useState({ enabledGroups: "", turns: 2, randomPercent: 2, stickerPercent: 20, aiEnabled: true, knowledgeEnabled: false, prompt: "", clear: true });
   const [notice, setNotice] = useState("正在读取 AI 配置");
   const [stickers, setStickers] = useState([]);
   const [stickerFile, setStickerFile] = useState(null);
 
   const load = () => get("/dsapi").then((result) => {
     setData(result);
-    setForm({ enabledGroups: formatIds(result.enabled_groups), turns: result.history_turns, randomPercent: result.random_reply_percent ?? 2, stickerPercent: result.random_sticker_percent ?? 20, enabled: result.knowledge_enabled, prompt: result.knowledge_prompt || "", clear: true });
+    setForm({ enabledGroups: formatIds(result.enabled_groups), turns: result.history_turns, randomPercent: result.random_reply_percent ?? 2, stickerPercent: result.random_sticker_percent ?? 20, aiEnabled: result.enabled ?? true, knowledgeEnabled: result.knowledge_enabled, prompt: result.knowledge_prompt || "", clear: true });
     setNotice("AI 配置已同步");
   }).catch((error) => setNotice(error.message));
   const loadStickers = () => get("/stickers").then((result) => {
@@ -28,7 +28,7 @@ export default function AiPage({ refreshVersion, onChanged }) {
 
   const save = async () => {
     try {
-      const result = await post("/dsapi", { enabled_groups: parseIds(form.enabledGroups), history_turns: Number(form.turns), random_reply_percent: Number(form.randomPercent), random_sticker_percent: Number(form.stickerPercent), knowledge_enabled: form.enabled, knowledge_prompt: form.prompt, clear_history: form.clear });
+      const result = await post("/dsapi", { enabled: form.aiEnabled, enabled_groups: parseIds(form.enabledGroups), history_turns: Number(form.turns), random_reply_percent: Number(form.randomPercent), random_sticker_percent: Number(form.stickerPercent), knowledge_enabled: form.knowledgeEnabled, knowledge_prompt: form.prompt, clear_history: form.clear });
       setData(result);
       setNotice("AI 配置已保存，下一条群消息立即使用新设定");
       setForm((current) => ({ ...current, clear: false }));
@@ -76,12 +76,12 @@ export default function AiPage({ refreshVersion, onChanged }) {
         <Metric label="AI 启用群" value={data?.enabled_groups?.length ?? "-"} tone="blue" />
         <Metric label="上下文消息" value={data?.history_messages ?? "-"} tone="mint" />
         <Metric label="涉及群" value={data?.history_groups ?? "-"} tone="orange" />
-        <Status tone={data?.api_configured ? "ok" : "error"}>API {data?.api_configured ? "已配置" : "缺少密钥"}</Status>
+        <Status tone={!data?.api_configured ? "error" : data?.enabled ? "ok" : "neutral"}>AI {!data?.api_configured ? "缺少密钥" : data?.enabled ? "已启用" : "已关闭"}</Status>
       </div>
 
       <div className="content-grid">
         <Panel title="角色知识提示词" eyebrow="Knowledge layer" className="span-8">
-          <div className="knowledge-toolbar"><Switch checked={form.enabled} onChange={(value) => update("enabled", value)} label="挂载角色知识" description="关闭后只使用基础系统提示词" /><span><Sparkles size={15} /> {form.prompt.length.toLocaleString()} 字符</span></div>
+          <div className="knowledge-toolbar"><Switch checked={form.knowledgeEnabled} onChange={(value) => update("knowledgeEnabled", value)} label="挂载角色知识" description="关闭后只使用基础系统提示词" /><span><Sparkles size={15} /> {form.prompt.length.toLocaleString()} 字符</span></div>
           <Field label="知识与角色设定" hint="建议写清身份、语气、世界观、人物关系、事实边界和禁止事项。">
             <textarea className="knowledge-editor" value={form.prompt} onChange={(e) => update("prompt", e.target.value)} placeholder="例如：你是群里的档案管理员。回答时使用简洁中文，只依据下方档案中的事实……" />
           </Field>
@@ -89,6 +89,7 @@ export default function AiPage({ refreshVersion, onChanged }) {
 
         <div className="stack span-4">
           <Panel title="启用范围" eyebrow="AI groups">
+            <Switch checked={form.aiEnabled} onChange={(value) => update("aiEnabled", value)} label="启用 AI 功能" description="关闭后停止 @bot、随机文字和随机表情包回复" />
             <Field label="允许调用 AI 的群" hint="独立于总体 Bot 启用群，一行一个群号。"><textarea value={form.enabledGroups} onChange={(e) => update("enabledGroups", e.target.value)} /></Field>
           </Panel>
           <Panel title="短期记忆" eyebrow="Context window">
