@@ -540,6 +540,103 @@ async def test_lua_http_get_json_and_url_encode(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_builtin_weather_uses_domestic_api_and_returns_chinese(tmp_path, monkeypatch):
+    configure_builtin_lua_dir(tmp_path, monkeypatch)
+
+    response = {
+        "province": "北京市",
+        "city": "北京",
+        "weather": "雷阵雨",
+        "temperature": 31,
+        "wind_direction": "东北风",
+        "wind_power": "微风",
+        "humidity": 61,
+        "report_time": "2026-08-11 13:10",
+        "temp_max": 32,
+        "temp_min": 23,
+        "forecast": [
+            {
+                "weather_day": "雷阵雨",
+                "weather_night": "多云",
+            }
+        ],
+        "feels_like": 35.8,
+    }
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self, size):
+            return json.dumps(self.payload, ensure_ascii=False).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        assert timeout > 0
+        assert request.full_url == (
+            "https://uapis.cn/api/v1/misc/weather?city=%E5%8C%97%E4%BA%AC"
+            "&extended=true&forecast=true"
+        )
+        return FakeResponse(response)
+
+    monkeypatch.setattr("qq_personal_bot.lua_runner.urlopen", fake_urlopen)
+
+    result = await run_lua_message(
+        FakeBot(),
+        make_event(raw_message="~今日天气 北京"),
+        PolicyDecision(True, "ok", handler="default", normalized_message="今日天气 北京"),
+    )
+
+    assert result.quote is True
+    assert result.reply == (
+        "今日天气｜北京\n"
+        "天气：白天雷阵雨，夜间多云\n"
+        "当前：31℃，体感：35.8℃\n"
+        "今日：23℃ ~ 32℃\n"
+        "湿度：61%，东北风 微风\n"
+        "发布：2026-08-11 13:10"
+    )
+
+
+@pytest.mark.asyncio
+async def test_builtin_weather_handles_unknown_location(tmp_path, monkeypatch):
+    configure_builtin_lua_dir(tmp_path, monkeypatch)
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self, size):
+            return b'{"code":404,"message":"city not found"}'
+
+    monkeypatch.setattr(
+        "qq_personal_bot.lua_runner.urlopen",
+        lambda request, timeout: FakeResponse(),
+    )
+
+    result = await run_lua_message(
+        FakeBot(),
+        make_event(raw_message="~今日天气 不存在的地点"),
+        PolicyDecision(
+            True,
+            "ok",
+            handler="default",
+            normalized_message="今日天气 不存在的地点",
+        ),
+    )
+
+    assert result.reply == "没有查询到「不存在的地点」的天气。"
+
+
+@pytest.mark.asyncio
 async def test_lua_json_encode_decode_helpers(tmp_path, monkeypatch):
     lua_dir = configure_lua_dir(tmp_path, monkeypatch)
     (lua_dir / "json.lua").write_text(
