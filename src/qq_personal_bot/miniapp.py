@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import html
 import json
 import re
+import shutil
+import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 from urllib.parse import parse_qs, unquote, urlparse, urlunparse
+from urllib.request import Request, urlopen
 
 _MINIAPP_PROMPT_PREFIX = "[QQ小程序]"
 _URL_KEYS = (
@@ -21,12 +27,43 @@ _URL_KEYS = (
 _TITLE_KEYS = ("title", "prompt", "desc")
 _MEDIA_KEY_PARTS = ("icon", "image", "img", "preview", "cover", "avatar", "logo")
 _URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
+_INITIAL_STATE_MARKER = "window.__INITIAL_STATE__="
+_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36"
+)
+_MAX_PAGE_BYTES = 3_000_000
+_MAX_IMAGE_BYTES = 12_000_000
+_MAX_IMAGES = 18
+_IMAGE_HOST_SUFFIXES = (
+    ".xhscdn.com",
+    ".xhsimg.com",
+    ".ugcimg.cn",
+    ".xiaohongshu.com",
+)
+_IMAGE_EXTENSIONS = {
+    "image/gif": ".gif",
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+}
 
 
 @dataclass(frozen=True)
 class MiniAppLink:
     title: str
     url: str
+    source_url: str
+
+
+@dataclass(frozen=True)
+class CachedMiniAppImages:
+    directory: Path | None
+    paths: tuple[Path, ...]
+
+    def cleanup(self) -> None:
+        if self.directory is not None:
+            shutil.rmtree(self.directory, ignore_errors=True)
 
 
 def extract_miniapp_link(segments: Sequence[Mapping[str, Any]]) -> MiniAppLink | None:
@@ -37,16 +74,23 @@ def extract_miniapp_link(segments: Sequence[Mapping[str, Any]]) -> MiniAppLink |
         if payload is None or not _looks_like_miniapp(payload):
             continue
 
-        url = _find_url(payload)
-        if url is None:
+        urls = _find_url(payload)
+        if urls is None:
             continue
+        url, source_url = urls
         title = _find_title(payload) or "小程序分享"
-        return MiniAppLink(title=title, url=url)
+        return MiniAppLink(title=title, url=url, source_url=source_url)
     return None
 
 
 def format_miniapp_link(link: MiniAppLink) -> str:
     return f"标题：{link.title}\n链接：{link.url}"
+
+
+async def cache_miniapp_images(link: MiniAppLink) -> CachedMiniAppImages:
+    if not _is_xiaohongshu_page_url(link.source_url):
+        return CachedMiniAppImages(directory=None, paths=())
+    return await asyncio.to_thread(_cache_xiaohongshu_images, link.source_url)
 
 
 def _decode_json_payload(data: Any) -> Mapping[str, Any] | None:
@@ -91,8 +135,8 @@ def _find_title(payload: Mapping[str, Any]) -> str | None:
     return candidates[0][1]
 
 
-def _find_url(payload: Mapping[str, Any]) -> str | None:
-    candidates: list[tuple[int, str]] = []
+def _find_url(payload: Mapping[str, Any]) -> tuple[str, str] | None:
+    candidates: list[tuple[int, str, str]] = []
     for path, value in _walk(payload):
         if not isinstance(value, str):
             continue
@@ -103,11 +147,12 @@ def _find_url(payload: Mapping[str, Any]) -> str | None:
         for match in _URL_RE.findall(html.unescape(value)):
             normalized = _normalize_url(match)
             if normalized is not None:
-                candidates.append((priority, normalized))
+                candidates.append((priority, normalized, _source_url(match)))
     if not candidates:
         return None
     candidates.sort(key=lambda item: item[0])
-    return candidates[0][1]
+    _, normalized, source = candidates[0]
+    return normalized, source
 
 
 def _normalize_url(value: str) -> str | None:
@@ -128,6 +173,19 @@ def _normalize_url(value: str) -> str | None:
     return _shorten_xiaohongshu_url(url)
 
 
+def _source_url(value: str) -> str:
+    url = html.unescape(value).rstrip(".,;!?)，。；！？）]")
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query)
+    for key in ("url", "target", "redirect", "redirect_url"):
+        nested_values = query.get(key)
+        if nested_values:
+            nested = unquote(nested_values[0])
+            if _is_xiaohongshu_page_url(nested):
+                return nested
+    return url
+
+
 def _shorten_xiaohongshu_url(url: str) -> str:
     parsed = urlparse(url)
     host = (parsed.hostname or "").lower()
@@ -136,6 +194,160 @@ def _shorten_xiaohongshu_url(url: str) -> str:
     if not is_xiaohongshu or not is_note:
         return url
     return urlunparse(parsed._replace(scheme="https", params="", query="", fragment=""))
+
+
+def _cache_xiaohongshu_images(source_url: str) -> CachedMiniAppImages:
+    page, final_url = _fetch_page(source_url)
+    image_urls = _extract_xiaohongshu_image_urls(page, final_url)
+    if not image_urls:
+        return CachedMiniAppImages(directory=None, paths=())
+
+    directory = Path(tempfile.mkdtemp(prefix="qqbot-xhs-"))
+    paths: list[Path] = []
+    try:
+        with ThreadPoolExecutor(max_workers=min(4, len(image_urls))) as executor:
+            futures = {
+                executor.submit(_download_image, url, directory, index, final_url): index
+                for index, url in enumerate(image_urls, start=1)
+            }
+            downloaded: list[tuple[int, Path]] = []
+            for future in as_completed(futures):
+                try:
+                    downloaded.append((futures[future], future.result()))
+                except (OSError, ValueError):
+                    continue
+        paths = [path for _, path in sorted(downloaded)]
+        if not paths:
+            shutil.rmtree(directory, ignore_errors=True)
+            return CachedMiniAppImages(directory=None, paths=())
+        return CachedMiniAppImages(directory=directory, paths=tuple(paths))
+    except Exception:
+        shutil.rmtree(directory, ignore_errors=True)
+        raise
+
+
+def _fetch_page(url: str) -> tuple[str, str]:
+    if not _is_xiaohongshu_page_url(url):
+        raise ValueError("unsupported mini app page host")
+    request = Request(
+        url,
+        headers={"User-Agent": _USER_AGENT, "Accept-Language": "zh-CN,zh;q=0.9"},
+    )
+    with urlopen(request, timeout=20) as response:
+        final_url = response.geturl()
+        if not _is_xiaohongshu_page_url(final_url):
+            raise ValueError("mini app page redirected to an unsupported host")
+        body = response.read(_MAX_PAGE_BYTES + 1)
+    if len(body) > _MAX_PAGE_BYTES:
+        raise ValueError("mini app page is too large")
+    return body.decode("utf-8"), final_url
+
+
+def _extract_xiaohongshu_image_urls(page: str, page_url: str) -> list[str]:
+    start = page.find(_INITIAL_STATE_MARKER)
+    if start < 0:
+        return []
+    start += len(_INITIAL_STATE_MARKER)
+    end = page.find("</script>", start)
+    if end < 0:
+        return []
+    raw_state = page[start:end].strip().rstrip(";")
+    state = json.loads(raw_state.replace("undefined", "null"))
+
+    if not isinstance(state, Mapping):
+        return []
+    note_state = state.get("note")
+    if not isinstance(note_state, Mapping):
+        return []
+    detail_map = note_state.get("noteDetailMap", {})
+    if not isinstance(detail_map, Mapping):
+        return []
+    note_id = _xiaohongshu_note_id(page_url)
+    details = [detail_map[note_id]] if note_id in detail_map else list(detail_map.values())[:1]
+
+    urls: list[str] = []
+    for detail in details:
+        if not isinstance(detail, Mapping):
+            continue
+        note = detail.get("note", detail)
+        image_list = note.get("imageList", []) if isinstance(note, Mapping) else []
+        if not isinstance(image_list, list):
+            continue
+        for image in image_list:
+            url = _image_url(image)
+            if url is not None and url not in urls:
+                urls.append(url)
+            if len(urls) >= _MAX_IMAGES:
+                return urls
+    return urls
+
+
+def _image_url(image: Any) -> str | None:
+    if not isinstance(image, Mapping):
+        return None
+    candidates = [image.get("urlDefault"), image.get("url")]
+    info_list = image.get("infoList")
+    if isinstance(info_list, list):
+        candidates.extend(
+            info.get("url")
+            for info in info_list
+            if isinstance(info, Mapping) and info.get("imageScene") == "WB_DFT"
+        )
+    for value in candidates:
+        if isinstance(value, str) and _is_allowed_image_url(value):
+            parsed = urlparse(value)
+            return urlunparse(parsed._replace(scheme="https"))
+    return None
+
+
+def _download_image(url: str, directory: Path, index: int, referer: str) -> Path:
+    if not _is_allowed_image_url(url):
+        raise ValueError("unsupported image host")
+    request = Request(
+        url,
+        headers={"User-Agent": _USER_AGENT, "Referer": referer},
+    )
+    with urlopen(request, timeout=20) as response:
+        if not _is_allowed_image_url(response.geturl()):
+            raise ValueError("image redirected to an unsupported host")
+        content_type = response.headers.get_content_type().lower()
+        extension = _IMAGE_EXTENSIONS.get(content_type)
+        if extension is None:
+            raise ValueError("unsupported image content type")
+        body = response.read(_MAX_IMAGE_BYTES + 1)
+    if not body or len(body) > _MAX_IMAGE_BYTES:
+        raise ValueError("image is empty or too large")
+    path = directory / f"{index:02d}{extension}"
+    path.write_bytes(body)
+    return path
+
+
+def _is_xiaohongshu_page_url(url: str) -> bool:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    return parsed.scheme in {"http", "https"} and (
+        host == "xhslink.com"
+        or host.endswith(".xhslink.com")
+        or host == "xiaohongshu.com"
+        or host.endswith(".xiaohongshu.com")
+    )
+
+
+def _is_allowed_image_url(url: str) -> bool:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    return parsed.scheme in {"http", "https"} and any(
+        host == suffix[1:] or host.endswith(suffix) for suffix in _IMAGE_HOST_SUFFIXES
+    )
+
+
+def _xiaohongshu_note_id(url: str) -> str:
+    parts = [part for part in urlparse(url).path.split("/") if part]
+    if len(parts) >= 3 and parts[-2] == "item":
+        return parts[-1]
+    if len(parts) >= 2 and parts[-2] == "explore":
+        return parts[-1]
+    return ""
 
 
 def _clean_title(value: str) -> str:

@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from qq_personal_bot.plugins import chat
+from qq_personal_bot.miniapp import CachedMiniAppImages, MiniAppLink
 
 
 def make_event(*, group_id: int = 123, raw_message: str = "~抽群老婆"):
@@ -56,3 +57,27 @@ def test_random_sticker_response_uses_onebot_image_segment(tmp_path):
 
     assert response.type == "image"
     assert response.data["file"] == Path(sticker).resolve().as_uri()
+
+
+def test_miniapp_response_contains_title_link_and_all_cached_images(tmp_path):
+    first = tmp_path / "first.jpg"
+    second = tmp_path / "second.png"
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+    link = MiniAppLink(
+        title="帖子标题",
+        url="https://www.xiaohongshu.com/discovery/item/note123",
+        source_url="https://www.xiaohongshu.com/discovery/item/note123?token=test",
+    )
+
+    response = chat._build_miniapp_response(
+        link,
+        CachedMiniAppImages(directory=tmp_path, paths=(first, second)),
+    )
+
+    assert response.extract_plain_text() == (
+        "标题：帖子标题\n链接：https://www.xiaohongshu.com/discovery/item/note123"
+    )
+    assert [segment.type for segment in response] == ["text", "image", "image"]
+    assert response[1].data["file"] == first.resolve().as_uri()
+    assert response[2].data["file"] == second.resolve().as_uri()

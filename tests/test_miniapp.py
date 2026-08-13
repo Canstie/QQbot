@@ -1,8 +1,15 @@
 from __future__ import annotations
 
 import json
+from email.message import Message
 
-from qq_personal_bot.miniapp import extract_miniapp_link, format_miniapp_link
+import pytest
+
+from qq_personal_bot.miniapp import (
+    cache_miniapp_images,
+    extract_miniapp_link,
+    format_miniapp_link,
+)
 
 
 def test_extracts_title_and_xiaohongshu_url_from_qq_miniapp():
@@ -98,6 +105,86 @@ def test_removes_tracking_parameters_from_xiaohongshu_discovery_url():
     assert link is not None
     assert link.title == "感受姐1能量"
     assert link.url == "https://www.xiaohongshu.com/discovery/item/6a5db5790000000011013ecf"
+    assert "xsec_token=secret" in link.source_url
+
+
+@pytest.mark.asyncio
+async def test_caches_all_xiaohongshu_images_and_cleans_up(monkeypatch):
+    payload = {
+        "app": "com.tencent.tuwen.lua",
+        "meta": {
+            "news": {
+                "title": "两张图片",
+                "jumpUrl": "https://www.xiaohongshu.com/discovery/item/note123?xsec_token=test",
+            }
+        },
+    }
+    link = extract_miniapp_link(({"type": "json", "data": payload},))
+    assert link is not None
+
+    state = {
+        "note": {
+            "noteDetailMap": {
+                "note123": {
+                    "note": {
+                        "imageList": [
+                            {"urlDefault": "https://sns-webpic-qc.xhscdn.com/first"},
+                            {"urlDefault": "https://sns-webpic-qc.xhscdn.com/second"},
+                        ]
+                    }
+                }
+            }
+        }
+    }
+    page = (
+        "<script>window.__INITIAL_STATE__="
+        + json.dumps(state, ensure_ascii=False)
+        + ";</script>"
+    ).encode()
+
+    class FakeHeaders(Message):
+        pass
+
+    class FakeResponse:
+        def __init__(self, body: bytes, url: str, content_type: str):
+            self.body = body
+            self.url = url
+            self.headers = FakeHeaders()
+            self.headers["Content-Type"] = content_type
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self, size):
+            return self.body[:size]
+
+        def geturl(self):
+            return self.url
+
+    def fake_urlopen(request, timeout):
+        url = request.full_url
+        if "discovery/item" in url:
+            return FakeResponse(page, url, "text/html")
+        if url.endswith("/first"):
+            return FakeResponse(b"first-image", url, "image/jpeg")
+        if url.endswith("/second"):
+            return FakeResponse(b"second-image", url, "image/png")
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr("qq_personal_bot.miniapp.urlopen", fake_urlopen)
+
+    cached = await cache_miniapp_images(link)
+    directory = cached.directory
+
+    assert directory is not None and directory.is_dir()
+    assert [path.name for path in cached.paths] == ["01.jpg", "02.png"]
+    assert [path.read_bytes() for path in cached.paths] == [b"first-image", b"second-image"]
+
+    cached.cleanup()
+    assert not directory.exists()
 
 
 def test_ignores_regular_json_card_and_invalid_scheme():

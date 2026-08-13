@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from collections import deque
 from pathlib import Path
@@ -16,7 +17,13 @@ from qq_personal_bot.dsapi import (
     generate_random_group_reply,
 )
 from qq_personal_bot.lua_runner import pending_lua_command, run_lua_message
-from qq_personal_bot.miniapp import extract_miniapp_link, format_miniapp_link
+from qq_personal_bot.miniapp import (
+    CachedMiniAppImages,
+    MiniAppLink,
+    cache_miniapp_images,
+    extract_miniapp_link,
+    format_miniapp_link,
+)
 from qq_personal_bot.plugins.custom_flows import handle_custom_flow
 from qq_personal_bot.replies import build_reply
 from qq_personal_bot.runtime import get_policy_engine, get_settings, get_store
@@ -44,6 +51,13 @@ def _build_quoted_response(content: str, event: Any) -> Message:
 def _build_random_group_response(response: str | Path) -> str | MessageSegment:
     if isinstance(response, Path):
         return MessageSegment.image(response.resolve().as_uri())
+    return response
+
+
+def _build_miniapp_response(link: MiniAppLink, cached: CachedMiniAppImages) -> Message:
+    response = Message(format_miniapp_link(link))
+    for path in cached.paths:
+        response += MessageSegment.image(path.resolve().as_uri())
     return response
 
 
@@ -116,13 +130,21 @@ async def _handle_onebot_message(
     _record_group_activity(internal_event, self_id=bot.self_id)
     miniapp_link = extract_miniapp_link(internal_event.segments)
     if miniapp_link is not None and _automatic_reply_allowed(internal_event):
-        await _finish_with_response(
-            matcher,
-            bot,
-            event,
-            format_miniapp_link(miniapp_link),
-            explicit_group_send=explicit_group_send,
-        )
+        try:
+            cached_images = await cache_miniapp_images(miniapp_link)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            logger.warning(f"Failed to cache mini app images: {exc}")
+            cached_images = CachedMiniAppImages(directory=None, paths=())
+        try:
+            await _finish_with_response(
+                matcher,
+                bot,
+                event,
+                _build_miniapp_response(miniapp_link, cached_images),
+                explicit_group_send=explicit_group_send,
+            )
+        finally:
+            cached_images.cleanup()
 
     pending_command = pending_lua_command(internal_event)
     if pending_command is not None:
