@@ -16,6 +16,7 @@ from qq_personal_bot.dsapi import (
     generate_random_group_reply,
 )
 from qq_personal_bot.lua_runner import pending_lua_command, run_lua_message
+from qq_personal_bot.miniapp import extract_miniapp_link, format_miniapp_link
 from qq_personal_bot.plugins.custom_flows import handle_custom_flow
 from qq_personal_bot.replies import build_reply
 from qq_personal_bot.runtime import get_policy_engine, get_settings, get_store
@@ -113,6 +114,16 @@ async def _handle_onebot_message(
 ) -> None:
     internal_event = onebot_to_internal(event, self_id=bot.self_id)
     _record_group_activity(internal_event, self_id=bot.self_id)
+    miniapp_link = extract_miniapp_link(internal_event.segments)
+    if miniapp_link is not None and _automatic_reply_allowed(internal_event):
+        await _finish_with_response(
+            matcher,
+            bot,
+            event,
+            format_miniapp_link(miniapp_link),
+            explicit_group_send=explicit_group_send,
+        )
+
     pending_command = pending_lua_command(internal_event)
     if pending_command is not None:
         lua_result = await run_lua_message(
@@ -252,3 +263,15 @@ def _record_group_activity(event: Any, *, self_id: int | str) -> None:
         )
     except Exception as exc:
         logger.warning(f"Failed to record group activity: {exc}")
+
+
+def _automatic_reply_allowed(event: Any) -> bool:
+    if event.group_id is None:
+        return False
+    store = get_store()
+    mode = store.get_mode()
+    if mode == "allowlist":
+        return store.is_group_enabled(event.group_id)
+    if mode == "blocklist":
+        return not store.is_group_blocked(event.group_id)
+    return True
