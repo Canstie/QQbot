@@ -5,7 +5,7 @@ import json
 import re
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse, urlunparse
 
 _MINIAPP_PROMPT_PREFIX = "[QQ小程序]"
 _URL_KEYS = (
@@ -124,8 +124,18 @@ def _normalize_url(value: str) -> str | None:
         nested = unquote(nested_values[0])
         nested_parsed = urlparse(nested)
         if nested_parsed.scheme in {"http", "https"} and nested_parsed.netloc:
-            return nested
-    return url
+            return _shorten_xiaohongshu_url(nested)
+    return _shorten_xiaohongshu_url(url)
+
+
+def _shorten_xiaohongshu_url(url: str) -> str:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    is_xiaohongshu = host == "xiaohongshu.com" or host.endswith(".xiaohongshu.com")
+    is_note = parsed.path.startswith(("/discovery/item/", "/explore/"))
+    if not is_xiaohongshu or not is_note:
+        return url
+    return urlunparse(parsed._replace(scheme="https", params="", query="", fragment=""))
 
 
 def _clean_title(value: str) -> str:

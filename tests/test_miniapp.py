@@ -23,10 +23,10 @@ def test_extracts_title_and_xiaohongshu_url_from_qq_miniapp():
 
     assert link is not None
     assert link.title == "今天也要好好生活"
-    assert link.url == "https://www.xiaohongshu.com/explore/abc123?xsec_token=test"
+    assert link.url == "https://www.xiaohongshu.com/explore/abc123"
     assert format_miniapp_link(link) == (
         "标题：今天也要好好生活\n"
-        "链接：https://www.xiaohongshu.com/explore/abc123?xsec_token=test"
+        "链接：https://www.xiaohongshu.com/explore/abc123"
     )
 
 
@@ -75,6 +75,29 @@ def test_extracts_real_xiaohongshu_tuwen_share():
     assert link is not None
     assert link.title == "姜萍最新近况"
     assert link.url == "http://xhslink.com/m/8rpFU0xWGvV"
+
+
+def test_removes_tracking_parameters_from_xiaohongshu_discovery_url():
+    payload = {
+        "app": "com.tencent.tuwen.lua",
+        "meta": {
+            "news": {
+                "title": "感受姐1能量",
+                "jumpUrl": (
+                    "https://www.xiaohongshu.com/discovery/item/6a5db5790000000011013ecf"
+                    "?app_platform=android&ignoreEngage=true&app_version=9.42.0"
+                    "&xsec_source=app_share&type=normal&xsec_token=secret"
+                    "&shareRedId=test&share_channel=qq"
+                ),
+            }
+        },
+    }
+
+    link = extract_miniapp_link(({"type": "json", "data": payload},))
+
+    assert link is not None
+    assert link.title == "感受姐1能量"
+    assert link.url == "https://www.xiaohongshu.com/discovery/item/6a5db5790000000011013ecf"
 
 
 def test_ignores_regular_json_card_and_invalid_scheme():
