@@ -178,6 +178,54 @@ def test_dsapi_config_api_roundtrip_and_clear_history(tmp_path, monkeypatch):
     assert response.json()["deleted"] == 0
 
 
+def test_dsapi_knowledge_base_api_crud_and_switch(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("QQBOT_WEB_TOKEN", raising=False)
+    monkeypatch.setenv("QQBOT_DB_PATH", str(tmp_path / "policy.sqlite3"))
+    reset_runtime()
+    client = TestClient(create_app())
+
+    first = client.post(
+        "/api/dsapi/knowledge",
+        json={"name": "果果", "prompt": "可爱又呆呆"},
+    )
+    second = client.post(
+        "/api/dsapi/knowledge",
+        json={"name": "档案员", "prompt": "初始档案"},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    first_id = first.json()["knowledge_base"]["id"]
+    second_id = second.json()["knowledge_base"]["id"]
+    updated = client.put(
+        f"/api/dsapi/knowledge/{second_id}",
+        json={"name": "群档案员", "prompt": "只依据群档案回答"},
+    )
+    activated = client.post(
+        f"/api/dsapi/knowledge/{second_id}/activate",
+        json={"clear_history": True},
+    )
+
+    assert updated.status_code == 200
+    assert updated.json()["knowledge_base"]["name"] == "群档案员"
+    assert activated.status_code == 200
+    assert activated.json()["active_knowledge_id"] == second_id
+    assert activated.json()["knowledge_prompt"] == "只依据群档案回答"
+
+    deleted = client.delete(f"/api/dsapi/knowledge/{second_id}")
+    assert deleted.status_code == 200
+    assert deleted.json()["active_knowledge_id"] == first_id
+    assert len(deleted.json()["knowledge_bases"]) == 1
+
+    missing = client.post(
+        "/api/dsapi/knowledge/999999/activate",
+        json={"clear_history": False},
+    )
+    assert missing.status_code == 400
+    assert "not found" in missing.json()["detail"]
+
+
 def test_sticker_api_uploads_serves_and_deletes_images(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("QQBOT_WEB_TOKEN", raising=False)

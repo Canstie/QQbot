@@ -58,11 +58,21 @@ class CoreConfigPayload(BaseModel):
 class DSAPIConfigPayload(BaseModel):
     enabled: bool = True
     knowledge_enabled: bool = False
-    knowledge_prompt: str = ""
+    knowledge_prompt: str | None = None
+    active_knowledge_id: int | None = None
     history_turns: int = 2
     random_reply_percent: float = 2.0
     random_sticker_percent: float = 20.0
     enabled_groups: list[int] = Field(default_factory=list)
+    clear_history: bool = True
+
+
+class KnowledgeBasePayload(BaseModel):
+    name: str
+    prompt: str = ""
+
+
+class KnowledgeActivationPayload(BaseModel):
     clear_history: bool = True
 
 
@@ -220,6 +230,7 @@ def create_app():
                 enabled=payload.enabled,
                 knowledge_enabled=payload.knowledge_enabled,
                 knowledge_prompt=payload.knowledge_prompt,
+                active_knowledge_id=payload.active_knowledge_id,
                 history_turns=payload.history_turns,
                 random_reply_percent=payload.random_reply_percent,
                 random_sticker_percent=payload.random_sticker_percent,
@@ -230,6 +241,63 @@ def create_app():
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return await get_dsapi_config()
+
+    @app.post("/api/dsapi/knowledge")
+    async def create_knowledge_base(payload: KnowledgeBasePayload, request: Request) -> dict:
+        require_token(request)
+        try:
+            knowledge_base = get_store().create_dsapi_knowledge_base(
+                name=payload.name,
+                prompt=payload.prompt,
+                actor_id=0,
+            )
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {**(await get_dsapi_config()), "knowledge_base": knowledge_base}
+
+    @app.put("/api/dsapi/knowledge/{knowledge_id}")
+    async def update_knowledge_base(
+        knowledge_id: int,
+        payload: KnowledgeBasePayload,
+        request: Request,
+    ) -> dict:
+        require_token(request)
+        try:
+            knowledge_base = get_store().update_dsapi_knowledge_base(
+                knowledge_id,
+                name=payload.name,
+                prompt=payload.prompt,
+                actor_id=0,
+            )
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {**(await get_dsapi_config()), "knowledge_base": knowledge_base}
+
+    @app.delete("/api/dsapi/knowledge/{knowledge_id}")
+    async def delete_knowledge_base(knowledge_id: int, request: Request) -> dict:
+        require_token(request)
+        try:
+            result = get_store().delete_dsapi_knowledge_base(knowledge_id, actor_id=0)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {**result, **(await get_dsapi_config())}
+
+    @app.post("/api/dsapi/knowledge/{knowledge_id}/activate")
+    async def activate_knowledge_base(
+        knowledge_id: int,
+        payload: KnowledgeActivationPayload,
+        request: Request,
+    ) -> dict:
+        require_token(request)
+        try:
+            result = get_store().activate_dsapi_knowledge_base(
+                knowledge_id,
+                clear_history=payload.clear_history,
+                actor_id=0,
+            )
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {**result, **(await get_dsapi_config())}
 
     @app.delete("/api/dsapi/history")
     async def clear_dsapi_history(request: Request) -> dict:

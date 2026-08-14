@@ -47,6 +47,7 @@ class PolicyStore:
                 for admin_id in settings.admins:
                     self.add_admin(admin_id, actor_id=0, conn=conn)
             self._initialize_dsapi_settings(conn)
+            self._initialize_knowledge_bases(conn)
             self.purge_legacy_menu_caches(conn=conn)
 
     def _connect(self) -> sqlite3.Connection:
@@ -166,6 +167,14 @@ class PolicyStore:
 
             CREATE INDEX IF NOT EXISTS idx_dsapi_group_context_group_id
             ON dsapi_group_context(group_id, id);
+
+            CREATE TABLE IF NOT EXISTS dsapi_knowledge_bases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                prompt TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
             """
         )
 
@@ -226,6 +235,173 @@ class PolicyStore:
             "INSERT INTO settings(key, value) VALUES ('dsapi_enabled_groups', ?)",
             (json.dumps(enabled_groups),),
         )
+
+    def _initialize_knowledge_bases(self, conn: sqlite3.Connection) -> None:
+        bases = conn.execute(
+            "SELECT id FROM dsapi_knowledge_bases ORDER BY id"
+        ).fetchall()
+        legacy_row = conn.execute(
+            "SELECT value FROM settings WHERE key = 'dsapi_knowledge_prompt'"
+        ).fetchone()
+        legacy_prompt = str(legacy_row["value"]).strip() if legacy_row else ""
+        if not bases and legacy_prompt:
+            now = time.time()
+            cursor = conn.execute(
+                """
+                INSERT INTO dsapi_knowledge_bases(name, prompt, created_at, updated_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                ("默认知识库", legacy_prompt, now, now),
+            )
+            bases = [{"id": int(cursor.lastrowid)}]
+
+        active_id = self._active_knowledge_id(conn)
+        available_ids = {int(row["id"]) for row in bases}
+        if active_id not in available_ids:
+            active_id = min(available_ids) if available_ids else None
+        self._set_active_knowledge_id(active_id, conn)
+        self._sync_legacy_knowledge_prompt(active_id, conn)
+
+    def list_dsapi_knowledge_bases(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            return self._list_dsapi_knowledge_bases(conn)
+
+    def create_dsapi_knowledge_base(
+        self,
+        *,
+        name: str,
+        prompt: str,
+        actor_id: int,
+    ) -> dict[str, Any]:
+        normalized_name = self._normalize_knowledge_name(name)
+        normalized_prompt = self._normalize_knowledge_prompt(prompt)
+        now = time.time()
+        with self._connect() as conn:
+            try:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO dsapi_knowledge_bases(name, prompt, created_at, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (normalized_name, normalized_prompt, now, now),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ValueError("knowledge base name already exists") from exc
+            knowledge_id = int(cursor.lastrowid)
+            if self._active_knowledge_id(conn) is None:
+                self._set_active_knowledge_id(knowledge_id, conn)
+                self._sync_legacy_knowledge_prompt(knowledge_id, conn)
+            self.audit(
+                actor_id,
+                "create_dsapi_knowledge_base",
+                str(knowledge_id),
+                {"name": normalized_name, "prompt_chars": len(normalized_prompt)},
+                conn=conn,
+            )
+            row = conn.execute(
+                "SELECT * FROM dsapi_knowledge_bases WHERE id = ?",
+                (knowledge_id,),
+            ).fetchone()
+        return self._public_knowledge_base(row)
+
+    def update_dsapi_knowledge_base(
+        self,
+        knowledge_id: int,
+        *,
+        name: str,
+        prompt: str,
+        actor_id: int,
+    ) -> dict[str, Any]:
+        normalized_id = int(knowledge_id)
+        normalized_name = self._normalize_knowledge_name(name)
+        normalized_prompt = self._normalize_knowledge_prompt(prompt)
+        with self._connect() as conn:
+            if not self._knowledge_base_exists(normalized_id, conn):
+                raise ValueError("knowledge base not found")
+            try:
+                conn.execute(
+                    """
+                    UPDATE dsapi_knowledge_bases
+                    SET name = ?, prompt = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (normalized_name, normalized_prompt, time.time(), normalized_id),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ValueError("knowledge base name already exists") from exc
+            if self._active_knowledge_id(conn) == normalized_id:
+                self._sync_legacy_knowledge_prompt(normalized_id, conn)
+            self.audit(
+                actor_id,
+                "update_dsapi_knowledge_base",
+                str(normalized_id),
+                {"name": normalized_name, "prompt_chars": len(normalized_prompt)},
+                conn=conn,
+            )
+            row = conn.execute(
+                "SELECT * FROM dsapi_knowledge_bases WHERE id = ?",
+                (normalized_id,),
+            ).fetchone()
+        return self._public_knowledge_base(row)
+
+    def delete_dsapi_knowledge_base(self, knowledge_id: int, *, actor_id: int) -> dict[str, Any]:
+        normalized_id = int(knowledge_id)
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT name FROM dsapi_knowledge_bases WHERE id = ?",
+                (normalized_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError("knowledge base not found")
+            was_active = self._active_knowledge_id(conn) == normalized_id
+            conn.execute("DELETE FROM dsapi_knowledge_bases WHERE id = ?", (normalized_id,))
+            cleared = 0
+            if was_active:
+                next_row = conn.execute(
+                    "SELECT id FROM dsapi_knowledge_bases ORDER BY id LIMIT 1"
+                ).fetchone()
+                next_id = int(next_row["id"]) if next_row else None
+                self._set_active_knowledge_id(next_id, conn)
+                self._sync_legacy_knowledge_prompt(next_id, conn)
+                cleared = self._clear_dsapi_history(conn)
+            self.audit(
+                actor_id,
+                "delete_dsapi_knowledge_base",
+                str(normalized_id),
+                {"name": str(row["name"]), "was_active": was_active, "cleared": cleared},
+                conn=conn,
+            )
+        return {"deleted": True, "history_messages_cleared": cleared}
+
+    def activate_dsapi_knowledge_base(
+        self,
+        knowledge_id: int,
+        *,
+        clear_history: bool,
+        actor_id: int,
+    ) -> dict[str, Any]:
+        normalized_id = int(knowledge_id)
+        with self._connect() as conn:
+            if not self._knowledge_base_exists(normalized_id, conn):
+                raise ValueError("knowledge base not found")
+            previous_id = self._active_knowledge_id(conn)
+            self._set_active_knowledge_id(normalized_id, conn)
+            self._sync_legacy_knowledge_prompt(normalized_id, conn)
+            changed = previous_id != normalized_id
+            cleared = self._clear_dsapi_history(conn) if clear_history and changed else 0
+            self.audit(
+                actor_id,
+                "activate_dsapi_knowledge_base",
+                str(normalized_id),
+                {
+                    "previous_id": previous_id,
+                    "changed": changed,
+                    "clear_history": bool(clear_history),
+                    "history_messages_cleared": cleared,
+                },
+                conn=conn,
+            )
+        return {"active_knowledge_id": normalized_id, "history_messages_cleared": cleared}
 
     def get_mode(self) -> str:
         mode = self.get_setting("policy_mode", "allowlist")
@@ -392,6 +568,12 @@ class PolicyStore:
                 )
                 """
             ).fetchone()
+            knowledge_bases = self._list_dsapi_knowledge_bases(conn)
+            active_knowledge_id = self._active_knowledge_id(conn)
+            active_knowledge = next(
+                (item for item in knowledge_bases if item["id"] == active_knowledge_id),
+                None,
+            )
         return {
             "enabled": self.get_setting("dsapi_enabled", "true").lower()
             in {"1", "true", "yes", "on"},
@@ -399,7 +581,10 @@ class PolicyStore:
                 "dsapi_knowledge_enabled", "false"
             ).lower()
             in {"1", "true", "yes", "on"},
-            "knowledge_prompt": self.get_setting("dsapi_knowledge_prompt", ""),
+            "knowledge_prompt": active_knowledge["prompt"] if active_knowledge else "",
+            "knowledge_bases": knowledge_bases,
+            "active_knowledge_id": active_knowledge_id,
+            "active_knowledge_name": active_knowledge["name"] if active_knowledge else "",
             "history_turns": history_turns,
             "random_reply_percent": random_reply_percent,
             "random_sticker_percent": random_sticker_percent,
@@ -413,7 +598,8 @@ class PolicyStore:
         self,
         *,
         knowledge_enabled: bool,
-        knowledge_prompt: str,
+        knowledge_prompt: str | None,
+        active_knowledge_id: int | None = None,
         history_turns: int,
         enabled_groups: list[int],
         clear_history: bool,
@@ -422,12 +608,14 @@ class PolicyStore:
         random_sticker_percent: float = 20.0,
         enabled: bool = True,
     ) -> dict[str, Any]:
-        prompt = str(knowledge_prompt).strip()
+        prompt = (
+            self._normalize_knowledge_prompt(knowledge_prompt)
+            if knowledge_prompt is not None
+            else None
+        )
         turns = int(history_turns)
         if turns < 1 or turns > 20:
             raise ValueError("history_turns must be between 1 and 20")
-        if len(prompt) > 100_000:
-            raise ValueError("knowledge_prompt must not exceed 100000 characters")
         percent = float(random_reply_percent)
         if percent < 0 or percent > 100:
             raise ValueError("random_reply_percent must be between 0 and 100")
@@ -437,6 +625,34 @@ class PolicyStore:
         normalized_enabled_groups = self._normalize_int_ids(enabled_groups, "enabled_groups")
 
         with self._connect() as conn:
+            selected_id = self._active_knowledge_id(conn)
+            if active_knowledge_id is not None:
+                selected_id = int(active_knowledge_id)
+                if not self._knowledge_base_exists(selected_id, conn):
+                    raise ValueError("knowledge base not found")
+                self._set_active_knowledge_id(selected_id, conn)
+            if prompt is not None:
+                if selected_id is None and prompt:
+                    now = time.time()
+                    cursor = conn.execute(
+                        """
+                        INSERT INTO dsapi_knowledge_bases(name, prompt, created_at, updated_at)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        ("默认知识库", prompt, now, now),
+                    )
+                    selected_id = int(cursor.lastrowid)
+                    self._set_active_knowledge_id(selected_id, conn)
+                elif selected_id is not None:
+                    conn.execute(
+                        """
+                        UPDATE dsapi_knowledge_bases
+                        SET prompt = ?, updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (prompt, time.time(), selected_id),
+                    )
+            self._sync_legacy_knowledge_prompt(selected_id, conn)
             self.set_setting(
                 "dsapi_enabled",
                 "true" if enabled else "false",
@@ -447,7 +663,6 @@ class PolicyStore:
                 "true" if knowledge_enabled else "false",
                 conn=conn,
             )
-            self.set_setting("dsapi_knowledge_prompt", prompt, conn=conn)
             self.set_setting("dsapi_history_turns", str(turns), conn=conn)
             self.set_setting("dsapi_random_reply_percent", str(percent), conn=conn)
             self.set_setting("dsapi_random_sticker_percent", str(sticker_percent), conn=conn)
@@ -458,8 +673,7 @@ class PolicyStore:
             )
             cleared = 0
             if clear_history:
-                cleared = conn.execute("DELETE FROM dsapi_chat_history").rowcount
-                cleared += conn.execute("DELETE FROM dsapi_group_context").rowcount
+                cleared = self._clear_dsapi_history(conn)
             self.audit(
                 actor_id,
                 "set_dsapi_config",
@@ -467,7 +681,8 @@ class PolicyStore:
                 {
                     "enabled": bool(enabled),
                     "knowledge_enabled": bool(knowledge_enabled),
-                    "knowledge_prompt_chars": len(prompt),
+                    "active_knowledge_id": selected_id,
+                    "knowledge_prompt_chars": len(prompt or ""),
                     "history_turns": turns,
                     "random_reply_percent": percent,
                     "random_sticker_percent": sticker_percent,
@@ -652,8 +867,7 @@ class PolicyStore:
 
     def clear_dsapi_chat_history(self, *, actor_id: int) -> int:
         with self._connect() as conn:
-            deleted = conn.execute("DELETE FROM dsapi_chat_history").rowcount
-            deleted += conn.execute("DELETE FROM dsapi_group_context").rowcount
+            deleted = self._clear_dsapi_history(conn)
             self.audit(
                 actor_id,
                 "clear_dsapi_chat_history",
@@ -661,6 +875,11 @@ class PolicyStore:
                 {"deleted": deleted},
                 conn=conn,
             )
+        return int(deleted)
+
+    def _clear_dsapi_history(self, conn: sqlite3.Connection) -> int:
+        deleted = conn.execute("DELETE FROM dsapi_chat_history").rowcount
+        deleted += conn.execute("DELETE FROM dsapi_group_context").rowcount
         return int(deleted)
 
     def get_trigger_mention(self) -> bool:
@@ -1532,6 +1751,97 @@ class PolicyStore:
             "enabled": 1 if enabled else 0,
             "source": "custom",
         }
+
+    def _active_knowledge_id(self, conn: sqlite3.Connection) -> int | None:
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key = 'dsapi_active_knowledge_id'"
+        ).fetchone()
+        if row is None or not str(row["value"]).strip():
+            return None
+        try:
+            value = int(row["value"])
+        except (TypeError, ValueError):
+            return None
+        return value if value > 0 else None
+
+    def _set_active_knowledge_id(
+        self,
+        knowledge_id: int | None,
+        conn: sqlite3.Connection,
+    ) -> None:
+        self.set_setting(
+            "dsapi_active_knowledge_id",
+            str(int(knowledge_id)) if knowledge_id is not None else "",
+            conn=conn,
+        )
+
+    def _sync_legacy_knowledge_prompt(
+        self,
+        knowledge_id: int | None,
+        conn: sqlite3.Connection,
+    ) -> None:
+        row = None
+        if knowledge_id is not None:
+            row = conn.execute(
+                "SELECT prompt FROM dsapi_knowledge_bases WHERE id = ?",
+                (int(knowledge_id),),
+            ).fetchone()
+        self.set_setting(
+            "dsapi_knowledge_prompt",
+            str(row["prompt"]) if row else "",
+            conn=conn,
+        )
+
+    def _knowledge_base_exists(self, knowledge_id: int, conn: sqlite3.Connection) -> bool:
+        return (
+            conn.execute(
+                "SELECT 1 FROM dsapi_knowledge_bases WHERE id = ?",
+                (int(knowledge_id),),
+            ).fetchone()
+            is not None
+        )
+
+    def _list_dsapi_knowledge_bases(
+        self,
+        conn: sqlite3.Connection,
+    ) -> list[dict[str, Any]]:
+        active_id = self._active_knowledge_id(conn)
+        rows = conn.execute(
+            """
+            SELECT id, name, prompt, created_at, updated_at
+            FROM dsapi_knowledge_bases
+            ORDER BY updated_at DESC, id DESC
+            """
+        ).fetchall()
+        return [
+            {**self._public_knowledge_base(row), "active": int(row["id"]) == active_id}
+            for row in rows
+        ]
+
+    def _public_knowledge_base(self, row: sqlite3.Row | Mapping[str, Any]) -> dict[str, Any]:
+        prompt = str(row["prompt"])
+        return {
+            "id": int(row["id"]),
+            "name": str(row["name"]),
+            "prompt": prompt,
+            "prompt_chars": len(prompt),
+            "created_at": float(row["created_at"]),
+            "updated_at": float(row["updated_at"]),
+        }
+
+    def _normalize_knowledge_name(self, name: str) -> str:
+        normalized = " ".join(str(name).split())
+        if not normalized:
+            raise ValueError("knowledge base name is required")
+        if len(normalized) > 80:
+            raise ValueError("knowledge base name must not exceed 80 characters")
+        return normalized
+
+    def _normalize_knowledge_prompt(self, prompt: str) -> str:
+        normalized = str(prompt).strip()
+        if len(normalized) > 100_000:
+            raise ValueError("knowledge prompt must not exceed 100000 characters")
+        return normalized
 
     def _normalize_prefixes(self, prefixes: list[str]) -> list[str]:
         normalized = []

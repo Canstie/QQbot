@@ -208,6 +208,86 @@ def test_dsapi_config_and_history_are_group_scoped_and_pruned(tmp_path):
     assert store.get_dsapi_config()["history_messages"] == 0
 
 
+def test_dsapi_legacy_prompt_is_migrated_to_default_knowledge_base(tmp_path):
+    db_path = tmp_path / "policy.sqlite3"
+    settings = AppSettings(db_path=db_path, admins=())
+    store = PolicyStore(db_path)
+    store.initialize(settings)
+    with store._connect() as conn:
+        store.set_setting("dsapi_knowledge_prompt", "旧角色设定", conn=conn)
+        store.set_setting("dsapi_active_knowledge_id", "", conn=conn)
+        conn.execute("DELETE FROM dsapi_knowledge_bases")
+
+    reopened = PolicyStore(db_path)
+    reopened.initialize(settings)
+    config = reopened.get_dsapi_config()
+
+    assert config["knowledge_prompt"] == "旧角色设定"
+    assert config["active_knowledge_name"] == "默认知识库"
+    assert config["knowledge_bases"] == [
+        {
+            **config["knowledge_bases"][0],
+            "name": "默认知识库",
+            "prompt": "旧角色设定",
+            "prompt_chars": 5,
+            "active": True,
+        }
+    ]
+
+
+def test_dsapi_knowledge_bases_can_be_edited_switched_and_deleted(tmp_path):
+    db_path = tmp_path / "policy.sqlite3"
+    store = PolicyStore(db_path)
+    store.initialize(AppSettings(db_path=db_path, admins=()))
+    first = store.create_dsapi_knowledge_base(name="果果", prompt="呆呆的", actor_id=1)
+    second = store.create_dsapi_knowledge_base(name="档案员", prompt="只说事实", actor_id=1)
+    store.record_dsapi_exchange(
+        group_id=123,
+        user_content="问题",
+        assistant_content="回答",
+        history_turns=2,
+    )
+
+    switched = store.activate_dsapi_knowledge_base(
+        second["id"],
+        clear_history=True,
+        actor_id=1,
+    )
+    updated = store.update_dsapi_knowledge_base(
+        second["id"],
+        name="群档案员",
+        prompt="只依据群档案回答",
+        actor_id=1,
+    )
+    config = store.get_dsapi_config()
+
+    assert switched["history_messages_cleared"] == 2
+    assert updated["name"] == "群档案员"
+    assert config["active_knowledge_id"] == second["id"]
+    assert config["knowledge_prompt"] == "只依据群档案回答"
+    assert config["history_messages"] == 0
+
+    store.record_dsapi_exchange(
+        group_id=123,
+        user_content="新问题",
+        assistant_content="新回答",
+        history_turns=2,
+    )
+    unchanged = store.activate_dsapi_knowledge_base(
+        second["id"],
+        clear_history=True,
+        actor_id=1,
+    )
+    assert unchanged["history_messages_cleared"] == 0
+    assert store.get_dsapi_config()["history_messages"] == 2
+
+    store.delete_dsapi_knowledge_base(second["id"], actor_id=1)
+    config = store.get_dsapi_config()
+    assert config["active_knowledge_id"] == first["id"]
+    assert config["active_knowledge_name"] == "果果"
+    assert config["history_messages"] == 0
+
+
 def test_dsapi_history_expires_after_group_is_idle(tmp_path):
     db_path = tmp_path / "policy.sqlite3"
     store = PolicyStore(db_path)

@@ -257,6 +257,35 @@ async def test_knowledge_and_group_history_are_sent_and_response_is_recorded(tmp
 
 
 @pytest.mark.asyncio
+async def test_active_knowledge_base_is_used_for_dsapi_prompt(tmp_path, monkeypatch):
+    store = make_store(tmp_path, knowledge_prompt="果果角色")
+    archive = store.create_dsapi_knowledge_base(
+        name="档案员",
+        prompt="档案员角色，只依据资料回答。",
+        actor_id=0,
+    )
+    store.activate_dsapi_knowledge_base(archive["id"], clear_history=False, actor_id=0)
+    captured = {}
+
+    def fake_request(settings, messages):
+        captured["messages"] = messages
+        return "档案回答"
+
+    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
+
+    response = await generate_mention_reply(
+        FakeBot(),
+        make_event(text="当前角色是谁"),
+        make_settings(tmp_path),
+        store,
+    )
+
+    assert response == "档案回答"
+    assert "档案员角色" in captured["messages"][0]["content"]
+    assert "果果角色" not in captured["messages"][0]["content"]
+
+
+@pytest.mark.asyncio
 async def test_idle_group_history_is_not_sent_to_dsapi(tmp_path, monkeypatch):
     store = make_store(tmp_path)
     store.record_dsapi_exchange(

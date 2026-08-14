@@ -1,19 +1,29 @@
 import { useEffect, useState } from "react";
-import { BrainCircuit, Eraser, ImagePlus, Save, Sparkles, Trash2, Upload } from "lucide-react";
+import { BookOpen, BrainCircuit, CheckCircle2, Eraser, ImagePlus, Plus, Save, Sparkles, Trash2, Upload } from "lucide-react";
 
-import { fileToDataUrl, formatBytes, formatIds, get, parseIds, post, remove } from "../api";
+import { fileToDataUrl, formatBytes, formatIds, get, parseIds, post, put, remove } from "../api";
 import { Button, Empty, Field, IconButton, Metric, PageHeader, Panel, Status, Switch } from "../components/Ui";
 
 export default function AiPage({ refreshVersion, onChanged }) {
   const [data, setData] = useState(null);
-  const [form, setForm] = useState({ enabledGroups: "", turns: 2, randomPercent: 2, stickerPercent: 20, aiEnabled: true, knowledgeEnabled: false, prompt: "", clear: true });
+  const [form, setForm] = useState({ enabledGroups: "", turns: 2, randomPercent: 2, stickerPercent: 20, aiEnabled: true, knowledgeEnabled: false, clear: true });
+  const [selectedKnowledgeId, setSelectedKnowledgeId] = useState(null);
+  const [knowledgeDraft, setKnowledgeDraft] = useState({ name: "", prompt: "" });
   const [notice, setNotice] = useState("正在读取 AI 配置");
   const [stickers, setStickers] = useState([]);
   const [stickerFile, setStickerFile] = useState(null);
 
-  const load = () => get("/dsapi").then((result) => {
+  const applyConfig = (result, preferredId = null) => {
     setData(result);
-    setForm({ enabledGroups: formatIds(result.enabled_groups), turns: result.history_turns, randomPercent: result.random_reply_percent ?? 2, stickerPercent: result.random_sticker_percent ?? 20, aiEnabled: result.enabled ?? true, knowledgeEnabled: result.knowledge_enabled, prompt: result.knowledge_prompt || "", clear: true });
+    setForm((current) => ({ enabledGroups: formatIds(result.enabled_groups), turns: result.history_turns, randomPercent: result.random_reply_percent ?? 2, stickerPercent: result.random_sticker_percent ?? 20, aiEnabled: result.enabled ?? true, knowledgeEnabled: result.knowledge_enabled, clear: current.clear ?? true }));
+    const bases = result.knowledge_bases || [];
+    const nextId = preferredId ?? result.active_knowledge_id ?? bases[0]?.id ?? null;
+    const selected = bases.find((item) => item.id === nextId) || bases[0] || null;
+    setSelectedKnowledgeId(selected?.id ?? null);
+    setKnowledgeDraft({ name: selected?.name || "", prompt: selected?.prompt || "" });
+  };
+  const load = () => get("/dsapi").then((result) => {
+    applyConfig(result);
     setNotice("AI 配置已同步");
   }).catch((error) => setNotice(error.message));
   const loadStickers = () => get("/stickers").then((result) => {
@@ -26,12 +36,67 @@ export default function AiPage({ refreshVersion, onChanged }) {
   }, [refreshVersion]);
   const update = (key, value) => setForm((current) => ({ ...current, [key]: value }));
 
+  const selectKnowledge = (knowledge) => {
+    setSelectedKnowledgeId(knowledge.id);
+    setKnowledgeDraft({ name: knowledge.name, prompt: knowledge.prompt || "" });
+  };
+
+  const saveKnowledge = async () => {
+    if (!selectedKnowledgeId) throw new Error("请先新建知识库");
+    const result = await put(`/dsapi/knowledge/${selectedKnowledgeId}`, knowledgeDraft);
+    applyConfig(result, selectedKnowledgeId);
+    return result;
+  };
+
   const save = async () => {
     try {
-      const result = await post("/dsapi", { enabled: form.aiEnabled, enabled_groups: parseIds(form.enabledGroups), history_turns: Number(form.turns), random_reply_percent: Number(form.randomPercent), random_sticker_percent: Number(form.stickerPercent), knowledge_enabled: form.knowledgeEnabled, knowledge_prompt: form.prompt, clear_history: form.clear });
-      setData(result);
-      setNotice("AI 配置已保存，下一条群消息立即使用新设定");
+      if (selectedKnowledgeId) await saveKnowledge();
+      const result = await post("/dsapi", { enabled: form.aiEnabled, enabled_groups: parseIds(form.enabledGroups), history_turns: Number(form.turns), random_reply_percent: Number(form.randomPercent), random_sticker_percent: Number(form.stickerPercent), knowledge_enabled: form.knowledgeEnabled, active_knowledge_id: selectedKnowledgeId, clear_history: form.clear });
+      applyConfig(result, selectedKnowledgeId);
+      setNotice("AI 配置已保存，选中的知识库已生效");
       setForm((current) => ({ ...current, clear: false }));
+      onChanged();
+    } catch (error) { setNotice(error.message); }
+  };
+
+  const createKnowledge = async () => {
+    try {
+      const names = new Set((data?.knowledge_bases || []).map((item) => item.name));
+      let index = (data?.knowledge_bases?.length || 0) + 1;
+      while (names.has(`新知识库 ${index}`)) index += 1;
+      const result = await post("/dsapi/knowledge", { name: `新知识库 ${index}`, prompt: "" });
+      applyConfig(result, result.knowledge_base.id);
+      setNotice("已新建知识库，填写内容后保存或切换启用");
+      onChanged();
+    } catch (error) { setNotice(error.message); }
+  };
+
+  const persistKnowledge = async () => {
+    try {
+      await saveKnowledge();
+      setNotice("知识库内容已保存");
+      onChanged();
+    } catch (error) { setNotice(error.message); }
+  };
+
+  const activateKnowledge = async () => {
+    if (!selectedKnowledgeId) { setNotice("请先选择知识库"); return; }
+    try {
+      await saveKnowledge();
+      const result = await post(`/dsapi/knowledge/${selectedKnowledgeId}/activate`, { clear_history: form.clear });
+      applyConfig(result, selectedKnowledgeId);
+      setNotice(`已切换到“${result.active_knowledge_name}”`);
+      setForm((current) => ({ ...current, clear: false }));
+      onChanged();
+    } catch (error) { setNotice(error.message); }
+  };
+
+  const deleteKnowledge = async () => {
+    if (!selectedKnowledgeId || !window.confirm(`删除知识库“${knowledgeDraft.name}”？`)) return;
+    try {
+      const result = await remove(`/dsapi/knowledge/${selectedKnowledgeId}`);
+      applyConfig(result);
+      setNotice("知识库已删除");
       onChanged();
     } catch (error) { setNotice(error.message); }
   };
@@ -70,7 +135,7 @@ export default function AiPage({ refreshVersion, onChanged }) {
 
   return (
     <>
-      <PageHeader eyebrow="Model memory" title="AI 角色与知识" description="为指定群挂载角色设定，并控制每个群独立保留的短期对话。" actions={<Button icon={Save} onClick={save}>保存并生效</Button>} />
+      <PageHeader eyebrow="Model memory" title="AI 角色与知识" description="维护多个角色知识库，随时切换当前设定，并控制每个群的短期对话。" actions={<Button icon={Save} onClick={save}>保存并生效</Button>} />
       <div className="ai-status-strip">
         <div className="ai-status-strip__model"><BrainCircuit /><div><span>当前模型</span><strong>{data?.model || "读取中"}</strong><small>{data?.base_url || "-"}</small></div></div>
         <Metric label="AI 启用群" value={data?.enabled_groups?.length ?? "-"} tone="blue" />
@@ -80,11 +145,36 @@ export default function AiPage({ refreshVersion, onChanged }) {
       </div>
 
       <div className="content-grid">
-        <Panel title="角色知识提示词" eyebrow="Knowledge layer" className="span-8">
-          <div className="knowledge-toolbar"><Switch checked={form.knowledgeEnabled} onChange={(value) => update("knowledgeEnabled", value)} label="挂载角色知识" description="关闭后只使用基础系统提示词" /><span><Sparkles size={15} /> {form.prompt.length.toLocaleString()} 字符</span></div>
-          <Field label="知识与角色设定" hint="建议写清身份、语气、世界观、人物关系、事实边界和禁止事项。">
-            <textarea className="knowledge-editor" value={form.prompt} onChange={(e) => update("prompt", e.target.value)} placeholder="例如：你是群里的档案管理员。回答时使用简洁中文，只依据下方档案中的事实……" />
-          </Field>
+        <Panel title="角色知识库" eyebrow="Knowledge library" className="span-8" actions={<Button tone="secondary" icon={Plus} onClick={createKnowledge}>新建</Button>}>
+          <div className="knowledge-toolbar"><Switch checked={form.knowledgeEnabled} onChange={(value) => update("knowledgeEnabled", value)} label="挂载角色知识" description="关闭后只使用基础系统提示词" /><span><Sparkles size={15} /> {(data?.knowledge_bases?.length || 0)} 个知识库</span></div>
+          <div className="knowledge-workspace">
+            <aside className="knowledge-library">
+              {(data?.knowledge_bases || []).map((item) => (
+                <button type="button" key={item.id} className={`knowledge-card ${selectedKnowledgeId === item.id ? "is-selected" : ""} ${item.active ? "is-active" : ""}`} onClick={() => selectKnowledge(item)}>
+                  <BookOpen size={17} />
+                  <span><strong>{item.name}</strong><small>{item.prompt_chars.toLocaleString()} 字符</small></span>
+                  {item.active && <b><CheckCircle2 size={12} />当前</b>}
+                </button>
+              ))}
+              {!data?.knowledge_bases?.length && <Empty title="还没有知识库" description="新建后可分别保存不同角色与资料。" action={<Button tone="secondary" icon={Plus} onClick={createKnowledge}>新建第一个</Button>} />}
+            </aside>
+            <div className="knowledge-detail">
+              {selectedKnowledgeId ? <>
+                <div className="knowledge-detail__head">
+                  <Field label="知识库名称"><input value={knowledgeDraft.name} maxLength={80} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, name: event.target.value }))} /></Field>
+                  <span><Sparkles size={14} /> {knowledgeDraft.prompt.length.toLocaleString()} 字符</span>
+                </div>
+                <Field label="知识与角色设定" hint="写清身份、语气、世界观、人物关系、事实边界和禁止事项。">
+                  <textarea className="knowledge-editor" value={knowledgeDraft.prompt} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, prompt: event.target.value }))} placeholder="例如：你是群里的档案管理员。回答时使用简洁中文，只依据下方档案中的事实……" />
+                </Field>
+                <div className="knowledge-actions">
+                  <Button tone="danger" icon={Trash2} onClick={deleteKnowledge}>删除</Button>
+                  <Button tone="ghost" icon={Save} onClick={persistKnowledge}>保存知识库</Button>
+                  <Button icon={CheckCircle2} onClick={activateKnowledge}>{data?.active_knowledge_id === selectedKnowledgeId ? "保存并保持启用" : "切换到此知识库"}</Button>
+                </div>
+              </> : <Empty title="选择一个知识库" description="从左侧选择，或创建新的角色知识库。" />}
+            </div>
+          </div>
         </Panel>
 
         <div className="stack span-4">
