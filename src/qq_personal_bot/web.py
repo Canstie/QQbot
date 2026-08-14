@@ -78,6 +78,12 @@ class KnowledgeBasePayload(BaseModel):
 
 class KnowledgeActivationPayload(BaseModel):
     clear_history: bool = True
+    name: str | None = None
+    prompt: str | None = None
+    model: str | None = None
+    thinking_enabled: bool | None = None
+    max_tokens: int | None = None
+    temperature: float | None = None
 
 
 class LuaPayload(BaseModel):
@@ -316,11 +322,28 @@ def create_app():
     ) -> dict:
         require_token(request)
         try:
-            result = get_store().activate_dsapi_knowledge_base(
-                knowledge_id,
-                clear_history=payload.clear_history,
-                actor_id=0,
-            )
+            if payload.name is not None or payload.prompt is not None:
+                if payload.name is None or payload.prompt is None:
+                    raise ValueError("name and prompt are both required when saving")
+                get_store().update_dsapi_knowledge_base(
+                    knowledge_id,
+                    name=payload.name,
+                    prompt=payload.prompt,
+                    actor_id=0,
+                    model=payload.model,
+                    thinking_enabled=payload.thinking_enabled,
+                    max_tokens=payload.max_tokens,
+                    temperature=payload.temperature,
+                    activate=True,
+                    clear_history=payload.clear_history,
+                )
+                result = {"active_knowledge_id": knowledge_id}
+            else:
+                result = get_store().activate_dsapi_knowledge_base(
+                    knowledge_id,
+                    clear_history=payload.clear_history,
+                    actor_id=0,
+                )
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {**result, **(await get_dsapi_config())}

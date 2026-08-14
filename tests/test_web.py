@@ -218,18 +218,27 @@ def test_dsapi_knowledge_base_api_crud_and_switch(tmp_path, monkeypatch):
     )
     activated = client.post(
         f"/api/dsapi/knowledge/{second_id}/activate",
-        json={"clear_history": True},
+        json={
+            "clear_history": True,
+            "name": "立即启用的档案员",
+            "prompt": "一次请求保存并启用",
+            "model": "deepseek-reasoner-v3",
+            "thinking_enabled": False,
+            "max_tokens": 720,
+            "temperature": 0.1,
+        },
     )
 
     assert updated.status_code == 200
     assert updated.json()["knowledge_base"]["name"] == "群档案员"
     assert activated.status_code == 200
     assert activated.json()["active_knowledge_id"] == second_id
-    assert activated.json()["knowledge_prompt"] == "只依据群档案回答"
-    assert activated.json()["model"] == "deepseek-reasoner-v2"
-    assert activated.json()["thinking_enabled"] is True
-    assert activated.json()["max_tokens"] == 640
-    assert activated.json()["temperature"] == 0.2
+    assert activated.json()["knowledge_prompt"] == "一次请求保存并启用"
+    assert activated.json()["active_knowledge_name"] == "立即启用的档案员"
+    assert activated.json()["model"] == "deepseek-reasoner-v3"
+    assert activated.json()["thinking_enabled"] is False
+    assert activated.json()["max_tokens"] == 720
+    assert activated.json()["temperature"] == 0.1
 
     deleted = client.delete(f"/api/dsapi/knowledge/{second_id}")
     assert deleted.status_code == 200

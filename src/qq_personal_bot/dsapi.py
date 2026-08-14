@@ -171,7 +171,7 @@ async def _generate_text_reply(
 
     active_knowledge = config.get("active_knowledge") or {}
     response = await asyncio.to_thread(
-        _request_chat_completion,
+        _request_chat_completion_with_fallback,
         settings,
         messages,
         model=active_knowledge.get("model") or settings.dsapi_model,
@@ -187,6 +187,49 @@ async def _generate_text_reply(
             assistant_content=response,
             history_turns=config["history_turns"],
         )
+    return response
+
+
+def _request_chat_completion_with_fallback(
+    settings: AppSettings,
+    messages: list[dict[str, str]],
+    *,
+    model: str,
+    max_tokens: int,
+    thinking_enabled: bool,
+    temperature: float | None,
+) -> str:
+    try:
+        response = _request_chat_completion(
+            settings,
+            messages,
+            model=model,
+            max_tokens=max_tokens,
+            thinking_enabled=thinking_enabled,
+            temperature=temperature,
+        )
+    except DSAPIError:
+        if not thinking_enabled:
+            raise
+        response = _request_chat_completion(
+            settings,
+            messages,
+            model=model,
+            max_tokens=max_tokens,
+            thinking_enabled=False,
+            temperature=temperature,
+        )
+    if response is None and thinking_enabled:
+        response = _request_chat_completion(
+            settings,
+            messages,
+            model=model,
+            max_tokens=max_tokens,
+            thinking_enabled=False,
+            temperature=temperature,
+        )
+    if response is None:
+        raise DSAPIError("empty assistant content")
     return response
 
 

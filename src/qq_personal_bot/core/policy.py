@@ -23,9 +23,15 @@ class RateLimiter:
         self._group_last: dict[int, float] = {}
         self._user_events: dict[int, deque[float]] = defaultdict(deque)
 
-    def allow(self, group_id: int | None, user_id: int) -> tuple[bool, str]:
+    def allow(
+        self,
+        group_id: int | None,
+        user_id: int,
+        *,
+        bypass_group: bool = False,
+    ) -> tuple[bool, str]:
         now = self.clock()
-        if group_id is not None and self.per_group_seconds > 0:
+        if not bypass_group and group_id is not None and self.per_group_seconds > 0:
             last_seen = self._group_last.get(group_id)
             if last_seen is not None and now - last_seen < self.per_group_seconds:
                 return False, "group_rate_limited"
@@ -37,7 +43,7 @@ class RateLimiter:
             if len(user_window) >= self.per_user_per_minute:
                 return False, "user_rate_limited"
 
-        if group_id is not None and self.per_group_seconds > 0:
+        if not bypass_group and group_id is not None and self.per_group_seconds > 0:
             self._group_last[group_id] = now
         if self.per_user_per_minute > 0:
             self._user_events[user_id].append(now)
@@ -87,7 +93,11 @@ class PolicyEngine:
             self.store.get_per_group_seconds(),
             self.store.get_per_user_per_minute(),
         )
-        allowed, reason = self.rate_limiter.allow(event.group_id, event.user_id)
+        allowed, reason = self.rate_limiter.allow(
+            event.group_id,
+            event.user_id,
+            bypass_group=handler == "mention",
+        )
         if not allowed:
             return PolicyDecision(False, reason)
 

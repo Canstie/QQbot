@@ -26,6 +26,7 @@ export default function AiPage({ refreshVersion, onChanged }) {
   const [knowledgeDraft, setKnowledgeDraft] = useState(knowledgeDraftFrom());
   const [createDraft, setCreateDraft] = useState(knowledgeDraftFrom());
   const [createOpen, setCreateOpen] = useState(false);
+  const [switchingKnowledgeId, setSwitchingKnowledgeId] = useState(null);
   const [notice, setNotice] = useState("正在读取 AI 配置");
   const [stickers, setStickers] = useState([]);
   const [stickerFile, setStickerFile] = useState(null);
@@ -41,7 +42,7 @@ export default function AiPage({ refreshVersion, onChanged }) {
   };
   const load = () => get("/dsapi").then((result) => {
     applyConfig(result);
-    setNotice("AI 配置已同步");
+    setNotice((current) => current === "正在读取 AI 配置" ? "AI 配置已同步" : current);
   }).catch((error) => setNotice(error.message));
   const loadStickers = () => get("/stickers").then((result) => {
     setStickers(result.stickers || []);
@@ -61,9 +62,22 @@ export default function AiPage({ refreshVersion, onChanged }) {
   }, [createOpen]);
   const update = (key, value) => setForm((current) => ({ ...current, [key]: value }));
 
-  const selectKnowledge = (knowledge) => {
-    setSelectedKnowledgeId(knowledge.id);
-    setKnowledgeDraft(knowledgeDraftFrom(knowledge, data || {}));
+  const selectKnowledge = async (knowledge) => {
+    if (knowledge.active) {
+      setSelectedKnowledgeId(knowledge.id);
+      setKnowledgeDraft(knowledgeDraftFrom(knowledge, data || {}));
+      return;
+    }
+    setSwitchingKnowledgeId(knowledge.id);
+    setNotice(`正在切换到“${knowledge.name}”`);
+    try {
+      const result = await post(`/dsapi/knowledge/${knowledge.id}/activate`, { clear_history: form.clear });
+      applyConfig(result, knowledge.id);
+      setForm((current) => ({ ...current, clear: false }));
+      setNotice(`已切换到“${result.active_knowledge_name}”，下一条消息立即生效`);
+      onChanged();
+    } catch (error) { setNotice(error.message); }
+    finally { setSwitchingKnowledgeId(null); }
   };
 
   const saveKnowledge = async () => {
@@ -73,10 +87,20 @@ export default function AiPage({ refreshVersion, onChanged }) {
     return result;
   };
 
+  const saveAndActivateKnowledge = async (clearHistory) => {
+    if (!selectedKnowledgeId) throw new Error("请先新建知识库");
+    const result = await post(`/dsapi/knowledge/${selectedKnowledgeId}/activate`, {
+      ...knowledgePayload(knowledgeDraft),
+      clear_history: clearHistory,
+    });
+    applyConfig(result, selectedKnowledgeId);
+    return result;
+  };
+
   const save = async () => {
     try {
-      if (selectedKnowledgeId) await saveKnowledge();
-      const result = await post("/dsapi", { enabled: form.aiEnabled, enabled_groups: parseIds(form.enabledGroups), history_turns: Number(form.turns), random_reply_percent: Number(form.randomPercent), random_sticker_percent: Number(form.stickerPercent), knowledge_enabled: form.knowledgeEnabled, active_knowledge_id: selectedKnowledgeId, clear_history: form.clear });
+      if (selectedKnowledgeId) await saveAndActivateKnowledge(form.clear);
+      const result = await post("/dsapi", { enabled: form.aiEnabled, enabled_groups: parseIds(form.enabledGroups), history_turns: Number(form.turns), random_reply_percent: Number(form.randomPercent), random_sticker_percent: Number(form.stickerPercent), knowledge_enabled: form.knowledgeEnabled, active_knowledge_id: selectedKnowledgeId, clear_history: false });
       applyConfig(result, selectedKnowledgeId);
       setNotice("AI 配置已保存，选中的知识库已生效");
       setForm((current) => ({ ...current, clear: false }));
@@ -113,10 +137,8 @@ export default function AiPage({ refreshVersion, onChanged }) {
   const activateKnowledge = async () => {
     if (!selectedKnowledgeId) { setNotice("请先选择知识库"); return; }
     try {
-      await saveKnowledge();
-      const result = await post(`/dsapi/knowledge/${selectedKnowledgeId}/activate`, { clear_history: form.clear });
-      applyConfig(result, selectedKnowledgeId);
-      setNotice(`已切换到“${result.active_knowledge_name}”`);
+      const result = await saveAndActivateKnowledge(form.clear);
+      setNotice(`“${result.active_knowledge_name}”已保存并启用，下一条消息立即生效`);
       setForm((current) => ({ ...current, clear: false }));
       onChanged();
     } catch (error) { setNotice(error.message); }
@@ -181,10 +203,11 @@ export default function AiPage({ refreshVersion, onChanged }) {
           <div className="knowledge-workspace">
             <aside className="knowledge-library">
               {(data?.knowledge_bases || []).map((item) => (
-                <button type="button" key={item.id} className={`knowledge-card ${selectedKnowledgeId === item.id ? "is-selected" : ""} ${item.active ? "is-active" : ""}`} onClick={() => selectKnowledge(item)}>
+                <button type="button" key={item.id} disabled={switchingKnowledgeId !== null} className={`knowledge-card ${selectedKnowledgeId === item.id ? "is-selected" : ""} ${item.active ? "is-active" : ""}`} onClick={() => void selectKnowledge(item)}>
                   <BookOpen size={17} />
                   <span><strong>{item.name}</strong><small>{item.model} · {item.thinking_enabled ? "Thinking" : "Fast"} · {item.prompt_chars.toLocaleString()} 字符</small></span>
-                  {item.active && <b><CheckCircle2 size={12} />当前</b>}
+                  {item.active && <b><CheckCircle2 size={12} />当前启用</b>}
+                  {switchingKnowledgeId === item.id && <b>切换中</b>}
                 </button>
               ))}
               {!data?.knowledge_bases?.length && <Empty title="还没有知识库" description="新建后可分别保存不同角色与资料。" action={<Button tone="secondary" icon={Plus} onClick={openCreateKnowledge}>新建第一个</Button>} />}
@@ -207,7 +230,7 @@ export default function AiPage({ refreshVersion, onChanged }) {
                 <div className="knowledge-actions">
                   <Button tone="danger" icon={Trash2} onClick={deleteKnowledge}>删除</Button>
                   <Button tone="ghost" icon={Save} onClick={persistKnowledge}>保存知识库</Button>
-                  <Button icon={CheckCircle2} onClick={activateKnowledge}>{data?.active_knowledge_id === selectedKnowledgeId ? "保存并保持启用" : "切换到此知识库"}</Button>
+                  <Button icon={CheckCircle2} onClick={activateKnowledge}>{data?.active_knowledge_id === selectedKnowledgeId ? "保存并立即生效" : "保存并启用此知识库"}</Button>
                 </div>
               </> : <Empty title="选择一个知识库" description="从左侧选择，或创建新的角色知识库。" />}
             </div>

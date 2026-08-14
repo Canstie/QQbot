@@ -181,6 +181,17 @@ async def _handle_onebot_message(
 
     decision = get_policy_engine().evaluate(internal_event, self_id=bot.self_id)
     if not decision.allowed:
+        if internal_event.is_at_bot and decision.reason in {
+            "group_rate_limited",
+            "user_rate_limited",
+        }:
+            await _finish_with_response(
+                matcher,
+                bot,
+                event,
+                "问得太快啦，让我缓一小会儿嘛 (｡•́︿•̀｡)",
+                explicit_group_send=explicit_group_send,
+            )
         if decision.reason == "no_trigger":
             try:
                 response = await generate_random_group_reply(
@@ -223,6 +234,13 @@ async def _handle_onebot_message(
             )
         except DSAPIError as exc:
             logger.warning(f"DSAPI mention reply failed: {exc}")
+            await _finish_with_response(
+                matcher,
+                bot,
+                event,
+                "脑袋刚刚卡住啦，再问我一次嘛 (｡•́︿•̀｡)",
+                explicit_group_send=explicit_group_send,
+            )
             return
         if response:
             await _finish_with_response(

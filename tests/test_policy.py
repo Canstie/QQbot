@@ -339,6 +339,23 @@ def test_group_rate_limit(tmp_path):
     assert second.reason == "group_rate_limited"
 
 
+def test_mention_bypasses_group_rate_limit(tmp_path):
+    store = make_store(tmp_path)
+    store.set_group_enabled(123, True, actor_id=10000)
+    now = 1000.0
+    engine = PolicyEngine(store, RateLimiter(5, 0, clock=lambda: now))
+
+    first = engine.evaluate(make_event(user_id=1), self_id=99999)
+    mention = engine.evaluate(
+        make_event(user_id=2, raw_message="你好", is_at_bot=True),
+        self_id=99999,
+    )
+
+    assert first.allowed
+    assert mention.allowed
+    assert mention.handler == "mention"
+
+
 def test_user_rate_limit(tmp_path):
     store = make_store(tmp_path)
     store.set_group_enabled(123, True, actor_id=10000)

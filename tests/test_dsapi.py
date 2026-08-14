@@ -297,6 +297,36 @@ async def test_active_knowledge_base_is_used_for_dsapi_prompt(tmp_path, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_thinking_empty_reply_retries_in_nonthinking_mode(tmp_path, monkeypatch):
+    store = make_store(tmp_path, knowledge_prompt="果果角色")
+    config = store.get_dsapi_config()
+    store.update_dsapi_knowledge_base(
+        config["active_knowledge_id"],
+        name="果果",
+        prompt="果果角色",
+        actor_id=0,
+        thinking_enabled=True,
+    )
+    calls = []
+
+    def fake_request(settings, messages, **kwargs):
+        calls.append(kwargs)
+        return None if kwargs["thinking_enabled"] else "降级后回复"
+
+    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
+
+    response = await generate_mention_reply(
+        FakeBot(),
+        make_event(text="在吗"),
+        make_settings(tmp_path),
+        store,
+    )
+
+    assert response == "降级后回复"
+    assert [item["thinking_enabled"] for item in calls] == [True, False]
+
+
+@pytest.mark.asyncio
 async def test_idle_group_history_is_not_sent_to_dsapi(tmp_path, monkeypatch):
     store = make_store(tmp_path)
     store.record_dsapi_exchange(

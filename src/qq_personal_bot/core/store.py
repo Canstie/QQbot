@@ -268,6 +268,12 @@ class PolicyStore:
             "UPDATE dsapi_knowledge_bases SET max_tokens = ? WHERE max_tokens <= 0",
             (settings.dsapi_max_tokens,),
         )
+        self.set_setting("dsapi_default_model", settings.dsapi_model, conn=conn)
+        self.set_setting(
+            "dsapi_default_max_tokens",
+            str(settings.dsapi_max_tokens),
+            conn=conn,
+        )
 
         bases = conn.execute(
             "SELECT id FROM dsapi_knowledge_bases ORDER BY id"
@@ -385,6 +391,8 @@ class PolicyStore:
         thinking_enabled: bool | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        activate: bool = False,
+        clear_history: bool = False,
     ) -> dict[str, Any]:
         normalized_id = int(knowledge_id)
         normalized_name = self._normalize_knowledge_name(name)
@@ -429,7 +437,15 @@ class PolicyStore:
                 )
             except sqlite3.IntegrityError as exc:
                 raise ValueError("knowledge base name already exists") from exc
-            if self._active_knowledge_id(conn) == normalized_id:
+            previous_id = self._active_knowledge_id(conn)
+            changed = bool(activate and previous_id != normalized_id)
+            cleared = 0
+            if activate:
+                self._set_active_knowledge_id(normalized_id, conn)
+                self._sync_legacy_knowledge_prompt(normalized_id, conn)
+                if clear_history and changed:
+                    cleared = self._clear_dsapi_history(conn)
+            elif previous_id == normalized_id:
                 self._sync_legacy_knowledge_prompt(normalized_id, conn)
             self.audit(
                 actor_id,
@@ -442,6 +458,9 @@ class PolicyStore:
                     "thinking_enabled": normalized_thinking,
                     "max_tokens": normalized_max_tokens,
                     "temperature": normalized_temperature,
+                    "activated": bool(activate),
+                    "previous_id": previous_id,
+                    "history_messages_cleared": cleared,
                 },
                 conn=conn,
             )
@@ -742,12 +761,36 @@ class PolicyStore:
             if prompt is not None:
                 if selected_id is None and prompt:
                     now = time.time()
+                    default_model_row = conn.execute(
+                        "SELECT value FROM settings WHERE key = 'dsapi_default_model'"
+                    ).fetchone()
+                    default_tokens_row = conn.execute(
+                        "SELECT value FROM settings WHERE key = 'dsapi_default_max_tokens'"
+                    ).fetchone()
+                    default_model = (
+                        str(default_model_row["value"])
+                        if default_model_row
+                        else "deepseek-v4-flash"
+                    )
+                    default_max_tokens = (
+                        int(default_tokens_row["value"]) if default_tokens_row else 80
+                    )
                     cursor = conn.execute(
                         """
-                        INSERT INTO dsapi_knowledge_bases(name, prompt, created_at, updated_at)
-                        VALUES (?, ?, ?, ?)
+                        INSERT INTO dsapi_knowledge_bases(
+                            name, prompt, model, thinking_enabled, max_tokens, temperature,
+                            created_at, updated_at
+                        )
+                        VALUES (?, ?, ?, 0, ?, NULL, ?, ?)
                         """,
-                        ("默认知识库", prompt, now, now),
+                        (
+                            "默认知识库",
+                            prompt,
+                            default_model,
+                            default_max_tokens,
+                            now,
+                            now,
+                        ),
                     )
                     selected_id = int(cursor.lastrowid)
                     self._set_active_knowledge_id(selected_id, conn)
