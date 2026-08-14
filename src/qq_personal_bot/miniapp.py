@@ -25,6 +25,7 @@ _URL_KEYS = (
     "url",
 )
 _TITLE_KEYS = ("title", "prompt", "desc")
+_PLATFORM_PLACEHOLDER_TITLES = {"哔哩哔哩"}
 _MEDIA_KEY_PARTS = ("icon", "image", "img", "preview", "cover", "avatar", "logo")
 _URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
 _INITIAL_STATE_MARKER = "window.__INITIAL_STATE__="
@@ -127,7 +128,10 @@ def _find_title(payload: Mapping[str, Any]) -> str | None:
         title = _clean_title(value)
         if not title:
             continue
-        priority = 0 if key == "title" else 1 if key == "prompt" else 2
+        if title in _PLATFORM_PLACEHOLDER_TITLES:
+            priority = 3
+        else:
+            priority = 0 if key == "title" else 1 if key == "prompt" else 2
         candidates.append((priority, title))
     if not candidates:
         return None

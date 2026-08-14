@@ -84,6 +84,31 @@ def test_extracts_real_xiaohongshu_tuwen_share():
     assert link.url == "http://xhslink.com/m/8rpFU0xWGvV"
 
 
+def test_bilibili_share_uses_video_title_instead_of_platform_name():
+    payload = {
+        "ver": "1.0.0.19",
+        "prompt": "[QQ小程序]马儿空气动力学",
+        "app": "com.tencent.miniapp_01",
+        "meta": {
+            "detail_1": {
+                "appid": "1109937557",
+                "title": "哔哩哔哩",
+                "desc": "马儿空气动力学",
+                "preview": "https://qq.ugcimg.cn/preview",
+                "qqdocurl": "https://b23.tv/wrXwLXN?share_source=qq",
+            }
+        },
+    }
+
+    link = extract_miniapp_link(
+        ({"type": "json", "data": {"data": json.dumps(payload, ensure_ascii=False)}},)
+    )
+
+    assert link is not None
+    assert link.title == "马儿空气动力学"
+    assert link.url == "https://b23.tv/wrXwLXN?share_source=qq"
+
+
 def test_removes_tracking_parameters_from_xiaohongshu_discovery_url():
     payload = {
         "app": "com.tencent.tuwen.lua",
