@@ -1,14 +1,31 @@
 import { useEffect, useState } from "react";
-import { BookOpen, BrainCircuit, CheckCircle2, Eraser, ImagePlus, Plus, Save, Sparkles, Trash2, Upload } from "lucide-react";
+import { BookOpen, BrainCircuit, CheckCircle2, Eraser, ImagePlus, Plus, Save, Sparkles, Trash2, Upload, X } from "lucide-react";
 
 import { fileToDataUrl, formatBytes, formatIds, get, parseIds, post, put, remove } from "../api";
 import { Button, Empty, Field, IconButton, Metric, PageHeader, Panel, Status, Switch } from "../components/Ui";
+
+const knowledgeDraftFrom = (knowledge = {}, defaults = {}) => ({
+  name: knowledge.name || "",
+  prompt: knowledge.prompt || "",
+  model: knowledge.model || defaults.model || defaults.default_model || "deepseek-v4-flash",
+  thinking_enabled: knowledge.thinking_enabled ?? false,
+  max_tokens: knowledge.max_tokens ?? defaults.max_tokens ?? defaults.default_max_tokens ?? 80,
+  temperature: knowledge.temperature ?? "",
+});
+
+const knowledgePayload = (draft) => ({
+  ...draft,
+  max_tokens: Number(draft.max_tokens),
+  temperature: draft.temperature === "" ? null : Number(draft.temperature),
+});
 
 export default function AiPage({ refreshVersion, onChanged }) {
   const [data, setData] = useState(null);
   const [form, setForm] = useState({ enabledGroups: "", turns: 2, randomPercent: 2, stickerPercent: 20, aiEnabled: true, knowledgeEnabled: false, clear: true });
   const [selectedKnowledgeId, setSelectedKnowledgeId] = useState(null);
-  const [knowledgeDraft, setKnowledgeDraft] = useState({ name: "", prompt: "" });
+  const [knowledgeDraft, setKnowledgeDraft] = useState(knowledgeDraftFrom());
+  const [createDraft, setCreateDraft] = useState(knowledgeDraftFrom());
+  const [createOpen, setCreateOpen] = useState(false);
   const [notice, setNotice] = useState("正在读取 AI 配置");
   const [stickers, setStickers] = useState([]);
   const [stickerFile, setStickerFile] = useState(null);
@@ -20,7 +37,7 @@ export default function AiPage({ refreshVersion, onChanged }) {
     const nextId = preferredId ?? result.active_knowledge_id ?? bases[0]?.id ?? null;
     const selected = bases.find((item) => item.id === nextId) || bases[0] || null;
     setSelectedKnowledgeId(selected?.id ?? null);
-    setKnowledgeDraft({ name: selected?.name || "", prompt: selected?.prompt || "" });
+    setKnowledgeDraft(knowledgeDraftFrom(selected || {}, result));
   };
   const load = () => get("/dsapi").then((result) => {
     applyConfig(result);
@@ -34,16 +51,24 @@ export default function AiPage({ refreshVersion, onChanged }) {
     void load();
     void loadStickers();
   }, [refreshVersion]);
+  useEffect(() => {
+    if (!createOpen) return undefined;
+    const closeOnEscape = (event) => {
+      if (event.key === "Escape") setCreateOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [createOpen]);
   const update = (key, value) => setForm((current) => ({ ...current, [key]: value }));
 
   const selectKnowledge = (knowledge) => {
     setSelectedKnowledgeId(knowledge.id);
-    setKnowledgeDraft({ name: knowledge.name, prompt: knowledge.prompt || "" });
+    setKnowledgeDraft(knowledgeDraftFrom(knowledge, data || {}));
   };
 
   const saveKnowledge = async () => {
     if (!selectedKnowledgeId) throw new Error("请先新建知识库");
-    const result = await put(`/dsapi/knowledge/${selectedKnowledgeId}`, knowledgeDraft);
+    const result = await put(`/dsapi/knowledge/${selectedKnowledgeId}`, knowledgePayload(knowledgeDraft));
     applyConfig(result, selectedKnowledgeId);
     return result;
   };
@@ -59,14 +84,20 @@ export default function AiPage({ refreshVersion, onChanged }) {
     } catch (error) { setNotice(error.message); }
   };
 
+  const openCreateKnowledge = () => {
+    const names = new Set((data?.knowledge_bases || []).map((item) => item.name));
+    let index = (data?.knowledge_bases?.length || 0) + 1;
+    while (names.has(`新知识库 ${index}`)) index += 1;
+    setCreateDraft(knowledgeDraftFrom({ name: `新知识库 ${index}` }, data || {}));
+    setCreateOpen(true);
+  };
+
   const createKnowledge = async () => {
     try {
-      const names = new Set((data?.knowledge_bases || []).map((item) => item.name));
-      let index = (data?.knowledge_bases?.length || 0) + 1;
-      while (names.has(`新知识库 ${index}`)) index += 1;
-      const result = await post("/dsapi/knowledge", { name: `新知识库 ${index}`, prompt: "" });
+      const result = await post("/dsapi/knowledge", knowledgePayload(createDraft));
       applyConfig(result, result.knowledge_base.id);
-      setNotice("已新建知识库，填写内容后保存或切换启用");
+      setCreateOpen(false);
+      setNotice("知识库及 DSAPI 参数已创建，可切换启用");
       onChanged();
     } catch (error) { setNotice(error.message); }
   };
@@ -137,7 +168,7 @@ export default function AiPage({ refreshVersion, onChanged }) {
     <>
       <PageHeader eyebrow="Model memory" title="AI 角色与知识" description="维护多个角色知识库，随时切换当前设定，并控制每个群的短期对话。" actions={<Button icon={Save} onClick={save}>保存并生效</Button>} />
       <div className="ai-status-strip">
-        <div className="ai-status-strip__model"><BrainCircuit /><div><span>当前模型</span><strong>{data?.model || "读取中"}</strong><small>{data?.base_url || "-"}</small></div></div>
+        <div className="ai-status-strip__model"><BrainCircuit /><div><span>当前模型</span><strong>{data?.model || "读取中"}</strong><small>{data?.thinking_enabled ? "Thinking" : "Non-thinking"} · {data?.max_tokens || "-"} tokens · {data?.base_url || "-"}</small></div></div>
         <Metric label="AI 启用群" value={data?.enabled_groups?.length ?? "-"} tone="blue" />
         <Metric label="上下文消息" value={data?.history_messages ?? "-"} tone="mint" />
         <Metric label="涉及群" value={data?.history_groups ?? "-"} tone="orange" />
@@ -145,24 +176,30 @@ export default function AiPage({ refreshVersion, onChanged }) {
       </div>
 
       <div className="content-grid">
-        <Panel title="角色知识库" eyebrow="Knowledge library" className="span-8" actions={<Button tone="secondary" icon={Plus} onClick={createKnowledge}>新建</Button>}>
+        <Panel title="角色知识库" eyebrow="Knowledge library" className="span-8" actions={<Button tone="secondary" icon={Plus} onClick={openCreateKnowledge}>新建</Button>}>
           <div className="knowledge-toolbar"><Switch checked={form.knowledgeEnabled} onChange={(value) => update("knowledgeEnabled", value)} label="挂载角色知识" description="关闭后只使用基础系统提示词" /><span><Sparkles size={15} /> {(data?.knowledge_bases?.length || 0)} 个知识库</span></div>
           <div className="knowledge-workspace">
             <aside className="knowledge-library">
               {(data?.knowledge_bases || []).map((item) => (
                 <button type="button" key={item.id} className={`knowledge-card ${selectedKnowledgeId === item.id ? "is-selected" : ""} ${item.active ? "is-active" : ""}`} onClick={() => selectKnowledge(item)}>
                   <BookOpen size={17} />
-                  <span><strong>{item.name}</strong><small>{item.prompt_chars.toLocaleString()} 字符</small></span>
+                  <span><strong>{item.name}</strong><small>{item.model} · {item.thinking_enabled ? "Thinking" : "Fast"} · {item.prompt_chars.toLocaleString()} 字符</small></span>
                   {item.active && <b><CheckCircle2 size={12} />当前</b>}
                 </button>
               ))}
-              {!data?.knowledge_bases?.length && <Empty title="还没有知识库" description="新建后可分别保存不同角色与资料。" action={<Button tone="secondary" icon={Plus} onClick={createKnowledge}>新建第一个</Button>} />}
+              {!data?.knowledge_bases?.length && <Empty title="还没有知识库" description="新建后可分别保存不同角色与资料。" action={<Button tone="secondary" icon={Plus} onClick={openCreateKnowledge}>新建第一个</Button>} />}
             </aside>
             <div className="knowledge-detail">
               {selectedKnowledgeId ? <>
                 <div className="knowledge-detail__head">
                   <Field label="知识库名称"><input value={knowledgeDraft.name} maxLength={80} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, name: event.target.value }))} /></Field>
                   <span><Sparkles size={14} /> {knowledgeDraft.prompt.length.toLocaleString()} 字符</span>
+                </div>
+                <div className="knowledge-runtime-grid">
+                  <Field label="模型"><input value={knowledgeDraft.model} maxLength={200} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, model: event.target.value }))} /></Field>
+                  <Field label="最大输出 Token"><input type="number" min="1" max="32768" value={knowledgeDraft.max_tokens} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, max_tokens: event.target.value }))} /></Field>
+                  <Field label="Temperature" hint="留空使用服务商默认值"><input type="number" min="0" max="2" step="0.1" value={knowledgeDraft.temperature} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, temperature: event.target.value }))} /></Field>
+                  <Switch checked={knowledgeDraft.thinking_enabled} onChange={(value) => setKnowledgeDraft((current) => ({ ...current, thinking_enabled: value }))} label="Thinking 模式" description={knowledgeDraft.thinking_enabled ? "请求模型进行思考" : "Non-thinking，直接简短回复"} />
                 </div>
                 <Field label="知识与角色设定" hint="写清身份、语气、世界观、人物关系、事实边界和禁止事项。">
                   <textarea className="knowledge-editor" value={knowledgeDraft.prompt} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, prompt: event.target.value }))} placeholder="例如：你是群里的档案管理员。回答时使用简洁中文，只依据下方档案中的事实……" />
@@ -211,6 +248,27 @@ export default function AiPage({ refreshVersion, onChanged }) {
         </Panel>
         <div className="span-12 panel-footer panel-footer--standalone"><Status>{notice}</Status><span className="quiet-note">多模态消息仍会在本地直接丢弃，不调用 API</span></div>
       </div>
+      {createOpen && (
+        <div className="modal-scrim" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setCreateOpen(false); }}>
+          <section className="knowledge-modal" role="dialog" aria-modal="true" aria-labelledby="create-knowledge-title">
+            <header className="knowledge-modal__head">
+              <div><span>New knowledge profile</span><h2 id="create-knowledge-title">新建知识库</h2><p>角色知识与模型参数将绑定保存，切换知识库时同步生效。</p></div>
+              <IconButton label="关闭" icon={X} onClick={() => setCreateOpen(false)} />
+            </header>
+            <div className="knowledge-modal__body">
+              <div className="form-grid form-grid--2">
+                <Field label="知识库名称"><input autoFocus value={createDraft.name} maxLength={80} onChange={(event) => setCreateDraft((current) => ({ ...current, name: event.target.value }))} /></Field>
+                <Field label="模型"><input value={createDraft.model} maxLength={200} onChange={(event) => setCreateDraft((current) => ({ ...current, model: event.target.value }))} /></Field>
+                <Field label="最大输出 Token"><input type="number" min="1" max="32768" value={createDraft.max_tokens} onChange={(event) => setCreateDraft((current) => ({ ...current, max_tokens: event.target.value }))} /></Field>
+                <Field label="Temperature" hint="留空使用服务商默认值"><input type="number" min="0" max="2" step="0.1" value={createDraft.temperature} onChange={(event) => setCreateDraft((current) => ({ ...current, temperature: event.target.value }))} /></Field>
+              </div>
+              <Switch checked={createDraft.thinking_enabled} onChange={(value) => setCreateDraft((current) => ({ ...current, thinking_enabled: value }))} label="开启 Thinking 模式" description={createDraft.thinking_enabled ? "随该知识库启用深度思考" : "保持 Non-thinking，优先快速短回复"} />
+              <Field label="知识与角色设定" hint="可留空，创建后仍可继续编辑。"><textarea value={createDraft.prompt} onChange={(event) => setCreateDraft((current) => ({ ...current, prompt: event.target.value }))} placeholder="输入身份、语气、世界观、人物关系与事实资料……" /></Field>
+            </div>
+            <footer className="knowledge-modal__actions"><Button tone="ghost" onClick={() => setCreateOpen(false)}>取消</Button><Button icon={Plus} onClick={createKnowledge}>创建知识库</Button></footer>
+          </section>
+        </div>
+      )}
     </>
   );
 }

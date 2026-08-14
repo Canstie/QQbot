@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -235,12 +236,62 @@ def test_dsapi_legacy_prompt_is_migrated_to_default_knowledge_base(tmp_path):
     ]
 
 
+def test_dsapi_existing_knowledge_table_gains_runtime_configuration(tmp_path):
+    db_path = tmp_path / "policy.sqlite3"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.execute(
+            "INSERT INTO settings(key, value) VALUES ('dsapi_knowledge_prompt', '旧知识')"
+        )
+        conn.execute(
+            """
+            CREATE TABLE dsapi_knowledge_bases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                prompt TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO dsapi_knowledge_bases(name, prompt, created_at, updated_at)
+            VALUES ('旧知识库', '旧知识', 1, 1)
+            """
+        )
+
+    settings = AppSettings(
+        db_path=db_path,
+        admins=(),
+        dsapi_model="deepseek-migrated",
+        dsapi_max_tokens=96,
+    )
+    store = PolicyStore(db_path)
+    store.initialize(settings)
+    knowledge = store.get_dsapi_config()["active_knowledge"]
+
+    assert knowledge["name"] == "旧知识库"
+    assert knowledge["model"] == "deepseek-migrated"
+    assert knowledge["thinking_enabled"] is False
+    assert knowledge["max_tokens"] == 96
+    assert knowledge["temperature"] is None
+
+
 def test_dsapi_knowledge_bases_can_be_edited_switched_and_deleted(tmp_path):
     db_path = tmp_path / "policy.sqlite3"
     store = PolicyStore(db_path)
     store.initialize(AppSettings(db_path=db_path, admins=()))
     first = store.create_dsapi_knowledge_base(name="果果", prompt="呆呆的", actor_id=1)
-    second = store.create_dsapi_knowledge_base(name="档案员", prompt="只说事实", actor_id=1)
+    second = store.create_dsapi_knowledge_base(
+        name="档案员",
+        prompt="只说事实",
+        actor_id=1,
+        model="deepseek-reasoner",
+        thinking_enabled=True,
+        max_tokens=512,
+        temperature=0.3,
+    )
     store.record_dsapi_exchange(
         group_id=123,
         user_content="问题",
@@ -258,6 +309,10 @@ def test_dsapi_knowledge_bases_can_be_edited_switched_and_deleted(tmp_path):
         name="群档案员",
         prompt="只依据群档案回答",
         actor_id=1,
+        model="deepseek-reasoner-v2",
+        thinking_enabled=True,
+        max_tokens=640,
+        temperature=0.2,
     )
     config = store.get_dsapi_config()
 
@@ -265,6 +320,10 @@ def test_dsapi_knowledge_bases_can_be_edited_switched_and_deleted(tmp_path):
     assert updated["name"] == "群档案员"
     assert config["active_knowledge_id"] == second["id"]
     assert config["knowledge_prompt"] == "只依据群档案回答"
+    assert config["active_knowledge"]["model"] == "deepseek-reasoner-v2"
+    assert config["active_knowledge"]["thinking_enabled"] is True
+    assert config["active_knowledge"]["max_tokens"] == 640
+    assert config["active_knowledge"]["temperature"] == 0.2
     assert config["history_messages"] == 0
 
     store.record_dsapi_exchange(

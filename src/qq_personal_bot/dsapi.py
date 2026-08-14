@@ -169,7 +169,16 @@ async def _generate_text_reply(
     messages.extend(store.get_dsapi_chat_history(event.group_id, config["history_turns"]))
     messages.append({"role": "user", "content": prompt})
 
-    response = await asyncio.to_thread(_request_chat_completion, settings, messages)
+    active_knowledge = config.get("active_knowledge") or {}
+    response = await asyncio.to_thread(
+        _request_chat_completion,
+        settings,
+        messages,
+        model=active_knowledge.get("model") or settings.dsapi_model,
+        max_tokens=active_knowledge.get("max_tokens") or settings.dsapi_max_tokens,
+        thinking_enabled=bool(active_knowledge.get("thinking_enabled", False)),
+        temperature=active_knowledge.get("temperature"),
+    )
     response = _brief_reply(response)
     if response:
         store.record_dsapi_exchange(
@@ -268,17 +277,22 @@ async def build_mention_prompt(bot: Any, event: MessageEvent) -> str | None:
 def _request_chat_completion(
     settings: AppSettings,
     messages: list[dict[str, str]],
+    *,
+    model: str | None = None,
+    max_tokens: int | None = None,
+    thinking_enabled: bool = False,
+    temperature: float | None = None,
 ) -> str | None:
-    payload = json.dumps(
-        {
-            "model": settings.dsapi_model,
-            "messages": messages,
-            "max_tokens": settings.dsapi_max_tokens,
-            "thinking": {"type": "disabled"},
-            "stream": False,
-        },
-        ensure_ascii=False,
-    ).encode("utf-8")
+    body: dict[str, Any] = {
+        "model": model or settings.dsapi_model,
+        "messages": messages,
+        "max_tokens": max_tokens or settings.dsapi_max_tokens,
+        "thinking": {"type": "enabled" if thinking_enabled else "disabled"},
+        "stream": False,
+    }
+    if temperature is not None:
+        body["temperature"] = float(temperature)
+    payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
     request = Request(
         _chat_completions_url(settings.dsapi_base_url),
         data=payload,

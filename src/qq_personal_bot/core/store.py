@@ -47,7 +47,7 @@ class PolicyStore:
                 for admin_id in settings.admins:
                     self.add_admin(admin_id, actor_id=0, conn=conn)
             self._initialize_dsapi_settings(conn)
-            self._initialize_knowledge_bases(conn)
+            self._initialize_knowledge_bases(conn, settings)
             self.purge_legacy_menu_caches(conn=conn)
 
     def _connect(self) -> sqlite3.Connection:
@@ -172,6 +172,10 @@ class PolicyStore:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL UNIQUE,
                 prompt TEXT NOT NULL,
+                model TEXT NOT NULL DEFAULT '',
+                thinking_enabled INTEGER NOT NULL DEFAULT 0,
+                max_tokens INTEGER NOT NULL DEFAULT 80,
+                temperature REAL,
                 created_at REAL NOT NULL,
                 updated_at REAL NOT NULL
             );
@@ -236,7 +240,35 @@ class PolicyStore:
             (json.dumps(enabled_groups),),
         )
 
-    def _initialize_knowledge_bases(self, conn: sqlite3.Connection) -> None:
+    def _initialize_knowledge_bases(
+        self,
+        conn: sqlite3.Connection,
+        settings: AppSettings,
+    ) -> None:
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(dsapi_knowledge_bases)").fetchall()
+        }
+        migrations = {
+            "model": "TEXT NOT NULL DEFAULT ''",
+            "thinking_enabled": "INTEGER NOT NULL DEFAULT 0",
+            "max_tokens": "INTEGER NOT NULL DEFAULT 0",
+            "temperature": "REAL",
+        }
+        for column, definition in migrations.items():
+            if column not in columns:
+                conn.execute(
+                    f"ALTER TABLE dsapi_knowledge_bases ADD COLUMN {column} {definition}"
+                )
+        conn.execute(
+            "UPDATE dsapi_knowledge_bases SET model = ? WHERE TRIM(model) = ''",
+            (settings.dsapi_model,),
+        )
+        conn.execute(
+            "UPDATE dsapi_knowledge_bases SET max_tokens = ? WHERE max_tokens <= 0",
+            (settings.dsapi_max_tokens,),
+        )
+
         bases = conn.execute(
             "SELECT id FROM dsapi_knowledge_bases ORDER BY id"
         ).fetchall()
@@ -248,10 +280,22 @@ class PolicyStore:
             now = time.time()
             cursor = conn.execute(
                 """
-                INSERT INTO dsapi_knowledge_bases(name, prompt, created_at, updated_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO dsapi_knowledge_bases(
+                    name, prompt, model, thinking_enabled, max_tokens, temperature,
+                    created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                ("默认知识库", legacy_prompt, now, now),
+                (
+                    "默认知识库",
+                    legacy_prompt,
+                    settings.dsapi_model,
+                    0,
+                    settings.dsapi_max_tokens,
+                    None,
+                    now,
+                    now,
+                ),
             )
             bases = [{"id": int(cursor.lastrowid)}]
 
@@ -272,18 +316,37 @@ class PolicyStore:
         name: str,
         prompt: str,
         actor_id: int,
+        model: str = "deepseek-v4-flash",
+        thinking_enabled: bool = False,
+        max_tokens: int = 80,
+        temperature: float | None = None,
     ) -> dict[str, Any]:
         normalized_name = self._normalize_knowledge_name(name)
         normalized_prompt = self._normalize_knowledge_prompt(prompt)
+        normalized_model = self._normalize_dsapi_model(model)
+        normalized_max_tokens = self._normalize_dsapi_max_tokens(max_tokens)
+        normalized_temperature = self._normalize_dsapi_temperature(temperature)
         now = time.time()
         with self._connect() as conn:
             try:
                 cursor = conn.execute(
                     """
-                    INSERT INTO dsapi_knowledge_bases(name, prompt, created_at, updated_at)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO dsapi_knowledge_bases(
+                        name, prompt, model, thinking_enabled, max_tokens, temperature,
+                        created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (normalized_name, normalized_prompt, now, now),
+                    (
+                        normalized_name,
+                        normalized_prompt,
+                        normalized_model,
+                        1 if thinking_enabled else 0,
+                        normalized_max_tokens,
+                        normalized_temperature,
+                        now,
+                        now,
+                    ),
                 )
             except sqlite3.IntegrityError as exc:
                 raise ValueError("knowledge base name already exists") from exc
@@ -295,7 +358,14 @@ class PolicyStore:
                 actor_id,
                 "create_dsapi_knowledge_base",
                 str(knowledge_id),
-                {"name": normalized_name, "prompt_chars": len(normalized_prompt)},
+                {
+                    "name": normalized_name,
+                    "prompt_chars": len(normalized_prompt),
+                    "model": normalized_model,
+                    "thinking_enabled": bool(thinking_enabled),
+                    "max_tokens": normalized_max_tokens,
+                    "temperature": normalized_temperature,
+                },
                 conn=conn,
             )
             row = conn.execute(
@@ -311,21 +381,51 @@ class PolicyStore:
         name: str,
         prompt: str,
         actor_id: int,
+        model: str | None = None,
+        thinking_enabled: bool | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
     ) -> dict[str, Any]:
         normalized_id = int(knowledge_id)
         normalized_name = self._normalize_knowledge_name(name)
         normalized_prompt = self._normalize_knowledge_prompt(prompt)
         with self._connect() as conn:
-            if not self._knowledge_base_exists(normalized_id, conn):
+            current = conn.execute(
+                "SELECT * FROM dsapi_knowledge_bases WHERE id = ?",
+                (normalized_id,),
+            ).fetchone()
+            if current is None:
                 raise ValueError("knowledge base not found")
+            normalized_model = self._normalize_dsapi_model(
+                current["model"] if model is None else model
+            )
+            normalized_thinking = (
+                bool(current["thinking_enabled"])
+                if thinking_enabled is None
+                else bool(thinking_enabled)
+            )
+            normalized_max_tokens = self._normalize_dsapi_max_tokens(
+                current["max_tokens"] if max_tokens is None else max_tokens
+            )
+            normalized_temperature = self._normalize_dsapi_temperature(temperature)
             try:
                 conn.execute(
                     """
                     UPDATE dsapi_knowledge_bases
-                    SET name = ?, prompt = ?, updated_at = ?
+                    SET name = ?, prompt = ?, model = ?, thinking_enabled = ?,
+                        max_tokens = ?, temperature = ?, updated_at = ?
                     WHERE id = ?
                     """,
-                    (normalized_name, normalized_prompt, time.time(), normalized_id),
+                    (
+                        normalized_name,
+                        normalized_prompt,
+                        normalized_model,
+                        1 if normalized_thinking else 0,
+                        normalized_max_tokens,
+                        normalized_temperature,
+                        time.time(),
+                        normalized_id,
+                    ),
                 )
             except sqlite3.IntegrityError as exc:
                 raise ValueError("knowledge base name already exists") from exc
@@ -335,7 +435,14 @@ class PolicyStore:
                 actor_id,
                 "update_dsapi_knowledge_base",
                 str(normalized_id),
-                {"name": normalized_name, "prompt_chars": len(normalized_prompt)},
+                {
+                    "name": normalized_name,
+                    "prompt_chars": len(normalized_prompt),
+                    "model": normalized_model,
+                    "thinking_enabled": normalized_thinking,
+                    "max_tokens": normalized_max_tokens,
+                    "temperature": normalized_temperature,
+                },
                 conn=conn,
             )
             row = conn.execute(
@@ -583,6 +690,7 @@ class PolicyStore:
             in {"1", "true", "yes", "on"},
             "knowledge_prompt": active_knowledge["prompt"] if active_knowledge else "",
             "knowledge_bases": knowledge_bases,
+            "active_knowledge": active_knowledge,
             "active_knowledge_id": active_knowledge_id,
             "active_knowledge_name": active_knowledge["name"] if active_knowledge else "",
             "history_turns": history_turns,
@@ -1808,7 +1916,8 @@ class PolicyStore:
         active_id = self._active_knowledge_id(conn)
         rows = conn.execute(
             """
-            SELECT id, name, prompt, created_at, updated_at
+            SELECT id, name, prompt, model, thinking_enabled, max_tokens, temperature,
+                   created_at, updated_at
             FROM dsapi_knowledge_bases
             ORDER BY updated_at DESC, id DESC
             """
@@ -1825,6 +1934,12 @@ class PolicyStore:
             "name": str(row["name"]),
             "prompt": prompt,
             "prompt_chars": len(prompt),
+            "model": str(row["model"]),
+            "thinking_enabled": bool(row["thinking_enabled"]),
+            "max_tokens": int(row["max_tokens"]),
+            "temperature": (
+                float(row["temperature"]) if row["temperature"] is not None else None
+            ),
             "created_at": float(row["created_at"]),
             "updated_at": float(row["updated_at"]),
         }
@@ -1841,6 +1956,28 @@ class PolicyStore:
         normalized = str(prompt).strip()
         if len(normalized) > 100_000:
             raise ValueError("knowledge prompt must not exceed 100000 characters")
+        return normalized
+
+    def _normalize_dsapi_model(self, model: str) -> str:
+        normalized = str(model).strip()
+        if not normalized:
+            raise ValueError("DSAPI model is required")
+        if len(normalized) > 200:
+            raise ValueError("DSAPI model must not exceed 200 characters")
+        return normalized
+
+    def _normalize_dsapi_max_tokens(self, max_tokens: int) -> int:
+        normalized = int(max_tokens)
+        if normalized < 1 or normalized > 32_768:
+            raise ValueError("DSAPI max_tokens must be between 1 and 32768")
+        return normalized
+
+    def _normalize_dsapi_temperature(self, temperature: float | None) -> float | None:
+        if temperature is None:
+            return None
+        normalized = float(temperature)
+        if normalized < 0 or normalized > 2:
+            raise ValueError("DSAPI temperature must be between 0 and 2")
         return normalized
 
     def _normalize_prefixes(self, prefixes: list[str]) -> list[str]:

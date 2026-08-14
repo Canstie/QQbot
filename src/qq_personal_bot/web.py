@@ -70,6 +70,10 @@ class DSAPIConfigPayload(BaseModel):
 class KnowledgeBasePayload(BaseModel):
     name: str
     prompt: str = ""
+    model: str | None = None
+    thinking_enabled: bool | None = None
+    max_tokens: int | None = None
+    temperature: float | None = None
 
 
 class KnowledgeActivationPayload(BaseModel):
@@ -214,10 +218,16 @@ def create_app():
     async def get_dsapi_config() -> dict:
         config = get_store().get_dsapi_config()
         settings = get_settings()
+        active_knowledge = config.get("active_knowledge") or {}
         return {
             **config,
             "api_configured": bool(settings.dsapi_enabled and settings.dsapi_api_key),
-            "model": settings.dsapi_model,
+            "model": active_knowledge.get("model") or settings.dsapi_model,
+            "max_tokens": active_knowledge.get("max_tokens") or settings.dsapi_max_tokens,
+            "thinking_enabled": bool(active_knowledge.get("thinking_enabled", False)),
+            "temperature": active_knowledge.get("temperature"),
+            "default_model": settings.dsapi_model,
+            "default_max_tokens": settings.dsapi_max_tokens,
             "base_url": settings.dsapi_base_url,
             "history_idle_seconds": settings.dsapi_history_idle_seconds,
         }
@@ -250,6 +260,18 @@ def create_app():
                 name=payload.name,
                 prompt=payload.prompt,
                 actor_id=0,
+                model=(
+                    payload.model
+                    if payload.model is not None
+                    else get_settings().dsapi_model
+                ),
+                thinking_enabled=bool(payload.thinking_enabled),
+                max_tokens=(
+                    payload.max_tokens
+                    if payload.max_tokens is not None
+                    else get_settings().dsapi_max_tokens
+                ),
+                temperature=payload.temperature,
             )
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -268,6 +290,10 @@ def create_app():
                 name=payload.name,
                 prompt=payload.prompt,
                 actor_id=0,
+                model=payload.model,
+                thinking_enabled=payload.thinking_enabled,
+                max_tokens=payload.max_tokens,
+                temperature=payload.temperature,
             )
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

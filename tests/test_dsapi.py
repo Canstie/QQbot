@@ -227,7 +227,7 @@ async def test_knowledge_and_group_history_are_sent_and_response_is_recorded(tmp
     )
     captured = {}
 
-    def fake_request(settings, messages):
+    def fake_request(settings, messages, **kwargs):
         captured["messages"] = messages
         return "本轮回答"
 
@@ -263,12 +263,17 @@ async def test_active_knowledge_base_is_used_for_dsapi_prompt(tmp_path, monkeypa
         name="档案员",
         prompt="档案员角色，只依据资料回答。",
         actor_id=0,
+        model="deepseek-reasoner",
+        thinking_enabled=True,
+        max_tokens=512,
+        temperature=0.25,
     )
     store.activate_dsapi_knowledge_base(archive["id"], clear_history=False, actor_id=0)
     captured = {}
 
-    def fake_request(settings, messages):
+    def fake_request(settings, messages, **kwargs):
         captured["messages"] = messages
+        captured["options"] = kwargs
         return "档案回答"
 
     monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
@@ -283,6 +288,12 @@ async def test_active_knowledge_base_is_used_for_dsapi_prompt(tmp_path, monkeypa
     assert response == "档案回答"
     assert "档案员角色" in captured["messages"][0]["content"]
     assert "果果角色" not in captured["messages"][0]["content"]
+    assert captured["options"] == {
+        "model": "deepseek-reasoner",
+        "max_tokens": 512,
+        "thinking_enabled": True,
+        "temperature": 0.25,
+    }
 
 
 @pytest.mark.asyncio
@@ -301,7 +312,7 @@ async def test_idle_group_history_is_not_sent_to_dsapi(tmp_path, monkeypatch):
         )
     captured = {}
 
-    def fake_request(settings, messages):
+    def fake_request(settings, messages, **kwargs):
         captured["messages"] = messages
         return "新回答"
 
@@ -322,7 +333,7 @@ async def test_idle_group_history_is_not_sent_to_dsapi(tmp_path, monkeypatch):
 async def test_random_group_reply_uses_plain_message_and_random_instruction(tmp_path, monkeypatch):
     captured = {}
 
-    def fake_request(settings, messages):
+    def fake_request(settings, messages, **kwargs):
         captured["messages"] = messages
         return "确实有点离谱。"
 
@@ -344,7 +355,7 @@ async def test_random_group_reply_uses_plain_message_and_random_instruction(tmp_
 async def test_random_group_reply_includes_previous_ten_group_messages(tmp_path, monkeypatch):
     captured = {}
 
-    def fake_request(settings, messages):
+    def fake_request(settings, messages, **kwargs):
         captured["messages"] = messages
         return "接上了。"
 
@@ -515,6 +526,21 @@ def test_chat_completion_request_uses_compatible_endpoint(tmp_path, monkeypatch)
     assert captured["payload"]["thinking"] == {"type": "disabled"}
     assert captured["payload"]["stream"] is False
     assert captured["timeout"] == 30.0
+
+    response = _request_chat_completion(
+        settings,
+        [{"role": "user", "content": "再想想"}],
+        model="deepseek-reasoner",
+        max_tokens=512,
+        thinking_enabled=True,
+        temperature=0.3,
+    )
+
+    assert response == "模型回复"
+    assert captured["payload"]["model"] == "deepseek-reasoner"
+    assert captured["payload"]["max_tokens"] == 512
+    assert captured["payload"]["thinking"] == {"type": "enabled"}
+    assert captured["payload"]["temperature"] == 0.3
 
 
 def test_full_chat_completion_url_is_not_duplicated():
