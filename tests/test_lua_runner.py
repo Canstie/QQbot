@@ -1439,6 +1439,7 @@ async def test_builtin_help_lists_public_features_only_for_regular_user(tmp_path
     assert "进行中的添加流程可发送“取消”退出" in result.reply
     assert "管理员命令" not in result.reply
     assert "/bot" not in result.reply
+    assert "/download" not in result.reply
     assert "群排行" not in result.reply
 
 
@@ -1458,6 +1459,7 @@ async def test_builtin_help_appends_admin_features_for_admin(tmp_path, monkeypat
     assert "~help 查看这份帮助" in result.reply
     assert "管理员命令（仅管理员可用）" in result.reply
     assert result.reply.index("~help 查看这份帮助") < result.reply.index("管理员命令")
+    assert "/download 引用聊天记录并下载其中的图片" in result.reply
     assert "/bot status 查看当前策略" in result.reply
     assert "/bot admin add <user_id> 添加管理员" in result.reply
     assert "/bot prefix add|remove <prefix> 增删触发前缀" in result.reply

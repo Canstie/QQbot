@@ -5,6 +5,7 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 logs/
+downloadimage/
 sync-backups/
 data/qqbot.sqlite3*
 data/*

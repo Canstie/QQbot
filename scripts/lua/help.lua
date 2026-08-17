@@ -57,6 +57,7 @@ local PUBLIC_SECTIONS = {
 }
 
 local ADMIN_COMMANDS = {
+  "/download 引用聊天记录并下载其中的图片",
   "/bot status 查看当前策略",
   "/bot on [group_id] 启用或解除屏蔽群",
   "/bot off [group_id] 停用或屏蔽群",
