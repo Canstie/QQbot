@@ -453,6 +453,7 @@ def _run_lua_message_sync(
             "handler": decision.handler,
             "is_direct": decision.handler == "direct",
             "is_at_bot": event.is_at_bot,
+            "is_admin": get_store().is_admin(event.user_id),
             "timestamp": event.timestamp,
             "date": date,
             "yesterday_date": yesterday_date,

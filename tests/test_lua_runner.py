@@ -1416,7 +1416,35 @@ async def test_builtin_group_summary_handles_empty_day(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_builtin_help_lists_available_features(tmp_path, monkeypatch):
+async def test_builtin_help_lists_public_features_only_for_regular_user(tmp_path, monkeypatch):
+    monkeypatch.setenv("QQBOT_ADMINS", "999")
+    configure_builtin_lua_dir(tmp_path, monkeypatch)
+
+    result = await run_lua_message(
+        RichFakeBot(),
+        make_event(raw_message="~help", timestamp=china_timestamp(2026, 6, 20, 12, 0)),
+        PolicyDecision(True, "ok", handler="default", normalized_message="help"),
+    )
+
+    assert result.quote is True
+    assert result.reply is not None
+    for script_path in (PROJECT_ROOT / "scripts" / "lua").glob("*.lua"):
+        assert f"~{script_path.stem}" in result.reply
+    assert "~help 查看这份帮助" in result.reply
+    assert "~今日菜单 随机推荐今日吃什么" in result.reply
+    assert "~抽群老婆 抽取今日群老婆" in result.reply
+    assert "~群总结 查看昨天的群消息总结" in result.reply
+    assert "~今日饭店 随机抽一家本群饭店" in result.reply
+    assert "吃什么 / csm / 今天吃什么 等可直接触发今日菜单" in result.reply
+    assert "进行中的添加流程可发送“取消”退出" in result.reply
+    assert "管理员命令" not in result.reply
+    assert "/bot" not in result.reply
+    assert "群排行" not in result.reply
+
+
+@pytest.mark.asyncio
+async def test_builtin_help_appends_admin_features_for_admin(tmp_path, monkeypatch):
+    monkeypatch.setenv("QQBOT_ADMINS", "456")
     configure_builtin_lua_dir(tmp_path, monkeypatch)
 
     result = await run_lua_message(
@@ -1428,10 +1456,9 @@ async def test_builtin_help_lists_available_features(tmp_path, monkeypatch):
     assert result.quote is True
     assert result.reply is not None
     assert "~help 查看这份帮助" in result.reply
-    assert "~今日菜单 随机推荐今日吃什么" in result.reply
-    assert "~抽群老婆 抽今日群老婆" in result.reply
-    assert "~群总结 查看昨天的群消息总结" in result.reply
-    assert "~今日饭店 随机抽一家已添加的饭店" in result.reply
-    assert "吃什么 / csm / 今天吃什么 等会直接触发今日菜单" in result.reply
-    assert "/bot status" in result.reply
-    assert "群排行" not in result.reply
+    assert "管理员命令（仅管理员可用）" in result.reply
+    assert result.reply.index("~help 查看这份帮助") < result.reply.index("管理员命令")
+    assert "/bot status 查看当前策略" in result.reply
+    assert "/bot admin add <user_id> 添加管理员" in result.reply
+    assert "/bot prefix add|remove <prefix> 增删触发前缀" in result.reply
+    assert "/bot admin add|remove" not in result.reply
