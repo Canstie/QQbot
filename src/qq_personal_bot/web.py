@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -12,10 +13,19 @@ from typing import Any, Literal
 from urllib.parse import parse_qs, quote
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 
+from qq_personal_bot.download_storage import DownloadStorageError, get_download_storage
 from qq_personal_bot.lua_runner import (
     default_lua_command_script,
     default_lua_script,
@@ -601,6 +611,86 @@ def create_app():
         if not path.is_file() or not is_supported_image_file(path):
             raise HTTPException(status_code=404, detail="classic image not found")
         return FileResponse(path)
+
+    @app.get("/api/download-images/overview")
+    async def get_download_images_overview() -> dict:
+        overview = get_store().download_image_overview()
+        try:
+            await asyncio.to_thread(get_download_storage().ensure_available)
+        except DownloadStorageError:
+            overview["storage_available"] = False
+        else:
+            overview["storage_available"] = True
+        return overview
+
+    @app.get("/api/download-images")
+    async def get_download_images(
+        date: str | None = None,
+        offset: int = 0,
+        limit: int = 60,
+    ) -> dict:
+        try:
+            result = get_store().list_download_images(
+                downloaded_date=date,
+                offset=offset,
+                limit=limit,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        result["images"] = [
+            {
+                **item,
+                "created_at": datetime.fromtimestamp(item["created_at"], UTC).isoformat(),
+                "image_url": f"./api/download-images/{item['id']}/content",
+            }
+            for item in result["images"]
+        ]
+        return result
+
+    @app.get("/api/download-images/{image_id}/content")
+    async def get_download_image_content(image_id: int) -> StreamingResponse:
+        record = get_store().get_download_image(image_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="download image not found")
+        try:
+            response = await asyncio.to_thread(
+                get_download_storage().get_image,
+                record["object_key"],
+            )
+        except DownloadStorageError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        def close_response() -> None:
+            response.close()
+            response.release_conn()
+
+        return StreamingResponse(
+            response.stream(64 * 1024),
+            media_type=record["content_type"],
+            headers={
+                "Cache-Control": "private, max-age=86400",
+                "ETag": f'"{record["sha256"]}"',
+                "Content-Length": str(record["size_bytes"]),
+            },
+            background=BackgroundTask(close_response),
+        )
+
+    @app.delete("/api/download-images/{image_id}")
+    async def delete_download_image(image_id: int, request: Request) -> dict:
+        require_token(request)
+        record = get_store().get_download_image(image_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="download image not found")
+        try:
+            await asyncio.to_thread(
+                get_download_storage().remove_image,
+                record["object_key"],
+                missing_ok=True,
+            )
+        except DownloadStorageError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        get_store().delete_download_image(image_id)
+        return {"deleted": True, "id": image_id, "object_key": record["object_key"]}
 
     @app.post("/api/groups/{group_id}/on")
     async def group_on(group_id: int, request: Request) -> dict:

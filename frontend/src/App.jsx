@@ -6,6 +6,7 @@ import {
   ChefHat,
   Code2,
   LayoutDashboard,
+  Images,
   LogOut,
   Menu,
   MessageSquareText,
@@ -19,6 +20,7 @@ import { get } from "./api";
 import { IconButton, Status } from "./components/Ui";
 import AiPage from "./pages/AiPage";
 import ClassicsPage from "./pages/ClassicsPage";
+import DownloadImagesPage from "./pages/DownloadImagesPage";
 import LuaPage from "./pages/LuaPage";
 import MenusPage from "./pages/MenusPage";
 import OverviewPage from "./pages/OverviewPage";
@@ -35,6 +37,7 @@ const navigation = [
   { id: "menus", label: "今日菜单", short: "菜单", icon: ChefHat },
   { id: "restaurants", label: "群饭店", short: "饭店", icon: Store },
   { id: "classics", label: "群典藏", short: "典藏", icon: Archive },
+  { id: "downloads", label: "下载图片", short: "图库", icon: Images },
 ];
 
 const pageMap = {
@@ -46,6 +49,7 @@ const pageMap = {
   menus: MenusPage,
   restaurants: RestaurantsPage,
   classics: ClassicsPage,
+  downloads: DownloadImagesPage,
 };
 
 function routeFromHash() {
@@ -88,10 +92,11 @@ export default function App() {
       get("/menus?limit=200"),
       get("/restaurants?limit=200"),
       get("/classics/groups?limit=200"),
+      get("/download-images/overview"),
     ])
-      .then(([policy, ai, lua, menus, restaurants, classics]) => {
+      .then(([policy, ai, lua, menus, restaurants, classics, downloads]) => {
         if (!active) return;
-        setSummary({ policy, ai, lua, menus, restaurants, classics });
+        setSummary({ policy, ai, lua, menus, restaurants, classics, downloads });
       })
       .catch((reason) => active && setError(reason.message))
       .finally(() => active && setSyncing(false));

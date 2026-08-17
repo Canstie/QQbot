@@ -12,24 +12,27 @@ from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
-from uuid import uuid4
 
 from nonebot import logger, on_command
 from nonebot.adapters.onebot.v11 import Bot, MessageEvent
 from nonebot.matcher import Matcher
 
+from qq_personal_bot.download_storage import (
+    DownloadObjectStorage,
+    DownloadStorageError,
+    get_download_storage,
+)
 from qq_personal_bot.menu_recipes import resolve_local_source
-from qq_personal_bot.runtime import get_settings, get_store
+from qq_personal_bot.runtime import get_store
 
 download = on_command("download", priority=5, block=True)
+download_overview = on_command("download_overview", priority=5, block=True)
 
 _CHINA_TZ = timezone(timedelta(hours=8))
 _MAX_IMAGE_BYTES = 50 * 1024 * 1024
 _DOWNLOAD_CONCURRENCY = 4
-_HASH_NAME_RE = re.compile(r"^[0-9a-f]{64}$")
 _CQ_SEGMENT_RE = re.compile(r"\[CQ:(image|forward),([^\]]+)\]")
 _DIRECT_SOURCE_SCHEMES = frozenset({"http", "https", "file"})
-_IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".gif", ".webp"})
 
 
 @dataclass(frozen=True)
@@ -38,7 +41,8 @@ class DownloadStats:
     succeeded: int
     skipped: int
     failed: int
-    directory: Path
+    bucket: str
+    downloaded_date: str
 
 
 @dataclass
@@ -55,10 +59,24 @@ async def _handle_download(matcher: Matcher, bot: Bot, event: MessageEvent) -> N
     if not get_store().is_admin(int(event.user_id)):
         await matcher.finish("权限不足：仅管理员可使用 /download。")
 
+    embedded_message, reply_id = _referenced_message(event)
+    if embedded_message is None and reply_id is None and not _contains_segment_type(
+        getattr(event, "message", None), "forward"
+    ):
+        await matcher.finish("请引用一条聊天记录后发送 /download。")
+        return
+
+    await matcher.send("⏳ 正在下载聊天记录中的图片，请稍候……")
+
     try:
+        storage = get_download_storage()
+        await asyncio.to_thread(storage.ensure_available)
         collected = await _collect_referenced_images(bot, event)
     except DownloadInputError as exc:
         await matcher.finish(str(exc))
+        return
+    except DownloadStorageError:
+        await matcher.finish("下载失败：MinIO 对象存储暂不可用，请稍后重试。")
         return
 
     if not collected.images and collected.errors:
@@ -71,7 +89,8 @@ async def _handle_download(matcher: Matcher, bot: Bot, event: MessageEvent) -> N
     day = datetime.now(_CHINA_TZ).strftime("%Y%m%d")
     stats = await _download_image_sources(
         list(sources),
-        root=get_settings().download_image_dir,
+        storage=storage,
+        store=get_store(),
         day=day,
     )
     await matcher.finish(_format_download_result(stats))
@@ -80,6 +99,23 @@ async def _handle_download(matcher: Matcher, bot: Bot, event: MessageEvent) -> N
 @download.handle()
 async def handle_download(matcher: Matcher, bot: Bot, event: MessageEvent) -> None:
     await _handle_download(matcher, bot, event)
+
+
+@download_overview.handle()
+async def handle_download_overview(matcher: Matcher, event: MessageEvent) -> None:
+    await _handle_download_overview(matcher, event)
+
+
+async def _handle_download_overview(matcher: Matcher, event: MessageEvent) -> None:
+    if not get_store().is_admin(int(event.user_id)):
+        await matcher.finish("权限不足：仅管理员可使用 /download_overview。")
+    try:
+        storage = get_download_storage()
+        await asyncio.to_thread(storage.ensure_available)
+    except DownloadStorageError:
+        await matcher.finish("查询失败：MinIO 对象存储暂不可用，请稍后重试。")
+        return
+    await matcher.finish(_format_download_overview(get_store().download_image_overview()))
 
 
 async def _collect_referenced_images(bot: Bot, event: Any) -> _CollectedImages:
@@ -286,13 +322,10 @@ def _is_direct_image_source(source: str) -> bool:
 async def _download_image_sources(
     sources: list[str | None],
     *,
-    root: Path,
+    storage: DownloadObjectStorage,
+    store: Any,
     day: str,
 ) -> DownloadStats:
-    root = Path(root)
-    target_directory = root / day
-    await asyncio.to_thread(target_directory.mkdir, parents=True, exist_ok=True)
-    existing_hashes = await asyncio.to_thread(_load_existing_hashes, root)
     semaphore = asyncio.Semaphore(_DOWNLOAD_CONCURRENCY)
     save_lock = asyncio.Lock()
 
@@ -302,17 +335,51 @@ async def _download_image_sources(
         try:
             async with semaphore:
                 body = await asyncio.to_thread(_read_image_source, source)
-            suffix = _image_suffix(body)
-            if suffix is None:
+            image_type = _image_type(body)
+            if image_type is None:
                 return "failed"
+            suffix, content_type = image_type
             digest = hashlib.sha256(body).hexdigest()
             async with save_lock:
-                if digest in existing_hashes or _hash_file_exists(root, digest):
-                    existing_hashes.add(digest)
+                if store.get_download_image_by_hash(digest) is not None:
                     return "skipped"
-                target_path = target_directory / f"{digest}{suffix}"
-                await asyncio.to_thread(_write_image_atomically, target_path, body)
-                existing_hashes.add(digest)
+                object_key = f"{day}/{digest}{suffix}"
+                uploaded = False
+                try:
+                    await asyncio.to_thread(
+                        storage.put_image,
+                        object_key,
+                        body,
+                        content_type,
+                        {"sha256": digest, "downloaded-date": day},
+                    )
+                    uploaded = True
+                    stat = await asyncio.to_thread(storage.stat_image, object_key)
+                    if int(getattr(stat, "size", -1)) != len(body):
+                        raise DownloadStorageError(f"MinIO 对象大小校验失败：{object_key}")
+                    record, created = store.record_download_image(
+                        sha256=digest,
+                        object_key=object_key,
+                        content_type=content_type,
+                        size_bytes=len(body),
+                        downloaded_date=day,
+                    )
+                    if not created:
+                        if record["object_key"] != object_key:
+                            await asyncio.to_thread(
+                                storage.remove_image,
+                                object_key,
+                                missing_ok=True,
+                            )
+                        return "skipped"
+                except Exception:
+                    if uploaded:
+                        await asyncio.to_thread(
+                            storage.remove_image,
+                            object_key,
+                            missing_ok=True,
+                        )
+                    raise
                 return "succeeded"
         except Exception as exc:
             logger.warning(f"Download: image download failed for {source}: {exc}")
@@ -324,7 +391,8 @@ async def _download_image_sources(
         succeeded=results.count("succeeded"),
         skipped=results.count("skipped"),
         failed=results.count("failed"),
-        directory=target_directory,
+        bucket=storage.bucket,
+        downloaded_date=day,
     )
 
 
@@ -355,47 +423,16 @@ def _bounded_image(body: bytes) -> bytes:
     return body
 
 
-def _image_suffix(body: bytes) -> str | None:
+def _image_type(body: bytes) -> tuple[str, str] | None:
     if body.startswith(b"\xff\xd8\xff"):
-        return ".jpg"
+        return ".jpg", "image/jpeg"
     if body.startswith(b"\x89PNG\r\n\x1a\n"):
-        return ".png"
+        return ".png", "image/png"
     if body.startswith((b"GIF87a", b"GIF89a")):
-        return ".gif"
+        return ".gif", "image/gif"
     if len(body) >= 12 and body[:4] == b"RIFF" and body[8:12] == b"WEBP":
-        return ".webp"
+        return ".webp", "image/webp"
     return None
-
-
-def _load_existing_hashes(root: Path) -> set[str]:
-    if not root.is_dir():
-        return set()
-    hashes: set[str] = set()
-    for path in root.rglob("*"):
-        if not path.is_file() or path.suffix.lower() not in _IMAGE_SUFFIXES:
-            continue
-        stem = path.stem.casefold()
-        if _HASH_NAME_RE.fullmatch(stem):
-            hashes.add(stem)
-            continue
-        try:
-            hashes.add(hashlib.sha256(path.read_bytes()).hexdigest())
-        except OSError as exc:
-            logger.warning(f"Download: failed to hash existing image {path}: {exc}")
-    return hashes
-
-
-def _hash_file_exists(root: Path, digest: str) -> bool:
-    return any(root.glob(f"*/{digest}.*"))
-
-
-def _write_image_atomically(target_path: Path, body: bytes) -> None:
-    temp_path = target_path.with_name(f".{target_path.name}.{uuid4().hex}.tmp")
-    try:
-        temp_path.write_bytes(body)
-        temp_path.replace(target_path)
-    finally:
-        temp_path.unlink(missing_ok=True)
 
 
 def _format_download_result(stats: DownloadStats) -> str:
@@ -403,5 +440,26 @@ def _format_download_result(stats: DownloadStats) -> str:
         f"转发图片下载完成：共 {stats.total} 张\n"
         f"✅ 成功 {stats.succeeded}，⏭️ 跳过 {stats.skipped}（已存在），"
         f"❌ 失败 {stats.failed}\n"
-        f"📁 已保存至当天的文件夹中：{stats.directory.as_posix()}"
+        f"☁️ 已保存至 MinIO：{stats.bucket}/{stats.downloaded_date}/"
     )
+
+
+def _format_download_overview(overview: Mapping[str, Any]) -> str:
+    return (
+        "下载图片总览\n"
+        f"🖼 总图片：{int(overview['total'])} 张\n"
+        f"📦 总大小：{_format_bytes(int(overview['total_bytes']))}\n"
+        f"📅 今日新增：{int(overview['today_count'])} 张"
+    )
+
+
+def _format_bytes(value: int) -> str:
+    amount = float(max(0, value))
+    units = ("B", "KB", "MB", "GB", "TB")
+    unit = units[0]
+    for unit in units:
+        if amount < 1024 or unit == units[-1]:
+            break
+        amount /= 1024
+    precision = 0 if amount >= 10 or unit == "B" else 1
+    return f"{amount:.{precision}f} {unit}"

@@ -66,6 +66,57 @@ def test_store_persists_policy_state(tmp_path):
     assert "!" in reopened.prefixes()
 
 
+def test_download_image_index_deduplicates_lists_and_summarizes(tmp_path):
+    db_path = tmp_path / "policy.sqlite3"
+    store = PolicyStore(db_path)
+    store.initialize(AppSettings(db_path=db_path, admins=(10000,)))
+    first_hash = "a" * 64
+    second_hash = "b" * 64
+
+    first, created = store.record_download_image(
+        sha256=first_hash,
+        object_key=f"20260816/{first_hash}.jpg",
+        content_type="image/jpeg",
+        size_bytes=1024,
+        downloaded_date="20260816",
+    )
+    duplicate, duplicate_created = store.record_download_image(
+        sha256=first_hash,
+        object_key=f"20260817/{first_hash}.jpg",
+        content_type="image/jpeg",
+        size_bytes=1024,
+        downloaded_date="20260817",
+    )
+    second, second_created = store.record_download_image(
+        sha256=second_hash,
+        object_key=f"20260817/{second_hash}.png",
+        content_type="image/png",
+        size_bytes=2048,
+        downloaded_date="20260817",
+    )
+
+    assert created is True
+    assert duplicate_created is False
+    assert duplicate["id"] == first["id"]
+    assert second_created is True
+    assert store.download_image_overview("20260817") == {
+        "total": 2,
+        "total_bytes": 3072,
+        "today": "20260817",
+        "today_count": 1,
+    }
+
+    listing = store.list_download_images(downloaded_date="20260817", limit=1)
+    assert listing["total"] == 1
+    assert listing["images"][0]["id"] == second["id"]
+    assert listing["dates"] == [
+        {"date": "20260817", "count": 1},
+        {"date": "20260816", "count": 1},
+    ]
+    assert store.delete_download_image(first["id"]) is True
+    assert store.get_download_image(first["id"]) is None
+
+
 def test_snapshot_shape(tmp_path):
     db_path = tmp_path / "policy.sqlite3"
     store = PolicyStore(db_path)

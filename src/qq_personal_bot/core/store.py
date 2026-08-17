@@ -179,6 +179,19 @@ class PolicyStore:
                 created_at REAL NOT NULL,
                 updated_at REAL NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS download_images (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sha256 TEXT NOT NULL UNIQUE,
+                object_key TEXT NOT NULL UNIQUE,
+                content_type TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                downloaded_date TEXT NOT NULL,
+                created_at REAL NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_download_images_date_created
+            ON download_images(downloaded_date, created_at DESC, id DESC);
             """
         )
 
@@ -2275,6 +2288,159 @@ class PolicyStore:
             for item in ranked[:limit]
             if (public := self._public_group_stat(item)) is not None
         ]
+
+    def record_download_image(
+        self,
+        *,
+        sha256: str,
+        object_key: str,
+        content_type: str,
+        size_bytes: int,
+        downloaded_date: str,
+    ) -> tuple[dict[str, Any], bool]:
+        normalized_hash = str(sha256).strip().casefold()
+        normalized_key = str(object_key).strip()
+        normalized_date = str(downloaded_date).strip()
+        if not re.fullmatch(r"[0-9a-f]{64}", normalized_hash):
+            raise ValueError("sha256 must be a 64-character lowercase hex digest")
+        if not normalized_key:
+            raise ValueError("object_key cannot be empty")
+        if not re.fullmatch(r"\d{8}", normalized_date):
+            raise ValueError("downloaded_date must use YYYYMMDD")
+        if int(size_bytes) <= 0:
+            raise ValueError("size_bytes must be positive")
+
+        with self._connect() as conn:
+            try:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO download_images(
+                        sha256, object_key, content_type, size_bytes, downloaded_date, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        normalized_hash,
+                        normalized_key,
+                        str(content_type or "application/octet-stream"),
+                        int(size_bytes),
+                        normalized_date,
+                        time.time(),
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                row = conn.execute(
+                    "SELECT * FROM download_images WHERE sha256 = ? OR object_key = ?",
+                    (normalized_hash, normalized_key),
+                ).fetchone()
+                if row is None:
+                    raise
+                return self._download_image_from_row(row), False
+            row = conn.execute(
+                "SELECT * FROM download_images WHERE id = ?",
+                (cursor.lastrowid,),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("download image index insert failed")
+            return self._download_image_from_row(row), True
+
+    def get_download_image_by_hash(self, sha256: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM download_images WHERE sha256 = ?",
+                (str(sha256).strip().casefold(),),
+            ).fetchone()
+            return self._download_image_from_row(row) if row is not None else None
+
+    def get_download_image(self, image_id: int) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM download_images WHERE id = ?",
+                (int(image_id),),
+            ).fetchone()
+            return self._download_image_from_row(row) if row is not None else None
+
+    def list_download_images(
+        self,
+        *,
+        downloaded_date: str | None = None,
+        offset: int = 0,
+        limit: int = 60,
+    ) -> dict[str, Any]:
+        normalized_offset = max(0, int(offset))
+        normalized_limit = min(max(1, int(limit)), 100)
+        where = ""
+        params: list[Any] = []
+        if downloaded_date:
+            normalized_date = str(downloaded_date).strip()
+            if not re.fullmatch(r"\d{8}", normalized_date):
+                raise ValueError("downloaded_date must use YYYYMMDD")
+            where = "WHERE downloaded_date = ?"
+            params.append(normalized_date)
+        with self._connect() as conn:
+            total_row = conn.execute(
+                f"SELECT COUNT(*) AS count FROM download_images {where}",
+                params,
+            ).fetchone()
+            rows = conn.execute(
+                f"""
+                SELECT * FROM download_images {where}
+                ORDER BY created_at DESC, id DESC
+                LIMIT ? OFFSET ?
+                """,
+                [*params, normalized_limit, normalized_offset],
+            ).fetchall()
+            date_rows = conn.execute(
+                """
+                SELECT downloaded_date, COUNT(*) AS count
+                FROM download_images
+                GROUP BY downloaded_date
+                ORDER BY downloaded_date DESC
+                """
+            ).fetchall()
+        return {
+            "images": [self._download_image_from_row(row) for row in rows],
+            "total": int(total_row["count"] if total_row is not None else 0),
+            "offset": normalized_offset,
+            "limit": normalized_limit,
+            "dates": [
+                {"date": str(row["downloaded_date"]), "count": int(row["count"])}
+                for row in date_rows
+            ],
+        }
+
+    def download_image_overview(self, today: str | None = None) -> dict[str, Any]:
+        target_date = today or datetime.now(CHINA_TZ).strftime("%Y%m%d")
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS count, COALESCE(SUM(size_bytes), 0) AS total_bytes "
+                "FROM download_images"
+            ).fetchone()
+            today_row = conn.execute(
+                "SELECT COUNT(*) AS count FROM download_images WHERE downloaded_date = ?",
+                (target_date,),
+            ).fetchone()
+        return {
+            "total": int(row["count"] if row is not None else 0),
+            "total_bytes": int(row["total_bytes"] if row is not None else 0),
+            "today": str(target_date),
+            "today_count": int(today_row["count"] if today_row is not None else 0),
+        }
+
+    def delete_download_image(self, image_id: int) -> bool:
+        with self._connect() as conn:
+            cursor = conn.execute("DELETE FROM download_images WHERE id = ?", (int(image_id),))
+            return cursor.rowcount > 0
+
+    def _download_image_from_row(self, row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": int(row["id"]),
+            "sha256": str(row["sha256"]),
+            "object_key": str(row["object_key"]),
+            "content_type": str(row["content_type"]),
+            "size_bytes": int(row["size_bytes"]),
+            "downloaded_date": str(row["downloaded_date"]),
+            "created_at": float(row["created_at"]),
+        }
 
     def _time_label(self, timestamp: float) -> str:
         return datetime.fromtimestamp(timestamp, CHINA_TZ).strftime("%H:%M")

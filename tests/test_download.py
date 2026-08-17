@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import importlib
-from pathlib import Path
 from types import SimpleNamespace
 
 import nonebot
 import pytest
+
+from qq_personal_bot.core.store import PolicyStore
+from qq_personal_bot.settings import AppSettings
 
 nonebot.init()
 download = importlib.import_module("qq_personal_bot.plugins.download")
@@ -19,6 +21,9 @@ class CommandFinished(Exception):
 class FakeMatcher:
     def __init__(self) -> None:
         self.messages: list[str | None] = []
+
+    async def send(self, message: str) -> None:
+        self.messages.append(message)
 
     async def finish(self, message: str | None = None) -> None:
         self.messages.append(message)
@@ -80,6 +85,27 @@ class FakeBot:
         if action == "get_image" and params["file"] == "opaque.jpg":
             return {"url": "https://example.test/opaque.jpg"}
         raise AssertionError(f"Unexpected API call: {action} {params}")
+
+
+class FakeStorage:
+    bucket = "qqbot-downloads"
+
+    def __init__(self, events: list[str] | None = None) -> None:
+        self.objects: dict[str, bytes] = {}
+        self.events = events
+
+    def ensure_available(self) -> None:
+        if self.events is not None:
+            self.events.append("storage-ready")
+
+    def put_image(self, object_key, body, content_type, metadata) -> None:
+        self.objects[object_key] = body
+
+    def stat_image(self, object_key):
+        return SimpleNamespace(size=len(self.objects[object_key]))
+
+    def remove_image(self, object_key, *, missing_ok=False) -> None:
+        self.objects.pop(object_key, None)
 
 
 @pytest.mark.asyncio
@@ -144,9 +170,16 @@ async def test_downloads_and_deduplicates_images_by_content(tmp_path, monkeypatc
     existing_body = b"\xff\xd8\xffexisting"
     new_body = b"\x89PNG\r\n\x1a\nnew-image"
     existing_digest = hashlib.sha256(existing_body).hexdigest()
-    previous_directory = tmp_path / "20260816"
-    previous_directory.mkdir()
-    (previous_directory / f"{existing_digest}.jpg").write_bytes(existing_body)
+    store = PolicyStore(tmp_path / "policy.sqlite3")
+    store.initialize(AppSettings(db_path=tmp_path / "policy.sqlite3", admins=(1,)))
+    store.record_download_image(
+        sha256=existing_digest,
+        object_key=f"20260816/{existing_digest}.jpg",
+        content_type="image/jpeg",
+        size_bytes=len(existing_body),
+        downloaded_date="20260816",
+    )
+    storage = FakeStorage()
 
     bodies = {
         "existing": existing_body,
@@ -157,7 +190,8 @@ async def test_downloads_and_deduplicates_images_by_content(tmp_path, monkeypatc
 
     stats = await download._download_image_sources(
         ["existing", "new", "invalid"],
-        root=tmp_path,
+        storage=storage,
+        store=store,
         day="20260817",
     )
 
@@ -166,7 +200,76 @@ async def test_downloads_and_deduplicates_images_by_content(tmp_path, monkeypatc
     assert stats.succeeded == 1
     assert stats.skipped == 1
     assert stats.failed == 1
-    assert (tmp_path / "20260817" / f"{new_digest}.png").read_bytes() == new_body
+    assert storage.objects[f"20260817/{new_digest}.png"] == new_body
+
+
+@pytest.mark.asyncio
+async def test_concurrent_duplicate_sources_create_one_object(tmp_path, monkeypatch):
+    body = b"\x89PNG\r\n\x1a\nsame-image"
+    store = PolicyStore(tmp_path / "policy.sqlite3")
+    store.initialize(AppSettings(db_path=tmp_path / "policy.sqlite3", admins=(1,)))
+    storage = FakeStorage()
+    monkeypatch.setattr(download, "_read_image_source", lambda source: body)
+
+    stats = await download._download_image_sources(
+        ["first", "second"],
+        storage=storage,
+        store=store,
+        day="20260817",
+    )
+
+    assert stats.succeeded == 1
+    assert stats.skipped == 1
+    assert len(storage.objects) == 1
+
+
+@pytest.mark.asyncio
+async def test_sends_progress_before_storage_and_download(monkeypatch):
+    events: list[str] = []
+    matcher = FakeMatcher()
+    original_send = matcher.send
+
+    async def tracked_send(message: str) -> None:
+        events.append("progress")
+        await original_send(message)
+
+    matcher.send = tracked_send
+    storage = FakeStorage(events)
+    store = SimpleNamespace(
+        is_admin=lambda user_id: True,
+        get_download_image_by_hash=lambda digest: None,
+        record_download_image=lambda **kwargs: ({"object_key": kwargs["object_key"]}, True),
+    )
+
+    async def collected(bot, event):
+        return download._CollectedImages(images=[{"url": "image"}], errors=[])
+
+    async def resolved(bot, image):
+        return "image"
+
+    def read(source):
+        events.append("download")
+        return b"\x89PNG\r\n\x1a\nbody"
+
+    monkeypatch.setattr(download, "get_store", lambda: store)
+    monkeypatch.setattr(download, "get_download_storage", lambda: storage)
+    monkeypatch.setattr(download, "_collect_referenced_images", collected)
+    monkeypatch.setattr(download, "_resolve_image_source", resolved)
+    monkeypatch.setattr(download, "_read_image_source", read)
+
+    with pytest.raises(CommandFinished):
+        await download._handle_download(
+            matcher,
+            FakeBot(),
+            SimpleNamespace(
+                user_id=1,
+                message=[],
+                reply=SimpleNamespace(message_id="quoted", message=[]),
+            ),
+        )
+
+    assert events[:3] == ["progress", "storage-ready", "download"]
+    assert matcher.messages[0] == "⏳ 正在下载聊天记录中的图片，请稍候……"
 
 
 def test_formats_requested_download_summary():
@@ -176,12 +279,41 @@ def test_formats_requested_download_summary():
             succeeded=5,
             skipped=2,
             failed=1,
-            directory=Path("downloadimage/20260817"),
+            bucket="qqbot-downloads",
+            downloaded_date="20260817",
         )
     )
 
     assert result == (
         "转发图片下载完成：共 8 张\n"
         "✅ 成功 5，⏭️ 跳过 2（已存在），❌ 失败 1\n"
-        "📁 已保存至当天的文件夹中：downloadimage/20260817"
+        "☁️ 已保存至 MinIO：qqbot-downloads/20260817/"
     )
+
+
+def test_formats_download_overview():
+    assert download._format_download_overview(
+        {"total": 34, "total_bytes": 66 * 1024 * 1024, "today_count": 4}
+    ) == (
+        "下载图片总览\n"
+        "🖼 总图片：34 张\n"
+        "📦 总大小：66 MB\n"
+        "📅 今日新增：4 张"
+    )
+
+
+@pytest.mark.asyncio
+async def test_download_overview_reports_unavailable_storage(monkeypatch):
+    matcher = FakeMatcher()
+    store = SimpleNamespace(is_admin=lambda user_id: True)
+    monkeypatch.setattr(download, "get_store", lambda: store)
+    monkeypatch.setattr(
+        download,
+        "get_download_storage",
+        lambda: (_ for _ in ()).throw(download.DownloadStorageError("offline")),
+    )
+
+    with pytest.raises(CommandFinished):
+        await download._handle_download_overview(matcher, SimpleNamespace(user_id=1))
+
+    assert matcher.messages == ["查询失败：MinIO 对象存储暂不可用，请稍后重试。"]

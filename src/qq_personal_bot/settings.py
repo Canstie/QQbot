@@ -66,6 +66,11 @@ class AppSettings:
     classics_image_dir: Path = Path("data/classics")
     sticker_dir: Path = Path("data/stickers")
     download_image_dir: Path = Path("downloadimage")
+    minio_endpoint: str = "127.0.0.1:9000"
+    minio_access_key: str = ""
+    minio_secret_key: str = ""
+    minio_bucket: str = "qqbot-downloads"
+    minio_secure: bool = False
     menu_provider: str = "auto"
     jisu_recipe_appkey: str = ""
     dsapi_enabled: bool = True
@@ -111,6 +116,17 @@ class AppSettings:
             classics_image_dir=Path(env.get("QQBOT_CLASSICS_IMAGE_DIR", "data/classics")),
             sticker_dir=Path(env.get("QQBOT_STICKER_DIR", "data/stickers")),
             download_image_dir=Path(env.get("QQBOT_DOWNLOAD_IMAGE_DIR", "downloadimage")),
+            minio_endpoint=(
+                env.get("QQBOT_MINIO_ENDPOINT", "127.0.0.1:9000").strip()
+                or "127.0.0.1:9000"
+            ),
+            minio_access_key=env.get("QQBOT_MINIO_ACCESS_KEY", "").strip(),
+            minio_secret_key=env.get("QQBOT_MINIO_SECRET_KEY", "").strip(),
+            minio_bucket=(
+                env.get("QQBOT_MINIO_BUCKET", "qqbot-downloads").strip()
+                or "qqbot-downloads"
+            ),
+            minio_secure=_env_bool(env.get("QQBOT_MINIO_SECURE"), False),
             menu_provider=env.get("QQBOT_MENU_PROVIDER", "auto").strip().lower() or "auto",
             jisu_recipe_appkey=env.get("QQBOT_JISU_RECIPE_APPKEY", "").strip(),
             dsapi_enabled=_env_bool(env.get("QQBOT_DSAPI_ENABLED"), True),

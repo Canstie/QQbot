@@ -13,6 +13,7 @@ dependencies = [
   "nonebot-adapter-onebot>=2.4.0",
   "lunar_python>=1.4.8,<2",
   "lupa>=2.8",
+  "minio>=7.2.0,<8",
   "Pillow>=10.0.0",
   "pydantic>=2.7.0",
   "python-dotenv>=1.0.1",

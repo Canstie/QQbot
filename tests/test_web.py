@@ -1,17 +1,55 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 
 from fastapi.testclient import TestClient
 
-from qq_personal_bot.runtime import reset_runtime
+from qq_personal_bot import web as web_module
+from qq_personal_bot.runtime import get_store, reset_runtime
 from qq_personal_bot.web import create_app
 
 GIF_DATA_URL = (
     "data:image/gif;base64,"
     "R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw=="
 )
+
+
+class _FakeMinioResponse:
+    def __init__(self, body: bytes) -> None:
+        self.body = body
+        self.closed = False
+
+    def stream(self, chunk_size: int):
+        stream = io.BytesIO(self.body)
+        while chunk := stream.read(chunk_size):
+            yield chunk
+
+    def close(self) -> None:
+        self.closed = True
+
+    def release_conn(self) -> None:
+        pass
+
+
+class _FakeDownloadStorage:
+    bucket = "qqbot-downloads"
+
+    def __init__(self, objects: dict[str, bytes]) -> None:
+        self.objects = objects
+
+    def ensure_available(self) -> None:
+        pass
+
+    def get_image(self, object_key: str):
+        return _FakeMinioResponse(self.objects[object_key])
+
+    def remove_image(self, object_key: str, *, missing_ok: bool = False) -> None:
+        if missing_ok:
+            self.objects.pop(object_key, None)
+        else:
+            del self.objects[object_key]
 
 
 def test_replies_api_roundtrip(tmp_path, monkeypatch):
@@ -682,3 +720,57 @@ def test_classics_api_returns_empty_groups_when_directory_missing(tmp_path, monk
 
     assert response.status_code == 200
     assert response.json()["groups"] == []
+
+
+def test_download_gallery_lists_streams_and_deletes_images(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("QQBOT_WEB_TOKEN", raising=False)
+    monkeypatch.setenv("QQBOT_DB_PATH", str(tmp_path / "policy.sqlite3"))
+    reset_runtime()
+    store = get_store()
+    body = b"GIF89a-gallery"
+    digest = "c" * 64
+    object_key = f"20260817/{digest}.gif"
+    record, _ = store.record_download_image(
+        sha256=digest,
+        object_key=object_key,
+        content_type="image/gif",
+        size_bytes=len(body),
+        downloaded_date="20260817",
+    )
+    storage = _FakeDownloadStorage({object_key: body})
+    monkeypatch.setattr(web_module, "get_download_storage", lambda: storage)
+    client = TestClient(create_app())
+
+    overview = client.get("/api/download-images/overview")
+    listing = client.get("/api/download-images?date=20260817&offset=0&limit=60")
+    content = client.get(f"/api/download-images/{record['id']}/content")
+
+    assert overview.status_code == 200
+    assert overview.json()["total"] == 1
+    assert overview.json()["storage_available"] is True
+    assert listing.status_code == 200
+    assert listing.json()["images"][0]["image_url"].endswith(
+        f"/api/download-images/{record['id']}/content"
+    )
+    assert content.status_code == 200
+    assert content.content == body
+    assert content.headers["etag"] == f'"{digest}"'
+    assert content.headers["cache-control"] == "private, max-age=86400"
+
+    deleted = client.delete(f"/api/download-images/{record['id']}")
+
+    assert deleted.status_code == 200
+    assert object_key not in storage.objects
+    assert store.get_download_image(record["id"]) is None
+
+
+def test_download_gallery_rejects_invalid_date(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("QQBOT_WEB_TOKEN", raising=False)
+    monkeypatch.setenv("QQBOT_DB_PATH", str(tmp_path / "policy.sqlite3"))
+    reset_runtime()
+
+    response = TestClient(create_app()).get("/api/download-images?date=2026-08-17")
+
+    assert response.status_code == 400
