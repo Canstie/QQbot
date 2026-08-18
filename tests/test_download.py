@@ -176,6 +176,72 @@ async def test_fetches_quoted_message_when_reply_has_no_embedded_content():
 
 
 @pytest.mark.asyncio
+async def test_nested_forward_records_stop_after_seven_levels():
+    class DeepForwardBot:
+        def __init__(self) -> None:
+            self.calls: list[int] = []
+
+        async def call_api(self, action: str, **params):
+            assert action == "get_forward_msg"
+            depth = int(params["id"].removeprefix("level-"))
+            self.calls.append(depth)
+            return {
+                "message": [
+                    {"type": "image", "data": {"url": f"image-{depth}"}},
+                    {
+                        "type": "forward",
+                        "data": {"id": f"level-{depth + 1}"},
+                    },
+                ]
+            }
+
+    bot = DeepForwardBot()
+    event = SimpleNamespace(
+        message=[FakeSegment("forward", {"id": "level-1"})],
+        reply=None,
+    )
+
+    collected = await download._collect_referenced_images(bot, event)
+
+    assert bot.calls == list(range(1, 8))
+    assert [image["url"] for image in collected.images] == [
+        f"image-{depth}" for depth in range(1, 8)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_collects_at_most_three_hundred_images():
+    class ManyImagesBot:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def call_api(self, action: str, **params):
+            assert action == "get_forward_msg"
+            self.calls.append(params["id"])
+            return {
+                "message": [
+                    {"type": "forward", "data": {"id": "not-requested"}},
+                    *(
+                        {"type": "image", "data": {"url": f"image-{index}"}}
+                        for index in range(350)
+                    ),
+                ]
+            }
+
+    bot = ManyImagesBot()
+    event = SimpleNamespace(
+        message=[FakeSegment("forward", {"id": "root"})],
+        reply=None,
+    )
+
+    collected = await download._collect_referenced_images(bot, event)
+
+    assert len(collected.images) == 300
+    assert collected.images[-1]["url"] == "image-299"
+    assert bot.calls == ["root"]
+
+
+@pytest.mark.asyncio
 async def test_downloads_and_deduplicates_images_by_content(tmp_path, monkeypatch):
     existing_body = b"\xff\xd8\xffexisting"
     new_body = b"\x89PNG\r\n\x1a\nnew-image"

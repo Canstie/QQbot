@@ -30,6 +30,8 @@ download_overview = on_command("download_overview", priority=5, block=True)
 
 _CHINA_TZ = timezone(timedelta(hours=8))
 _MAX_IMAGE_BYTES = 50 * 1024 * 1024
+_MAX_FORWARD_DEPTH = 7
+_MAX_IMAGES_PER_DOWNLOAD = 300
 _DOWNLOAD_CONCURRENCY = 4
 _CQ_SEGMENT_RE = re.compile(r"\[CQ:(image|forward),([^\]]+)\]")
 _DIRECT_SOURCE_SCHEMES = frozenset({"http", "https", "file"})
@@ -126,7 +128,7 @@ async def _collect_referenced_images(bot: Bot, event: Any) -> _CollectedImages:
             raise DownloadInputError("请引用一条聊天记录后发送 /download。")
 
     images: list[dict[str, Any]] = []
-    forward_ids: list[str] = []
+    forward_ids: list[tuple[str, int]] = []
     errors: list[str] = []
     if embedded_message is not None:
         _scan_message_payload(embedded_message, images, forward_ids)
@@ -142,8 +144,8 @@ async def _collect_referenced_images(bot: Bot, event: Any) -> _CollectedImages:
 
     seen_forward_ids: set[str] = set()
     cursor = 0
-    while cursor < len(forward_ids):
-        forward_id = forward_ids[cursor]
+    while cursor < len(forward_ids) and len(images) < _MAX_IMAGES_PER_DOWNLOAD:
+        forward_id, depth = forward_ids[cursor]
         cursor += 1
         if not forward_id or forward_id in seen_forward_ids:
             continue
@@ -154,7 +156,15 @@ async def _collect_referenced_images(bot: Bot, event: Any) -> _CollectedImages:
             logger.warning(f"Download: get_forward_msg failed for {forward_id}: {exc}")
             errors.append(str(exc))
             continue
-        _scan_message_payload(payload, images, forward_ids)
+        _scan_message_payload(
+            payload,
+            images,
+            forward_ids,
+            forward_depth=depth + 1,
+        )
+
+        if len(images) >= _MAX_IMAGES_PER_DOWNLOAD:
+            break
 
     return _CollectedImages(images=images, errors=errors)
 
@@ -185,12 +195,19 @@ def _contains_segment_type(value: Any, segment_type: str) -> bool:
 def _scan_message_payload(
     value: Any,
     images: list[dict[str, Any]],
-    forward_ids: list[str],
+    forward_ids: list[tuple[str, int]],
+    *,
+    forward_depth: int = 1,
 ) -> None:
-    if value is None:
+    if value is None or len(images) >= _MAX_IMAGES_PER_DOWNLOAD:
         return
     if isinstance(value, str):
-        _scan_cq_message(value, images, forward_ids)
+        _scan_cq_message(
+            value,
+            images,
+            forward_ids,
+            forward_depth=forward_depth,
+        )
         return
     if isinstance(value, Mapping):
         segment_type = str(value.get("type") or "")
@@ -202,15 +219,25 @@ def _scan_message_payload(
                 return
             if segment_type == "forward":
                 forward_id = _first_value(normalized_data, "id", "resid")
-                if forward_id is not None:
-                    forward_ids.append(str(forward_id))
+                if forward_id is not None and forward_depth <= _MAX_FORWARD_DEPTH:
+                    forward_ids.append((str(forward_id), forward_depth))
                 return
             if segment_type == "node":
                 for key in ("content", "message", "messages"):
-                    _scan_message_payload(normalized_data.get(key), images, forward_ids)
+                    _scan_message_payload(
+                        normalized_data.get(key),
+                        images,
+                        forward_ids,
+                        forward_depth=forward_depth,
+                    )
                 return
         for key in ("message", "messages", "content"):
-            _scan_message_payload(value.get(key), images, forward_ids)
+            _scan_message_payload(
+                value.get(key),
+                images,
+                forward_ids,
+                forward_depth=forward_depth,
+            )
         return
 
     if isinstance(value, (bytes, bytearray)):
@@ -220,8 +247,15 @@ def _scan_message_payload(
     except TypeError:
         return
     for item in iterator:
+        if len(images) >= _MAX_IMAGES_PER_DOWNLOAD:
+            break
         if isinstance(item, Mapping):
-            _scan_message_payload(item, images, forward_ids)
+            _scan_message_payload(
+                item,
+                images,
+                forward_ids,
+                forward_depth=forward_depth,
+            )
             continue
         segment_type = getattr(item, "type", None)
         data = getattr(item, "data", None)
@@ -230,15 +264,20 @@ def _scan_message_payload(
                 {"type": segment_type, "data": dict(data or {})},
                 images,
                 forward_ids,
+                forward_depth=forward_depth,
             )
 
 
 def _scan_cq_message(
     message: str,
     images: list[dict[str, Any]],
-    forward_ids: list[str],
+    forward_ids: list[tuple[str, int]],
+    *,
+    forward_depth: int,
 ) -> None:
     for match in _CQ_SEGMENT_RE.finditer(message):
+        if len(images) >= _MAX_IMAGES_PER_DOWNLOAD:
+            break
         segment_type = match.group(1)
         data: dict[str, str] = {}
         for item in match.group(2).split(","):
@@ -249,8 +288,8 @@ def _scan_cq_message(
             images.append(data)
         else:
             forward_id = _first_value(data, "id", "resid")
-            if forward_id is not None:
-                forward_ids.append(str(forward_id))
+            if forward_id is not None and forward_depth <= _MAX_FORWARD_DEPTH:
+                forward_ids.append((str(forward_id), forward_depth))
 
 
 def _as_segments(message: Any) -> list[dict[str, Any]]:
