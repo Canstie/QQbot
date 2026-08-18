@@ -41,8 +41,6 @@ class DownloadStats:
     succeeded: int
     skipped: int
     failed: int
-    bucket: str
-    downloaded_date: str
 
 
 @dataclass
@@ -391,8 +389,6 @@ async def _download_image_sources(
         succeeded=results.count("succeeded"),
         skipped=results.count("skipped"),
         failed=results.count("failed"),
-        bucket=storage.bucket,
-        downloaded_date=day,
     )
 
 
@@ -440,7 +436,7 @@ def _format_download_result(stats: DownloadStats) -> str:
         f"转发图片下载完成：共 {stats.total} 张\n"
         f"✅ 成功 {stats.succeeded}，⏭️ 跳过 {stats.skipped}（已存在），"
         f"❌ 失败 {stats.failed}\n"
-        f"☁️ 已保存至 MinIO：{stats.bucket}/{stats.downloaded_date}/"
+        "☁️ 已保存"
     )
 
 

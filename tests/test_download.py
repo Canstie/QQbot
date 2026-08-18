@@ -289,15 +289,13 @@ def test_formats_requested_download_summary():
             succeeded=5,
             skipped=2,
             failed=1,
-            bucket="qqbot-downloads",
-            downloaded_date="20260817",
         )
     )
 
     assert result == (
         "转发图片下载完成：共 8 张\n"
         "✅ 成功 5，⏭️ 跳过 2（已存在），❌ 失败 1\n"
-        "☁️ 已保存至 MinIO：qqbot-downloads/20260817/"
+        "☁️ 已保存"
     )
 
 
