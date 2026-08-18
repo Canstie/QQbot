@@ -19,7 +19,6 @@ from qq_personal_bot.dsapi import (
 from qq_personal_bot.lua_runner import pending_lua_command, run_lua_message
 from qq_personal_bot.miniapp import (
     CachedMiniAppImages,
-    MiniAppLink,
     cache_miniapp_images,
     extract_miniapp_link,
     format_miniapp_link,
@@ -54,8 +53,8 @@ def _build_random_group_response(response: str | Path) -> str | MessageSegment:
     return response
 
 
-def _build_miniapp_response(link: MiniAppLink, cached: CachedMiniAppImages) -> Message:
-    response = Message(format_miniapp_link(link))
+def _build_miniapp_image_response(cached: CachedMiniAppImages) -> Message:
+    response = Message()
     for path in cached.paths:
         response += MessageSegment.image(path.resolve().as_uri())
     return response
@@ -119,6 +118,23 @@ async def _finish_with_response(
     await matcher.finish(response)
 
 
+async def _send_response(
+    matcher: Any,
+    bot: Bot,
+    event: Any,
+    response: str | Message | MessageSegment,
+    *,
+    explicit_group_send: bool,
+) -> None:
+    _remember_recent_bot_output(event, response)
+    if explicit_group_send:
+        group_id = getattr(event, "group_id", None)
+        if group_id is not None:
+            await bot.send_group_msg(group_id=int(group_id), message=response)
+        return
+    await matcher.send(response)
+
+
 async def _handle_onebot_message(
     matcher: Any,
     bot: Bot,
@@ -136,13 +152,30 @@ async def _handle_onebot_message(
             logger.warning(f"Failed to cache mini app images: {exc}")
             cached_images = CachedMiniAppImages(directory=None, paths=())
         try:
-            await _finish_with_response(
-                matcher,
-                bot,
-                event,
-                _build_miniapp_response(miniapp_link, cached_images),
-                explicit_group_send=explicit_group_send,
-            )
+            link_response = format_miniapp_link(miniapp_link)
+            if cached_images.paths:
+                await _send_response(
+                    matcher,
+                    bot,
+                    event,
+                    link_response,
+                    explicit_group_send=explicit_group_send,
+                )
+                await _finish_with_response(
+                    matcher,
+                    bot,
+                    event,
+                    _build_miniapp_image_response(cached_images),
+                    explicit_group_send=explicit_group_send,
+                )
+            else:
+                await _finish_with_response(
+                    matcher,
+                    bot,
+                    event,
+                    link_response,
+                    explicit_group_send=explicit_group_send,
+                )
         finally:
             cached_images.cleanup()
 

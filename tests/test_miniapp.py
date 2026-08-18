@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from email.message import Message
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -198,6 +199,127 @@ async def test_caches_all_xiaohongshu_images_and_cleans_up(monkeypatch):
         if url.endswith("/second"):
             return FakeResponse(b"second-image", url, "image/png")
         raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr("qq_personal_bot.miniapp.urlopen", fake_urlopen)
+
+    cached = await cache_miniapp_images(link)
+    directory = cached.directory
+
+    assert directory is not None and directory.is_dir()
+    assert [path.name for path in cached.paths] == ["01.jpg", "02.png"]
+    assert [path.read_bytes() for path in cached.paths] == [b"first-image", b"second-image"]
+
+    cached.cleanup()
+    assert not directory.exists()
+
+
+def test_extracts_xiaoheihe_share_and_removes_tracking_parameters():
+    source_url = (
+        "https://api.xiaoheihe.cn/v3/bbs/app/api/web/share?"
+        "h_camp=link&h_session_id=session&h_src=encoded&link_id=c0687248f6da"
+        "&new_post_share_style=true"
+    )
+    payload = {
+        "app": "com.tencent.tuwen.lua",
+        "meta": {
+            "news": {
+                "appid": 1105910806,
+                "title": "里昂的变化[cube_喜欢]",
+                "jumpUrl": source_url,
+                "tag": "小黑盒",
+            }
+        },
+        "prompt": "[分享]里昂的变化[cube_喜欢]",
+    }
+
+    link = extract_miniapp_link(({"type": "json", "data": payload},))
+
+    assert link is not None
+    assert link.title == "里昂的变化[cube_喜欢]"
+    assert link.url == (
+        "https://api.xiaoheihe.cn/v3/bbs/app/api/web/share?link_id=c0687248f6da"
+    )
+    assert link.source_url == source_url
+
+
+@pytest.mark.asyncio
+async def test_caches_all_xiaoheihe_images_from_signed_detail_api(monkeypatch):
+    source_url = (
+        "https://api.xiaoheihe.cn/v3/bbs/app/api/web/share?"
+        "h_session_id=session&link_id=c0687248f6da"
+    )
+    link = extract_miniapp_link(
+        (
+            {
+                "type": "json",
+                "data": {
+                    "app": "com.tencent.tuwen.lua",
+                    "meta": {"news": {"title": "里昂的变化", "jumpUrl": source_url}},
+                },
+            },
+        )
+    )
+    assert link is not None
+
+    first_url = "https://imgheybox1.max-c.com/bbs/first/thumb.jpeg?format=jpg"
+    second_url = "https://bbsimg.maxjia.com/heybox/second.jpg"
+    detail = {
+        "status": "ok",
+        "result": {
+            "link": {
+                "text": json.dumps(
+                    [
+                        {"type": "text", "text": "正文"},
+                        {"type": "img", "url": first_url},
+                        {"type": "img", "url": first_url},
+                        {"type": "img", "url": "https://evil.example/image.jpg"},
+                    ]
+                ),
+                "imgs": [second_url],
+            }
+        },
+    }
+
+    class FakeHeaders(Message):
+        pass
+
+    class FakeResponse:
+        def __init__(self, body: bytes, url: str, content_type: str):
+            self.body = body
+            self.url = url
+            self.headers = FakeHeaders()
+            self.headers["Content-Type"] = content_type
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self, size):
+            return self.body[:size]
+
+        def geturl(self):
+            return self.url
+
+    def fake_urlopen(request, timeout):
+        parsed = urlparse(request.full_url)
+        if parsed.hostname == "api.xiaoheihe.cn":
+            query = parse_qs(parsed.query)
+            assert parsed.path == "/bbs/app/link/tree"
+            assert query["link_id"] == ["c0687248f6da"]
+            assert len(query["hkey"][0]) == 7
+            assert len(query["nonce"][0]) == 32
+            return FakeResponse(
+                json.dumps(detail).encode(),
+                request.full_url,
+                "application/json",
+            )
+        if request.full_url == first_url:
+            return FakeResponse(b"first-image", first_url, "image/jpeg")
+        if request.full_url == second_url:
+            return FakeResponse(b"second-image", second_url, "image/png")
+        raise AssertionError(f"unexpected URL: {request.full_url}")
 
     monkeypatch.setattr("qq_personal_bot.miniapp.urlopen", fake_urlopen)
 

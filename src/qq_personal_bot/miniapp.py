@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import html
 import json
 import re
+import secrets
 import shutil
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
-from urllib.parse import parse_qs, unquote, urlparse, urlunparse
+from urllib.parse import parse_qs, unquote, urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
 _MINIAPP_PROMPT_PREFIX = "[QQ小程序]"
@@ -29,6 +32,9 @@ _PLATFORM_PLACEHOLDER_TITLES = {"哔哩哔哩"}
 _MEDIA_KEY_PARTS = ("icon", "image", "img", "preview", "cover", "avatar", "logo")
 _URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
 _INITIAL_STATE_MARKER = "window.__INITIAL_STATE__="
+_XIAOHEIHE_DETAIL_PATH = "/bbs/app/link/tree"
+_XIAOHEIHE_SHARE_PATH = "/v3/bbs/app/api/web/share"
+_XIAOHEIHE_LINK_ID_RE = re.compile(r"^[A-Za-z0-9_-]{6,64}$")
 _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36"
@@ -41,6 +47,8 @@ _IMAGE_HOST_SUFFIXES = (
     ".xhsimg.com",
     ".ugcimg.cn",
     ".xiaohongshu.com",
+    ".max-c.com",
+    ".maxjia.com",
 )
 _IMAGE_EXTENSIONS = {
     "image/gif": ".gif",
@@ -89,9 +97,11 @@ def format_miniapp_link(link: MiniAppLink) -> str:
 
 
 async def cache_miniapp_images(link: MiniAppLink) -> CachedMiniAppImages:
-    if not _is_xiaohongshu_page_url(link.source_url):
-        return CachedMiniAppImages(directory=None, paths=())
-    return await asyncio.to_thread(_cache_xiaohongshu_images, link.source_url)
+    if _is_xiaohongshu_page_url(link.source_url):
+        return await asyncio.to_thread(_cache_xiaohongshu_images, link.source_url)
+    if _is_xiaoheihe_share_url(link.source_url):
+        return await asyncio.to_thread(_cache_xiaoheihe_images, link.source_url)
+    return CachedMiniAppImages(directory=None, paths=())
 
 
 def _decode_json_payload(data: Any) -> Mapping[str, Any] | None:
@@ -173,8 +183,8 @@ def _normalize_url(value: str) -> str | None:
         nested = unquote(nested_values[0])
         nested_parsed = urlparse(nested)
         if nested_parsed.scheme in {"http", "https"} and nested_parsed.netloc:
-            return _shorten_xiaohongshu_url(nested)
-    return _shorten_xiaohongshu_url(url)
+            return _shorten_supported_url(nested)
+    return _shorten_supported_url(url)
 
 
 def _source_url(value: str) -> str:
@@ -185,7 +195,7 @@ def _source_url(value: str) -> str:
         nested_values = query.get(key)
         if nested_values:
             nested = unquote(nested_values[0])
-            if _is_xiaohongshu_page_url(nested):
+            if _is_xiaohongshu_page_url(nested) or _is_xiaoheihe_share_url(nested):
                 return nested
     return url
 
@@ -200,18 +210,183 @@ def _shorten_xiaohongshu_url(url: str) -> str:
     return urlunparse(parsed._replace(scheme="https", params="", query="", fragment=""))
 
 
+def _shorten_supported_url(url: str) -> str:
+    shortened = _shorten_xiaohongshu_url(url)
+    if shortened != url:
+        return shortened
+    link_id = _xiaoheihe_link_id(url)
+    if link_id is None:
+        return url
+    return (
+        "https://api.xiaoheihe.cn"
+        f"{_XIAOHEIHE_SHARE_PATH}?{urlencode({'link_id': link_id})}"
+    )
+
+
 def _cache_xiaohongshu_images(source_url: str) -> CachedMiniAppImages:
     page, final_url = _fetch_page(source_url)
     image_urls = _extract_xiaohongshu_image_urls(page, final_url)
+    return _cache_image_urls(image_urls, final_url, prefix="qqbot-xhs-")
+
+
+def _cache_xiaoheihe_images(source_url: str) -> CachedMiniAppImages:
+    link_id = _xiaoheihe_link_id(source_url)
+    if link_id is None:
+        raise ValueError("invalid Xiaoheihe share URL")
+    image_urls = _fetch_xiaoheihe_image_urls(link_id)
+    return _cache_image_urls(image_urls, source_url, prefix="qqbot-heybox-")
+
+
+def _fetch_xiaoheihe_image_urls(link_id: str) -> list[str]:
+    if not _XIAOHEIHE_LINK_ID_RE.fullmatch(link_id):
+        raise ValueError("invalid Xiaoheihe link id")
+    params = {
+        "os_type": "web",
+        "app": "heybox",
+        "client_type": "web",
+        "version": "999.0.4",
+        "web_version": "2.5",
+        "x_client_type": "web",
+        "x_app": "heybox_website",
+        "x_os_type": "Windows",
+        "device_info": "Chrome",
+        **_xiaoheihe_signed_params(_XIAOHEIHE_DETAIL_PATH),
+        "link_id": link_id,
+        "is_first": "1",
+        "page": "1",
+        "index": "1",
+        "limit": "20",
+        "owner_only": "0",
+    }
+    query = urlencode(params).replace("&link_id=", "&h_src&link_id=")
+    request = Request(
+        f"https://api.xiaoheihe.cn{_XIAOHEIHE_DETAIL_PATH}?{query}",
+        headers={"User-Agent": _USER_AGENT, "Accept": "*/*"},
+    )
+    with urlopen(request, timeout=20) as response:
+        if not _is_xiaoheihe_api_url(response.geturl()):
+            raise ValueError("Xiaoheihe API redirected to an unsupported host")
+        body = response.read(_MAX_PAGE_BYTES + 1)
+    if len(body) > _MAX_PAGE_BYTES:
+        raise ValueError("Xiaoheihe response is too large")
+    payload = json.loads(body.decode("utf-8"))
+    if not isinstance(payload, Mapping) or payload.get("status") != "ok":
+        raise ValueError("Xiaoheihe detail request failed")
+    result = payload.get("result")
+    link = result.get("link") if isinstance(result, Mapping) else None
+    if not isinstance(link, Mapping):
+        return []
+    return _extract_xiaoheihe_image_urls(link)
+
+
+def _extract_xiaoheihe_image_urls(link: Mapping[str, Any]) -> list[str]:
+    candidates: list[Any] = []
+    raw_text = link.get("text")
+    if isinstance(raw_text, str):
+        try:
+            parts = json.loads(raw_text)
+        except json.JSONDecodeError:
+            parts = []
+        if isinstance(parts, list):
+            candidates.extend(
+                part.get("url")
+                for part in parts
+                if isinstance(part, Mapping) and str(part.get("type", "")).lower() == "img"
+            )
+    for key in ("imgs", "thumbs"):
+        values = link.get(key)
+        if isinstance(values, list):
+            for value in values:
+                if isinstance(value, Mapping):
+                    candidates.extend((value.get("url"), value.get("src")))
+                else:
+                    candidates.append(value)
+
+    urls: list[str] = []
+    for value in candidates:
+        if not isinstance(value, str) or not _is_allowed_xiaoheihe_image_url(value):
+            continue
+        normalized = urlunparse(urlparse(value)._replace(scheme="https"))
+        if normalized not in urls:
+            urls.append(normalized)
+        if len(urls) >= _MAX_IMAGES:
+            break
+    return urls
+
+
+def _xiaoheihe_signed_params(path: str, *, now: int | None = None) -> dict[str, str]:
+    timestamp = int(time.time()) if now is None else int(now)
+    nonce = secrets.token_hex(16).upper()
+    normalized_path = "/" + "/".join(part for part in path.split("/") if part) + "/"
+    alphabet = "AB45STUVWZEFGJ6CH01D237IXYPQRKLMN89"
+    seed = _interleave(
+        (
+            _map_by_alphabet(str(timestamp + 1), alphabet[:-2]),
+            _map_by_alphabet(normalized_path, alphabet),
+            _map_by_alphabet(nonce, alphabet),
+        )
+    )[:20]
+    digest = hashlib.md5(seed.encode("utf-8")).hexdigest()
+    checksum_values = _mix_columns([ord(char) for char in digest[-6:]])
+    checksum = str(sum(checksum_values) % 100).zfill(2)
+    return {
+        "hkey": _map_by_alphabet(digest[:5], alphabet[:-4]) + checksum,
+        "_time": str(timestamp),
+        "nonce": nonce,
+    }
+
+
+def _map_by_alphabet(value: str, alphabet: str) -> str:
+    return "".join(alphabet[ord(char) % len(alphabet)] for char in value)
+
+
+def _interleave(values: Sequence[str]) -> str:
+    return "".join(
+        value[index]
+        for index in range(max(len(value) for value in values))
+        for value in values
+        if index < len(value)
+    )
+
+
+def _mix_columns(values: list[int]) -> list[int]:
+    def xtime(value: int) -> int:
+        return ((value << 1) ^ 27) & 255 if value & 128 else value << 1
+
+    def q(value: int) -> int:
+        return xtime(value) ^ value
+
+    def r(value: int) -> int:
+        return q(xtime(value))
+
+    def y(value: int) -> int:
+        return r(q(xtime(value)))
+
+    def g(value: int) -> int:
+        return y(value) ^ r(value) ^ q(value)
+
+    mixed = [
+        g(values[0]) ^ y(values[1]) ^ r(values[2]) ^ q(values[3]),
+        q(values[0]) ^ g(values[1]) ^ y(values[2]) ^ r(values[3]),
+        r(values[0]) ^ q(values[1]) ^ g(values[2]) ^ y(values[3]),
+        y(values[0]) ^ r(values[1]) ^ q(values[2]) ^ g(values[3]),
+    ]
+    return [*mixed, *values[4:]]
+
+
+def _cache_image_urls(
+    image_urls: Sequence[str],
+    referer: str,
+    *,
+    prefix: str,
+) -> CachedMiniAppImages:
     if not image_urls:
         return CachedMiniAppImages(directory=None, paths=())
-
-    directory = Path(tempfile.mkdtemp(prefix="qqbot-xhs-"))
-    paths: list[Path] = []
+    directory = Path(tempfile.mkdtemp(prefix=prefix))
     try:
         with ThreadPoolExecutor(max_workers=min(4, len(image_urls))) as executor:
             futures = {
-                executor.submit(_download_image, url, directory, index, final_url): index
+                executor.submit(_download_image, url, directory, index, referer): index
                 for index, url in enumerate(image_urls, start=1)
             }
             downloaded: list[tuple[int, Path]] = []
@@ -220,11 +395,11 @@ def _cache_xiaohongshu_images(source_url: str) -> CachedMiniAppImages:
                     downloaded.append((futures[future], future.result()))
                 except (OSError, ValueError):
                     continue
-        paths = [path for _, path in sorted(downloaded)]
+        paths = tuple(path for _, path in sorted(downloaded))
         if not paths:
             shutil.rmtree(directory, ignore_errors=True)
             return CachedMiniAppImages(directory=None, paths=())
-        return CachedMiniAppImages(directory=directory, paths=tuple(paths))
+        return CachedMiniAppImages(directory=directory, paths=paths)
     except Exception:
         shutil.rmtree(directory, ignore_errors=True)
         raise
@@ -335,6 +510,46 @@ def _is_xiaohongshu_page_url(url: str) -> bool:
         or host == "xiaohongshu.com"
         or host.endswith(".xiaohongshu.com")
     )
+
+
+def _is_xiaoheihe_share_url(url: str) -> bool:
+    return _xiaoheihe_link_id(url) is not None
+
+
+def _is_xiaoheihe_api_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return (
+        parsed.scheme == "https"
+        and (parsed.hostname or "").lower() == "api.xiaoheihe.cn"
+        and parsed.path.rstrip("/") == _XIAOHEIHE_DETAIL_PATH
+    )
+
+
+def _is_allowed_xiaoheihe_image_url(url: str) -> bool:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    return parsed.scheme in {"http", "https"} and any(
+        host == suffix[1:] or host.endswith(suffix)
+        for suffix in (".max-c.com", ".maxjia.com")
+    )
+
+
+def _xiaoheihe_link_id(url: str) -> str | None:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    link_id: str | None = None
+    if host == "api.xiaoheihe.cn" and parsed.path.rstrip("/") in {
+        _XIAOHEIHE_SHARE_PATH,
+        "/bbs/app/api/web/share",
+    }:
+        link_id = parse_qs(parsed.query).get("link_id", [None])[0]
+    elif host in {"xiaoheihe.cn", "www.xiaoheihe.cn"}:
+        parts = [part for part in parsed.path.split("/") if part]
+        if len(parts) >= 4 and parts[-3:-1] == ["bbs", "link"]:
+            link_id = parts[-1]
+    if not isinstance(link_id, str) or not _XIAOHEIHE_LINK_ID_RE.fullmatch(link_id):
+        return None
+    return link_id
 
 
 def _is_allowed_image_url(url: str) -> bool:
