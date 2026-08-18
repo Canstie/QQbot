@@ -109,21 +109,31 @@ class FakeStorage:
 
 
 @pytest.mark.asyncio
-async def test_download_is_admin_only(monkeypatch):
+async def test_download_silently_ignores_non_admin(monkeypatch):
     matcher = FakeMatcher()
     bot = FakeBot()
     store = SimpleNamespace(is_admin=lambda user_id: False)
     monkeypatch.setattr(download, "get_store", lambda: store)
 
-    with pytest.raises(CommandFinished):
-        await download._handle_download(
-            matcher,
-            bot,
-            SimpleNamespace(user_id=123, message=[]),
-        )
+    await download._handle_download(
+        matcher,
+        bot,
+        SimpleNamespace(user_id=123, message=[]),
+    )
 
-    assert matcher.messages == ["权限不足：仅管理员可使用 /download。"]
+    assert matcher.messages == []
     assert bot.calls == []
+
+
+@pytest.mark.asyncio
+async def test_download_overview_silently_ignores_non_admin(monkeypatch):
+    matcher = FakeMatcher()
+    store = SimpleNamespace(is_admin=lambda user_id: False)
+    monkeypatch.setattr(download, "get_store", lambda: store)
+
+    await download._handle_download_overview(matcher, SimpleNamespace(user_id=123))
+
+    assert matcher.messages == []
 
 
 @pytest.mark.asyncio

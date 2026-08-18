@@ -57,7 +57,7 @@ class DownloadInputError(ValueError):
 
 async def _handle_download(matcher: Matcher, bot: Bot, event: MessageEvent) -> None:
     if not get_store().is_admin(int(event.user_id)):
-        await matcher.finish("权限不足：仅管理员可使用 /download。")
+        return
 
     embedded_message, reply_id = _referenced_message(event)
     if embedded_message is None and reply_id is None and not _contains_segment_type(
@@ -108,7 +108,7 @@ async def handle_download_overview(matcher: Matcher, event: MessageEvent) -> Non
 
 async def _handle_download_overview(matcher: Matcher, event: MessageEvent) -> None:
     if not get_store().is_admin(int(event.user_id)):
-        await matcher.finish("权限不足：仅管理员可使用 /download_overview。")
+        return
     try:
         storage = get_download_storage()
         await asyncio.to_thread(storage.ensure_available)
