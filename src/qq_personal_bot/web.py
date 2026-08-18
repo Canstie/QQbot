@@ -5,7 +5,6 @@ import hmac
 import html
 import json
 import re
-import shutil
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -25,6 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
+from qq_personal_bot.classic_storage import ClassicStorageError, get_classic_storage
 from qq_personal_bot.download_storage import DownloadStorageError, get_download_storage
 from qq_personal_bot.lua_runner import (
     default_lua_command_script,
@@ -588,7 +588,7 @@ def create_app():
     async def get_classic_groups(search: str = "", limit: int = 200) -> dict:
         return {
             "groups": _list_classic_groups(search=search, limit=limit),
-            "root": str(get_settings().classics_image_dir),
+            "storage": "minio",
         }
 
     @app.get("/api/classics/groups/{group_id}")
@@ -598,19 +598,41 @@ def create_app():
     @app.delete("/api/classics/groups/{group_id}")
     async def delete_classic_group(group_id: int, request: Request) -> dict:
         require_token(request)
-        return _delete_classic_group(group_id)
+        return await _delete_classic_group(group_id)
 
     @app.delete("/api/classics/groups/{group_id}/images/{filename:path}")
     async def delete_classic_group_image(group_id: int, filename: str, request: Request) -> dict:
         require_token(request)
-        return _delete_classic_image(group_id, filename)
+        return await _delete_classic_image(group_id, filename)
 
-    @app.get("/api/classic-images/{image_path:path}")
-    async def get_classic_image(image_path: str) -> FileResponse:
-        path = _resolve_classic_image(image_path)
-        if not path.is_file() or not is_supported_image_file(path):
+    @app.get("/api/classic-images/{group_id}/{filename}")
+    async def get_classic_image(group_id: int, filename: str) -> StreamingResponse:
+        record = get_store().get_classic_image_by_key(_validate_group_id(group_id), filename)
+        if record is None:
             raise HTTPException(status_code=404, detail="classic image not found")
-        return FileResponse(path)
+        try:
+            response = await asyncio.to_thread(
+                get_classic_storage().get_image,
+                record["group_id"],
+                record["object_key"],
+            )
+        except ClassicStorageError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        def close_response() -> None:
+            response.close()
+            response.release_conn()
+
+        return StreamingResponse(
+            response.stream(64 * 1024),
+            media_type=record["content_type"],
+            headers={
+                "Cache-Control": "private, max-age=86400",
+                "ETag": f'"{record["sha256"]}"',
+                "Content-Length": str(record["size_bytes"]),
+            },
+            background=BackgroundTask(close_response),
+        )
 
     @app.get("/api/download-images/overview")
     async def get_download_images_overview() -> dict:
@@ -1091,118 +1113,85 @@ def _resolve_sticker(filename: str) -> Path:
 
 
 def _list_classic_groups(search: str = "", limit: int = 200) -> list[dict[str, Any]]:
-    root = get_settings().classics_image_dir
-    if not root.is_dir():
-        return []
-
-    normalized_search = search.strip()
-    groups: list[dict[str, Any]] = []
-    for group_dir in root.iterdir():
-        if not group_dir.is_dir():
-            continue
-        if normalized_search and normalized_search not in group_dir.name:
-            continue
-        summary = _classic_group_summary(group_dir)
-        if summary is not None:
-            groups.append(summary)
-
-    groups.sort(key=lambda item: (item["updated_at"], item["group_id"]), reverse=True)
-    return groups[: max(1, min(int(limit), 500))]
+    groups = get_store().list_classic_groups(search=search, limit=limit)
+    return [
+        {
+            **group,
+            "updated_at": datetime.fromtimestamp(group["updated_at"], UTC).isoformat(),
+            "cover_url": f"./api/classic-images/{group['group_id']}/{quote(_classic_cover_key(group['cover_id']))}",
+        }
+        for group in groups
+    ]
 
 
 def _classic_group_detail(group_id: int, limit: int = 500) -> dict[str, Any]:
     group_id = _validate_group_id(group_id)
-    group_dir = _classic_group_dir(group_id)
-    images = _classic_group_images(group_dir)
-    limited_images = images[: max(1, min(int(limit), 1000))]
+    all_images = get_store().list_classic_images(group_id, limit=100_000)
+    images = all_images[: max(1, min(int(limit), 1000))]
 
     return {
         "group_id": group_id,
-        "exists": group_dir.is_dir(),
-        "count": len(images),
-        "images": [_classic_image_for_api(group_id, path) for path in limited_images],
+        "exists": bool(all_images),
+        "count": len(all_images),
+        "images": [_classic_image_for_api(image) for image in images],
     }
 
 
-def _classic_group_summary(group_dir: Path) -> dict[str, Any] | None:
-    try:
-        group_id = int(group_dir.name)
-    except ValueError:
-        return None
+def _classic_cover_key(image_id: int) -> str:
+    record = get_store().get_classic_image(image_id)
+    return record["object_key"] if record is not None else "missing"
 
-    images = _classic_group_images(group_dir)
-    if not images:
-        return None
 
-    latest = images[0]
-    latest_stat = latest.stat()
+def _classic_image_for_api(record: dict[str, Any]) -> dict[str, Any]:
+    group_id = int(record["group_id"])
+    object_key = str(record["object_key"])
     return {
-        "group_id": group_id,
-        "count": len(images),
-        "cover_url": _classic_image_url(f"{group_id}/{latest.name}"),
-        "updated_at": datetime.fromtimestamp(latest_stat.st_mtime, UTC).isoformat(),
-        "total_bytes": sum(path.stat().st_size for path in images),
+        "id": int(record["id"]),
+        "filename": object_key,
+        "relpath": f"{group_id}/{object_key}",
+        "image_url": f"./api/classic-images/{group_id}/{quote(object_key)}",
+        "size": int(record["size_bytes"]),
+        "sha256": str(record["sha256"]),
+        "modified_at": datetime.fromtimestamp(record["created_at"], UTC).isoformat(),
     }
 
 
-def _classic_group_images(group_dir: Path) -> list[Path]:
-    if not group_dir.is_dir():
-        return []
-    return sorted(
-        [
-            path
-            for path in group_dir.iterdir()
-            if path.is_file() and is_supported_image_file(path)
-        ],
-        key=lambda path: (path.stat().st_mtime, path.name),
-        reverse=True,
-    )
-
-
-def _classic_image_for_api(group_id: int, path: Path) -> dict[str, Any]:
-    relpath = f"{group_id}/{path.name}"
-    stat = path.stat()
-    return {
-        "filename": path.name,
-        "relpath": relpath,
-        "image_url": _classic_image_url(relpath),
-        "size": stat.st_size,
-        "modified_at": datetime.fromtimestamp(stat.st_mtime, UTC).isoformat(),
-    }
-
-
-def _classic_image_url(relpath: str) -> str:
-    encoded = "/".join(quote(part) for part in Path(relpath).parts)
-    return f"./api/classic-images/{encoded}"
-
-
-def _delete_classic_group(group_id: int) -> dict[str, Any]:
+async def _delete_classic_group(group_id: int) -> dict[str, Any]:
     group_id = _validate_group_id(group_id)
-    group_dir = _classic_group_dir(group_id)
-    if not group_dir.exists():
+    images = get_store().list_classic_images(group_id, limit=100_000)
+    if not images:
         return {"deleted": False, "group_id": group_id, "deleted_count": 0}
-    if not group_dir.is_dir():
-        raise HTTPException(status_code=400, detail="classic group path is not a directory")
-
-    deleted_count = len(_classic_group_images(group_dir))
-    shutil.rmtree(group_dir)
+    try:
+        await asyncio.to_thread(
+            get_classic_storage().remove_group_bucket,
+            group_id,
+            [image["object_key"] for image in images],
+        )
+    except ClassicStorageError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    deleted_count = get_store().delete_classic_group(group_id)
     return {"deleted": True, "group_id": group_id, "deleted_count": deleted_count}
 
 
-def _delete_classic_image(group_id: int, filename: str) -> dict[str, Any]:
+async def _delete_classic_image(group_id: int, filename: str) -> dict[str, Any]:
     group_id = _validate_group_id(group_id)
-    group_dir = _classic_group_dir(group_id).resolve(strict=False)
-    path = _resolve_classic_image(f"{group_id}/{filename}")
-    if path.parent.resolve(strict=False) != group_dir:
+    record = get_store().get_classic_image_by_key(group_id, filename)
+    if record is None:
         raise HTTPException(status_code=404, detail="classic image not found")
-    if not path.is_file() or not is_supported_image_file(path):
-        raise HTTPException(status_code=404, detail="classic image not found")
-
-    path.unlink()
+    try:
+        await asyncio.to_thread(
+            get_classic_storage().remove_image,
+            group_id,
+            record["object_key"],
+            missing_ok=True,
+        )
+    except ClassicStorageError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    get_store().delete_classic_image(record["id"])
     return {
         "deleted": True,
         "group_id": group_id,
-        "filename": path.name,
+        "filename": record["object_key"],
         "group": _classic_group_detail(group_id),
     }
 
@@ -1212,23 +1201,3 @@ def _validate_group_id(group_id: int) -> int:
     if group_id <= 0:
         raise HTTPException(status_code=400, detail="group_id must be positive")
     return group_id
-
-
-def _classic_group_dir(group_id: int) -> Path:
-    root = get_settings().classics_image_dir.resolve(strict=False)
-    path = (root / str(_validate_group_id(group_id))).resolve(strict=False)
-    try:
-        path.relative_to(root)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail="classic group not found") from exc
-    return path
-
-
-def _resolve_classic_image(relpath: str) -> Path:
-    root = get_settings().classics_image_dir.resolve(strict=False)
-    path = (root / relpath).resolve(strict=False)
-    try:
-        path.relative_to(root)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail="classic image not found") from exc
-    return path

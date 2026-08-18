@@ -6,6 +6,7 @@ import json
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
@@ -90,6 +91,23 @@ class ReplyImageFakeBot(RichFakeBot):
                 ]
             }
         return await super().call_api(action, **params)
+
+
+class FakeClassicStorage:
+    def __init__(self) -> None:
+        self.objects: dict[tuple[int, str], bytes] = {}
+
+    def put_image(self, group_id, object_key, body, content_type, metadata) -> None:
+        self.objects[(int(group_id), object_key)] = body
+
+    def stat_image(self, group_id, object_key):
+        return SimpleNamespace(size=len(self.objects[(int(group_id), object_key)]))
+
+    def read_image(self, group_id, object_key) -> bytes:
+        return self.objects[(int(group_id), object_key)]
+
+    def remove_image(self, group_id, object_key, *, missing_ok=False) -> None:
+        self.objects.pop((int(group_id), object_key), None)
 
 
 class RawReplyImageFakeBot(RichFakeBot):
@@ -1165,14 +1183,16 @@ async def test_builtin_change_wife_reply_uses_avatar_and_name_only(tmp_path, mon
 
 @pytest.mark.asyncio
 async def test_builtin_store_and_blast_classic_lua(tmp_path, monkeypatch):
-    monkeypatch.setenv("QQBOT_CLASSICS_IMAGE_DIR", str(tmp_path / "classics"))
     configure_builtin_lua_dir(tmp_path, monkeypatch)
+    storage = FakeClassicStorage()
+    monkeypatch.setattr(lua_runner, "get_classic_storage", lambda: storage)
     image_path = tmp_path / "classic.gif"
-    image_path.write_bytes(
+    image_body = (
         b"GIF89a\x01\x00\x01\x00\x80\x00\x00\xff\xff\xff\x00\x00\x00"
         b"!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00"
         b"\x00\x02\x02D\x01\x00;"
     )
+    image_path.write_bytes(image_body)
 
     store_event = make_event(
         raw_message="~存典",
@@ -1190,13 +1210,21 @@ async def test_builtin_store_and_blast_classic_lua(tmp_path, monkeypatch):
         PolicyDecision(True, "ok", handler="default", normalized_message="爆典"),
     )
 
-    saved_images = list((tmp_path / "classics" / "123").iterdir())
     assert saved.reply == "存典成功"
     assert pending_lua_command(store_event) is None
-    assert len(saved_images) == 1
+    assert len(storage.objects) == 1
     assert blasted.reply is not None
-    assert blasted.reply.startswith("[CQ:image,file=file:///")
-    assert saved_images[0].name in blasted.reply
+    assert blasted.reply.startswith("[CQ:image,file=base64://")
+    assert base64.b64decode(blasted.reply.removeprefix("[CQ:image,file=base64://")[:-1]) == image_body
+
+    duplicate = await run_lua_message(
+        ReplyImageFakeBot(image_path),
+        store_event,
+        PolicyDecision(True, "ok", handler="default", normalized_message="存典"),
+    )
+
+    assert duplicate.reply == "已存在相同的典"
+    assert len(storage.objects) == 1
 
 
 @pytest.mark.asyncio

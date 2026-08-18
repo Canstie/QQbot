@@ -117,6 +117,63 @@ def test_download_image_index_deduplicates_lists_and_summarizes(tmp_path):
     assert store.get_download_image(first["id"]) is None
 
 
+def test_classic_image_index_deduplicates_within_each_group(tmp_path):
+    db_path = tmp_path / "policy.sqlite3"
+    store = PolicyStore(db_path)
+    store.initialize(AppSettings(db_path=db_path, admins=(10000,)))
+    digest = "d" * 64
+
+    first, created = store.record_classic_image(
+        group_id=123,
+        sha256=digest,
+        object_key=f"{digest}.gif",
+        content_type="image/gif",
+        size_bytes=100,
+        created_at=10,
+    )
+    duplicate, duplicate_created = store.record_classic_image(
+        group_id=123,
+        sha256=digest,
+        object_key=f"{digest}.gif",
+        content_type="image/gif",
+        size_bytes=100,
+        created_at=20,
+    )
+    other_group, other_created = store.record_classic_image(
+        group_id=456,
+        sha256=digest,
+        object_key=f"{digest}.gif",
+        content_type="image/gif",
+        size_bytes=100,
+        created_at=30,
+    )
+
+    assert created is True
+    assert duplicate_created is False
+    assert duplicate["id"] == first["id"]
+    assert other_created is True
+    assert store.get_classic_image_by_hash(123, digest)["id"] == first["id"]
+    assert store.pick_classic_image(123, 99)["id"] == first["id"]
+    assert store.list_classic_groups() == [
+        {
+            "group_id": 456,
+            "count": 1,
+            "total_bytes": 100,
+            "updated_at": 30.0,
+            "cover_id": other_group["id"],
+        },
+        {
+            "group_id": 123,
+            "count": 1,
+            "total_bytes": 100,
+            "updated_at": 10.0,
+            "cover_id": first["id"],
+        },
+    ]
+    assert store.delete_classic_group(123) == 1
+    assert store.list_classic_images(123) == []
+
+
 def test_snapshot_shape(tmp_path):
     db_path = tmp_path / "policy.sqlite3"
     store = PolicyStore(db_path)

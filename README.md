@@ -200,8 +200,8 @@ scripts/lua/抽群老婆.lua
 - `~添加菜单`：群内两步添加自定义菜单，先发送菜单名，再发送图片；所有已启用群成员可用。
 - `~添加饭店`：群内添加饭店，先发送饭店名，再连续发送招牌菜，发送 `完成` 保存，发送 `取消` 退出。
 - `~今日饭店`：从当前群已添加并启用的饭店中随机抽取一个。
-- `~存典`：提示发送图片后，把发起人的下一张图片保存到 `data/classics/<群号>`；发送 `取消` 可退出。
-- `~爆典`：从当前群已保存的典图里随机发出一张。
+- `~存典`：引用图片后保存到本群独立的私有 MinIO bucket；按 SHA-256 查重，重复图片会提示“已存在相同的典”。
+- `~爆典`：从当前群的 MinIO 典藏中随机读取并发送一张图片。
 - `~上对称` / `~下对称` / `~左对称` / `~右对称`：引用一张图片后发送，对图片按指定方向生成对称图；图片只临时保存，处理完成后删除。
 - `~群排行` 或 `~群排行 摸鱼王`：每天按主题随机生成群成员 TOP3。
 - `~群总结`：按今日真实群消息统计总消息数、活跃人数、水群榜、字数榜、发图榜、@ 人榜、最活跃时段、早鸟和夜猫子；只保存统计计数，不保存消息正文。
@@ -264,9 +264,9 @@ end
 - `api.json_decode(value)`：把 JSON 字符串解码为 Lua table
 - `api.call(action, params)`：调用其他 OneBot API
 - `api.set_pending_command(command)` / `api.clear_pending_command()`：让同一用户下一条群消息继续交给指定 Lua 指令处理
-- `api.save_classic_image(group_id, image_source, image_id)`：保存典图到 `data/classics/<group_id>`
-- `api.pick_classic_image(group_id, seed)`：从当前群典图库里选一张图片路径
-- `api.classic_image(relpath)`：把典图相对路径转成可发送的 CQ 图片
+- `api.save_classic_image(group_id, image_source, image_id)`：保存典图到当前群的 MinIO bucket，并返回保存、重复或失败状态
+- `api.pick_classic_image(group_id, seed)`：从当前群典藏索引里选一张图片
+- `api.classic_image(relpath)`：从 MinIO 读取典图并转成可发送的 CQ 图片
 - `api.mirror_referenced_image(direction)`：读取当前消息引用的图片并生成对称图；`direction` 支持 `top`、`bottom`、`left`、`right`，处理过程只使用临时文件
 
 ## 测试

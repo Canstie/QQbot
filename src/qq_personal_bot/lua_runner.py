@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import io
 import json
 import re
@@ -17,6 +18,11 @@ from urllib.request import Request, urlopen
 from nonebot import logger
 from nonebot.adapters.onebot.v11 import Bot
 
+from qq_personal_bot.classic_storage import (
+    ClassicStorageError,
+    get_classic_storage,
+    read_classic_image_source,
+)
 from qq_personal_bot.core.models import MessageEvent, PolicyDecision
 from qq_personal_bot.lunar import solar_to_lunar
 from qq_personal_bot.menu_recipes import (
@@ -241,20 +247,67 @@ class LuaApi:
             return None
         return f"[CQ:image,file={image_path.as_uri()}]"
 
-    def save_classic_image(self, group_id: int, image_source: str, image_id: str | None = None) -> str | None:
+    def save_classic_image(
+        self,
+        group_id: int,
+        image_source: str,
+        image_id: str | None = None,
+    ) -> str:
         group_id = int(group_id)
         if group_id <= 0:
             raise ValueError("group_id must be positive")
-        recipe_id = _safe_image_id(
-            image_id
-            or f"{int(self._event.timestamp or 0)}_{self._event.user_id}_{self._event.message_id}"
-        )
-        relpath = cache_image(
-            image_source,
-            recipe_id=recipe_id,
-            image_dir=get_settings().classics_image_dir / str(group_id),
-        )
-        return f"{group_id}/{relpath}" if relpath else None
+        try:
+            body, suffix, content_type = read_classic_image_source(image_source)
+        except (OSError, ValueError) as exc:
+            logger.warning(f"Lua: classic image source is invalid: {exc}")
+            return "invalid"
+
+        digest = hashlib.sha256(body).hexdigest()
+        store = get_store()
+        if store.get_classic_image_by_hash(group_id, digest) is not None:
+            return "exists"
+
+        object_key = f"{digest}{suffix}"
+        try:
+            storage = get_classic_storage()
+        except ClassicStorageError as exc:
+            logger.warning(f"Lua: classic MinIO configuration failed: {exc}")
+            return "storage_error"
+        uploaded = False
+        try:
+            storage.put_image(
+                group_id,
+                object_key,
+                body,
+                content_type,
+                {"sha256": digest, "group-id": str(group_id)},
+            )
+            uploaded = True
+            stat = storage.stat_image(group_id, object_key)
+            if int(getattr(stat, "size", -1)) != len(body):
+                raise ClassicStorageError("群典图片大小校验失败。")
+            _, created = store.record_classic_image(
+                group_id=group_id,
+                sha256=digest,
+                object_key=object_key,
+                content_type=content_type,
+                size_bytes=len(body),
+            )
+        except ClassicStorageError as exc:
+            if uploaded:
+                try:
+                    storage.remove_image(group_id, object_key, missing_ok=True)
+                except ClassicStorageError as cleanup_exc:
+                    logger.warning(f"Lua: classic MinIO cleanup failed: {cleanup_exc}")
+            logger.warning(f"Lua: classic MinIO operation failed: {exc}")
+            return "storage_error"
+        except Exception:
+            try:
+                storage.remove_image(group_id, object_key, missing_ok=True)
+            except ClassicStorageError as cleanup_exc:
+                logger.warning(f"Lua: classic MinIO cleanup failed: {cleanup_exc}")
+            raise
+        return "stored" if created else "exists"
 
     def save_referenced_classic_image(
         self,
@@ -275,33 +328,26 @@ class LuaApi:
 
     def pick_classic_image(self, group_id: int, seed: int) -> str | None:
         group_id = int(group_id)
-        group_dir = get_settings().classics_image_dir / str(group_id)
-        if not group_dir.is_dir():
+        picked = get_store().pick_classic_image(group_id, int(seed))
+        if picked is None:
             return None
-        images = [
-            path
-            for path in sorted(group_dir.iterdir())
-            if path.is_file() and is_supported_image_file(path)
-        ]
-        if not images:
-            return None
-        picked = images[abs(int(seed)) % len(images)]
-        return f"{group_id}/{picked.name}"
+        return f"{group_id}/{picked['id']}"
 
     def classic_image(self, relpath: str) -> str | None:
-        relative_path = str(relpath or "").strip()
-        if not relative_path:
+        token = str(relpath or "").strip()
+        match = re.fullmatch(r"(\d+)/(\d+)", token)
+        if match is None:
             return None
-
-        root = get_settings().classics_image_dir.resolve(strict=False)
-        image_path = (root / relative_path).resolve(strict=False)
+        group_id = int(match.group(1))
+        record = get_store().get_classic_image(int(match.group(2)))
+        if record is None or record["group_id"] != group_id:
+            return None
         try:
-            image_path.relative_to(root)
-        except ValueError:
+            body = get_classic_storage().read_image(group_id, record["object_key"])
+        except ClassicStorageError as exc:
+            logger.warning(f"Lua: classic MinIO read failed: {exc}")
             return None
-        if not image_path.is_file() or not is_supported_image_file(image_path):
-            return None
-        return f"[CQ:image,file={image_path.as_uri()}]"
+        return "[CQ:image,file=base64://" + base64.b64encode(body).decode("ascii") + "]"
 
     def mirror_referenced_image(self, direction: str) -> str | None:
         image_source = _first_image_source_from_segments(self._event.segments)

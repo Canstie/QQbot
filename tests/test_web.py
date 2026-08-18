@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import json
 
@@ -50,6 +51,25 @@ class _FakeDownloadStorage:
             self.objects.pop(object_key, None)
         else:
             del self.objects[object_key]
+
+
+class _FakeClassicStorage:
+    def __init__(self, objects: dict[tuple[int, str], bytes]) -> None:
+        self.objects = objects
+
+    def get_image(self, group_id: int, object_key: str):
+        return _FakeMinioResponse(self.objects[(int(group_id), object_key)])
+
+    def remove_image(self, group_id: int, object_key: str, *, missing_ok: bool = False):
+        key = (int(group_id), object_key)
+        if missing_ok:
+            self.objects.pop(key, None)
+        else:
+            del self.objects[key]
+
+    def remove_group_bucket(self, group_id: int, object_keys: list[str]):
+        for object_key in object_keys:
+            self.objects.pop((int(group_id), object_key), None)
 
 
 def test_replies_api_roundtrip(tmp_path, monkeypatch):
@@ -634,15 +654,22 @@ def test_web_login_session_when_token_configured(tmp_path, monkeypatch):
 def test_classics_api_lists_groups_reads_group_and_serves_images(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("QQBOT_WEB_TOKEN", raising=False)
-    classics_dir = tmp_path / "classics"
-    monkeypatch.setenv("QQBOT_CLASSICS_IMAGE_DIR", str(classics_dir))
+    monkeypatch.setenv("QQBOT_DB_PATH", str(tmp_path / "policy.sqlite3"))
     reset_runtime()
-    client = TestClient(create_app())
-
-    group_dir = classics_dir / "123"
-    group_dir.mkdir(parents=True)
+    store = get_store()
     image_body = base64.b64decode(GIF_DATA_URL.split(",", 1)[1])
-    (group_dir / "classic.gif").write_bytes(image_body)
+    digest = hashlib.sha256(image_body).hexdigest()
+    object_key = f"{digest}.gif"
+    store.record_classic_image(
+        group_id=123,
+        sha256=digest,
+        object_key=object_key,
+        content_type="image/gif",
+        size_bytes=len(image_body),
+    )
+    storage = _FakeClassicStorage({(123, object_key): image_body})
+    monkeypatch.setattr(web_module, "get_classic_storage", lambda: storage)
+    client = TestClient(create_app())
 
     response = client.get("/api/classics/groups")
 
@@ -650,7 +677,9 @@ def test_classics_api_lists_groups_reads_group_and_serves_images(tmp_path, monke
     data = response.json()
     assert data["groups"][0]["group_id"] == 123
     assert data["groups"][0]["count"] == 1
-    assert data["groups"][0]["cover_url"].endswith("/api/classic-images/123/classic.gif")
+    assert data["groups"][0]["cover_url"].endswith(
+        f"/api/classic-images/123/{object_key}"
+    )
 
     response = client.get("/api/classics/groups/123")
 
@@ -658,50 +687,71 @@ def test_classics_api_lists_groups_reads_group_and_serves_images(tmp_path, monke
     detail = response.json()
     assert detail["group_id"] == 123
     assert detail["count"] == 1
-    assert detail["images"][0]["filename"] == "classic.gif"
+    assert detail["images"][0]["filename"] == object_key
 
-    response = client.get("/api/classic-images/123/classic.gif")
+    response = client.get(f"/api/classic-images/123/{object_key}")
 
     assert response.status_code == 200
     assert response.content == image_body
+    assert response.headers["etag"] == f'"{digest}"'
 
 
 def test_classics_api_deletes_single_image_and_whole_group(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("QQBOT_WEB_TOKEN", raising=False)
-    classics_dir = tmp_path / "classics"
-    monkeypatch.setenv("QQBOT_CLASSICS_IMAGE_DIR", str(classics_dir))
+    monkeypatch.setenv("QQBOT_DB_PATH", str(tmp_path / "policy.sqlite3"))
     reset_runtime()
+    store = get_store()
+    base_body = base64.b64decode(GIF_DATA_URL.split(",", 1)[1])
+    first_body = base_body + b"first"
+    second_body = base_body + b"second"
+    first_digest = hashlib.sha256(first_body).hexdigest()
+    second_digest = hashlib.sha256(second_body).hexdigest()
+    first_key = f"{first_digest}.gif"
+    second_key = f"{second_digest}.gif"
+    first, _ = store.record_classic_image(
+        group_id=123,
+        sha256=first_digest,
+        object_key=first_key,
+        content_type="image/gif",
+        size_bytes=len(first_body),
+        created_at=1,
+    )
+    store.record_classic_image(
+        group_id=123,
+        sha256=second_digest,
+        object_key=second_key,
+        content_type="image/gif",
+        size_bytes=len(second_body),
+        created_at=2,
+    )
+    storage = _FakeClassicStorage(
+        {(123, first_key): first_body, (123, second_key): second_body}
+    )
+    monkeypatch.setattr(web_module, "get_classic_storage", lambda: storage)
     client = TestClient(create_app())
 
-    group_dir = classics_dir / "123"
-    group_dir.mkdir(parents=True)
-    image_body = base64.b64decode(GIF_DATA_URL.split(",", 1)[1])
-    first = group_dir / "first.gif"
-    second = group_dir / "second.gif"
-    first.write_bytes(image_body)
-    second.write_bytes(image_body)
-
-    response = client.delete("/api/classics/groups/123/images/first.gif")
+    response = client.delete(f"/api/classics/groups/123/images/{first_key}")
 
     assert response.status_code == 200
     assert response.json()["deleted"] is True
     assert response.json()["group"]["count"] == 1
-    assert not first.exists()
-    assert second.exists()
+    assert (123, first_key) not in storage.objects
+    assert (123, second_key) in storage.objects
+    assert store.get_classic_image(first["id"]) is None
 
     response = client.get("/api/classics/groups/123")
 
     assert response.status_code == 200
     assert response.json()["count"] == 1
-    assert response.json()["images"][0]["filename"] == "second.gif"
+    assert response.json()["images"][0]["filename"] == second_key
 
     response = client.delete("/api/classics/groups/123")
 
     assert response.status_code == 200
     assert response.json()["deleted"] is True
     assert response.json()["deleted_count"] == 1
-    assert not group_dir.exists()
+    assert storage.objects == {}
 
     response = client.get("/api/classics/groups")
 
@@ -712,7 +762,7 @@ def test_classics_api_deletes_single_image_and_whole_group(tmp_path, monkeypatch
 def test_classics_api_returns_empty_groups_when_directory_missing(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("QQBOT_WEB_TOKEN", raising=False)
-    monkeypatch.setenv("QQBOT_CLASSICS_IMAGE_DIR", str(tmp_path / "missing-classics"))
+    monkeypatch.setenv("QQBOT_DB_PATH", str(tmp_path / "policy.sqlite3"))
     reset_runtime()
     client = TestClient(create_app())
 
