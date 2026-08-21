@@ -174,6 +174,99 @@ def test_classic_image_index_deduplicates_within_each_group(tmp_path):
     assert store.list_classic_images(123) == []
 
 
+def test_classic_images_are_picked_from_the_least_used_set(tmp_path):
+    db_path = tmp_path / "policy.sqlite3"
+    store = PolicyStore(db_path)
+    store.initialize(AppSettings(db_path=db_path, admins=(10000,)))
+    image_ids = set()
+    for index in range(3):
+        digest = f"{index + 1:064x}"
+        image, _ = store.record_classic_image(
+            group_id=123,
+            sha256=digest,
+            object_key=f"{digest}.jpg",
+            content_type="image/jpeg",
+            size_bytes=100,
+        )
+        image_ids.add(image["id"])
+
+    picked_ids = [store.pick_classic_image(123, seed)["id"] for seed in range(30)]
+
+    for offset in range(0, 30, 3):
+        assert set(picked_ids[offset : offset + 3]) == image_ids
+    assert all(previous != current for previous, current in zip(picked_ids, picked_ids[1:]))
+    assert {
+        image["blast_count"] for image in store.list_classic_images(123)
+    } == {10}
+
+
+def test_new_classic_image_inherits_the_group_minimum_blast_count(tmp_path):
+    db_path = tmp_path / "policy.sqlite3"
+    store = PolicyStore(db_path)
+    store.initialize(AppSettings(db_path=db_path, admins=(10000,)))
+    for index in range(2):
+        digest = f"{index + 1:064x}"
+        store.record_classic_image(
+            group_id=123,
+            sha256=digest,
+            object_key=f"{digest}.jpg",
+            content_type="image/jpeg",
+            size_bytes=100,
+        )
+    for seed in range(10):
+        store.pick_classic_image(123, seed)
+
+    new_digest = f"{3:064x}"
+    new_image, created = store.record_classic_image(
+        group_id=123,
+        sha256=new_digest,
+        object_key=f"{new_digest}.jpg",
+        content_type="image/jpeg",
+        size_bytes=100,
+    )
+
+    assert created is True
+    assert new_image["blast_count"] == 5
+    picked_ids = {store.pick_classic_image(123, seed)["id"] for seed in range(3)}
+    assert picked_ids == {image["id"] for image in store.list_classic_images(123)}
+
+
+def test_classic_selection_columns_are_migrated_for_existing_database(tmp_path):
+    db_path = tmp_path / "policy.sqlite3"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE classic_images (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id INTEGER NOT NULL,
+                sha256 TEXT NOT NULL,
+                object_key TEXT NOT NULL,
+                content_type TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                created_at REAL NOT NULL,
+                UNIQUE(group_id, sha256),
+                UNIQUE(group_id, object_key)
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO classic_images(
+                group_id, sha256, object_key, content_type, size_bytes, created_at
+            ) VALUES (123, ?, ?, 'image/jpeg', 100, 10)
+            """,
+            ("a" * 64, f"{'a' * 64}.jpg"),
+        )
+
+    store = PolicyStore(db_path)
+    store.initialize(AppSettings(db_path=db_path, admins=(10000,)))
+
+    migrated = store.list_classic_images(123)[0]
+    assert migrated["blast_count"] == 0
+    assert migrated["last_blast_at"] == 0
+    assert store.pick_classic_image(123, 1)["blast_count"] == 1
+
+
 def test_snapshot_shape(tmp_path):
     db_path = tmp_path / "policy.sqlite3"
     store = PolicyStore(db_path)

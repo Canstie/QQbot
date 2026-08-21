@@ -201,12 +201,45 @@ class PolicyStore:
                 content_type TEXT NOT NULL,
                 size_bytes INTEGER NOT NULL,
                 created_at REAL NOT NULL,
+                blast_count INTEGER NOT NULL DEFAULT 0,
+                last_blast_at REAL NOT NULL DEFAULT 0,
+                fair_order INTEGER NOT NULL DEFAULT 0,
                 UNIQUE(group_id, sha256),
                 UNIQUE(group_id, object_key)
             );
 
             CREATE INDEX IF NOT EXISTS idx_classic_images_group_created
             ON classic_images(group_id, created_at DESC, id DESC);
+            """
+        )
+        self._initialize_classic_image_selection(conn)
+
+    def _initialize_classic_image_selection(self, conn: sqlite3.Connection) -> None:
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(classic_images)").fetchall()
+        }
+        migrations = {
+            "blast_count": "INTEGER NOT NULL DEFAULT 0",
+            "last_blast_at": "REAL NOT NULL DEFAULT 0",
+            "fair_order": "INTEGER NOT NULL DEFAULT 0",
+        }
+        for column, definition in migrations.items():
+            if column not in columns:
+                conn.execute(f"ALTER TABLE classic_images ADD COLUMN {column} {definition}")
+        conn.execute(
+            "UPDATE classic_images SET fair_order = RANDOM() WHERE fair_order = 0"
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_classic_images_fair_pick
+            ON classic_images(group_id, blast_count, fair_order, id)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_classic_images_last_blast
+            ON classic_images(group_id, last_blast_at DESC, id DESC)
             """
         )
 
@@ -2327,12 +2360,25 @@ class PolicyStore:
             raise ValueError("size_bytes must be positive")
 
         with self._connect() as conn:
+            minimum_row = conn.execute(
+                """
+                SELECT COALESCE(MIN(blast_count), 0) AS minimum
+                FROM classic_images
+                WHERE group_id = ?
+                """,
+                (normalized_group_id,),
+            ).fetchone()
+            initial_blast_count = int(
+                minimum_row["minimum"] if minimum_row is not None else 0
+            )
+            fair_order = self._classic_fair_order(normalized_hash)
             try:
                 cursor = conn.execute(
                     """
                     INSERT INTO classic_images(
-                        group_id, sha256, object_key, content_type, size_bytes, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?)
+                        group_id, sha256, object_key, content_type, size_bytes, created_at,
+                        blast_count, last_blast_at, fair_order
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
                     """,
                     (
                         normalized_group_id,
@@ -2341,6 +2387,8 @@ class PolicyStore:
                         str(content_type or "application/octet-stream"),
                         int(size_bytes),
                         float(created_at if created_at is not None else time.time()),
+                        initial_blast_count,
+                        fair_order,
                     ),
                 )
             except sqlite3.IntegrityError:
@@ -2443,23 +2491,73 @@ class PolicyStore:
 
     def pick_classic_image(self, group_id: int, seed: int) -> dict[str, Any] | None:
         with self._connect() as conn:
-            count_row = conn.execute(
-                "SELECT COUNT(*) AS count FROM classic_images WHERE group_id = ?",
+            conn.execute("BEGIN IMMEDIATE")
+            previous_row = conn.execute(
+                """
+                SELECT id FROM classic_images
+                WHERE group_id = ? AND last_blast_at > 0
+                ORDER BY last_blast_at DESC, id DESC
+                LIMIT 1
+                """,
                 (int(group_id),),
             ).fetchone()
-            count = int(count_row["count"] if count_row is not None else 0)
-            if count == 0:
+            previous_id = int(previous_row["id"]) if previous_row is not None else -1
+            minimum_row = conn.execute(
+                """
+                SELECT blast_count FROM classic_images
+                WHERE group_id = ?
+                ORDER BY blast_count ASC, fair_order ASC, id ASC
+                LIMIT 1
+                """,
+                (int(group_id),),
+            ).fetchone()
+            if minimum_row is None:
                 return None
+            minimum_count = int(minimum_row["blast_count"])
             row = conn.execute(
                 """
                 SELECT * FROM classic_images
-                WHERE group_id = ?
-                ORDER BY created_at DESC, id DESC
-                LIMIT 1 OFFSET ?
+                WHERE group_id = ? AND blast_count = ? AND id != ?
+                ORDER BY fair_order ASC, id ASC
+                LIMIT 1
                 """,
-                (int(group_id), abs(int(seed)) % count),
+                (int(group_id), minimum_count, previous_id),
+            ).fetchone()
+            if row is None:
+                row = conn.execute(
+                    """
+                    SELECT * FROM classic_images
+                    WHERE group_id = ? AND blast_count = ?
+                    ORDER BY fair_order ASC, id ASC
+                    LIMIT 1
+                    """,
+                    (int(group_id), minimum_count),
+                ).fetchone()
+            if row is None:
+                return None
+            next_count = int(row["blast_count"]) + 1
+            fair_order = self._classic_fair_order(
+                f"{int(seed)}:{int(row['id'])}:{next_count}"
+            )
+            blasted_at = time.time()
+            conn.execute(
+                """
+                UPDATE classic_images
+                SET blast_count = ?, last_blast_at = ?, fair_order = ?
+                WHERE id = ?
+                """,
+                (next_count, blasted_at, fair_order, int(row["id"])),
+            )
+            row = conn.execute(
+                "SELECT * FROM classic_images WHERE id = ?",
+                (int(row["id"]),),
             ).fetchone()
         return self._classic_image_from_row(row) if row is not None else None
+
+    @staticmethod
+    def _classic_fair_order(value: str) -> int:
+        digest = hashlib.sha256(str(value).encode("utf-8")).digest()
+        return int.from_bytes(digest[:8], "big") & ((1 << 63) - 1)
 
     def delete_classic_image(self, image_id: int) -> bool:
         with self._connect() as conn:
@@ -2480,6 +2578,8 @@ class PolicyStore:
             "content_type": str(row["content_type"]),
             "size_bytes": int(row["size_bytes"]),
             "created_at": float(row["created_at"]),
+            "blast_count": int(row["blast_count"]),
+            "last_blast_at": float(row["last_blast_at"]),
         }
 
     def record_download_image(

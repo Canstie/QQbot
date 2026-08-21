@@ -1216,6 +1216,7 @@ async def test_builtin_store_and_blast_classic_lua(tmp_path, monkeypatch):
     assert blasted.reply is not None
     assert blasted.reply.startswith("[CQ:image,file=base64://")
     assert base64.b64decode(blasted.reply.removeprefix("[CQ:image,file=base64://")[:-1]) == image_body
+    assert get_store().list_classic_images(store_event.group_id)[0]["blast_count"] == 1
 
     duplicate = await run_lua_message(
         ReplyImageFakeBot(image_path),
