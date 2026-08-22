@@ -410,6 +410,20 @@ def test_dsapi_config_and_history_are_group_scoped_and_pruned(tmp_path):
     assert store.get_dsapi_config()["history_messages"] == 0
 
 
+def test_enable_dsapi_group_enables_master_switch_and_is_idempotent(tmp_path):
+    db_path = tmp_path / "policy.sqlite3"
+    store = PolicyStore(db_path)
+    store.initialize(AppSettings(db_path=db_path, admins=()))
+    store.set_setting("dsapi_enabled", "false")
+    store.set_setting("dsapi_enabled_groups", "[123]")
+
+    assert store.enable_dsapi_group(456, actor_id=10000) == [123, 456]
+    assert store.enable_dsapi_group(456, actor_id=10000) == [123, 456]
+    config = store.get_dsapi_config()
+    assert config["enabled"] is True
+    assert config["enabled_groups"] == [123, 456]
+
+
 def test_dsapi_legacy_prompt_is_migrated_to_default_knowledge_base(tmp_path):
     db_path = tmp_path / "policy.sqlite3"
     settings = AppSettings(db_path=db_path, admins=())

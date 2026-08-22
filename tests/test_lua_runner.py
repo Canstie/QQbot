@@ -1490,6 +1490,7 @@ async def test_builtin_help_appends_admin_features_for_admin(tmp_path, monkeypat
     assert result.reply.index("~help 查看这份帮助") < result.reply.index("管理员命令")
     assert "/download 引用聊天记录并下载其中的图片" in result.reply
     assert "/bot status 查看当前策略" in result.reply
+    assert "/bot aion [group_id] 开启指定群的 AI（省略则当前群）" in result.reply
     assert "/bot admin add <user_id> 添加管理员" in result.reply
     assert "/bot prefix add|remove <prefix> 增删触发前缀" in result.reply
     assert "/bot admin add|remove" not in result.reply

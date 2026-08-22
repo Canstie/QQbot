@@ -158,6 +158,25 @@ async def _handle_bot_command(
                 explicit_group_send=explicit_group_send,
             )
 
+        if command == "aion":
+            if len(parts) > 2:
+                await _send_control_response(
+                    matcher,
+                    bot,
+                    event,
+                    "Usage: /bot aion [group_id]",
+                    explicit_group_send=explicit_group_send,
+                )
+            group_id = _parse_group_id(parts, event)
+            store.enable_dsapi_group(group_id, actor_id=actor_id)
+            await _send_control_response(
+                matcher,
+                bot,
+                event,
+                f"AI enabled for group {group_id}.",
+                explicit_group_send=explicit_group_send,
+            )
+
         if command == "admin":
             if len(parts) >= 2 and parts[1].lower() == "remove":
                 await _send_control_response(
@@ -227,6 +246,7 @@ async def _handle_bot_command(
             event,
             (
                 "Usage: /bot status | on [group_id] | off [group_id] | "
+                "aion [group_id] | "
                 "mode allowlist|blocklist | admin add <user_id> | "
                 "prefix add|remove|list [prefix]"
             ),

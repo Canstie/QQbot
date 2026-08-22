@@ -905,6 +905,41 @@ class PolicyStore:
             )
         return self.get_dsapi_config()
 
+    def enable_dsapi_group(self, group_id: int, *, actor_id: int) -> list[int]:
+        normalized_group_id = int(group_id)
+        if normalized_group_id <= 0:
+            raise ValueError("group_id must be a positive integer")
+
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT value FROM settings WHERE key = 'dsapi_enabled_groups'"
+            ).fetchone()
+            try:
+                enabled_groups = self._normalize_int_ids(
+                    json.loads(str(row["value"])) if row else [],
+                    "enabled_groups",
+                )
+            except (TypeError, ValueError, json.JSONDecodeError):
+                enabled_groups = []
+            if normalized_group_id not in enabled_groups:
+                enabled_groups.append(normalized_group_id)
+
+            self.set_setting("dsapi_enabled", "true", conn=conn)
+            self.set_setting(
+                "dsapi_enabled_groups",
+                json.dumps(enabled_groups),
+                conn=conn,
+            )
+            self.audit(
+                actor_id,
+                "enable_dsapi_group",
+                str(normalized_group_id),
+                {"enabled_groups": enabled_groups},
+                conn=conn,
+            )
+        return enabled_groups
+
     def get_dsapi_chat_history(
         self,
         group_id: int,

@@ -62,6 +62,7 @@ local ADMIN_COMMANDS = {
   "/bot status 查看当前策略",
   "/bot on [group_id] 启用或解除屏蔽群",
   "/bot off [group_id] 停用或屏蔽群",
+  "/bot aion [group_id] 开启指定群的 AI（省略则当前群）",
   "/bot mode allowlist|blocklist 切换策略模式",
   "/bot admin add <user_id> 添加管理员",
   "/bot prefix list 查看触发前缀",

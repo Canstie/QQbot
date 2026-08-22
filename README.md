@@ -14,6 +14,7 @@ LLOneBot 或 NapCat Framework 使用。桌面 QQ 客户端可以正常使用，�
   - `/download_overview`（查看 MinIO 图库的图片总数、大小和今日新增）
   - `/bot on [group_id]`
   - `/bot off [group_id]`
+  - `/bot aion [group_id]`（开启指定群的 AI；群聊内省略群号则开启当前群）
   - `/bot mode allowlist|blocklist`
   - `/bot status`
   - `/bot admin add <user_id>`（删除管理员仅允许在 Web 管理页操作）
