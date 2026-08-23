@@ -590,6 +590,52 @@ class PolicyStore:
             )
         return {"active_knowledge_id": normalized_id, "history_messages_cleared": cleared}
 
+    def set_active_dsapi_model(self, model: str, *, actor_id: int) -> dict[str, Any]:
+        normalized_model = self._normalize_dsapi_model(model)
+        with self._connect() as conn:
+            active_id = self._active_knowledge_id(conn)
+            if active_id is None:
+                default_tokens_row = conn.execute(
+                    "SELECT value FROM settings WHERE key = 'dsapi_default_max_tokens'"
+                ).fetchone()
+                default_max_tokens = (
+                    int(default_tokens_row["value"]) if default_tokens_row else 80
+                )
+                now = time.time()
+                cursor = conn.execute(
+                    """
+                    INSERT INTO dsapi_knowledge_bases(
+                        name, prompt, model, thinking_enabled, max_tokens, temperature,
+                        created_at, updated_at
+                    )
+                    VALUES ('默认知识库', '', ?, 0, ?, NULL, ?, ?)
+                    """,
+                    (normalized_model, default_max_tokens, now, now),
+                )
+                active_id = int(cursor.lastrowid)
+                self._set_active_knowledge_id(active_id, conn)
+                self._sync_legacy_knowledge_prompt(active_id, conn)
+            conn.execute(
+                """
+                UPDATE dsapi_knowledge_bases
+                SET model = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (normalized_model, time.time(), active_id),
+            )
+            self.audit(
+                actor_id,
+                "set_active_dsapi_model",
+                str(active_id),
+                {"model": normalized_model},
+                conn=conn,
+            )
+            row = conn.execute(
+                "SELECT * FROM dsapi_knowledge_bases WHERE id = ?",
+                (active_id,),
+            ).fetchone()
+        return self._public_knowledge_base(row)
+
     def get_mode(self) -> str:
         mode = self.get_setting("policy_mode", "allowlist")
         if mode not in {"allowlist", "blocklist"}:

@@ -135,6 +135,73 @@ async def test_quoted_text_is_included_in_prompt():
 
 
 @pytest.mark.asyncio
+async def test_vision_prompt_uses_official_image_url_content_blocks():
+    image_url = "https://multimedia.nt.qq.com.cn/download?fileid=abc"
+    bot = FakeBot(
+        {
+            "message": [
+                {"type": "text", "data": {"text": "看这个"}},
+                {"type": "image", "data": {"url": image_url, "file": "a.jpg"}},
+            ]
+        }
+    )
+    event = make_event(
+        text="这是什么？",
+        segments=({"type": "reply", "data": {"id": "42"}},),
+    )
+
+    prompt = await build_mention_prompt(bot, event, vision_enabled=True)
+
+    assert prompt == [
+        {
+            "type": "text",
+            "text": "被引用的消息：\n看这个\n\n用户的问题或补充：\n这是什么？",
+        },
+        {
+            "type": "image_url",
+            "image_url": {"url": image_url, "detail": "auto"},
+        },
+    ]
+    assert bot.calls == [("get_msg", {"message_id": "42"})]
+
+
+@pytest.mark.asyncio
+async def test_vision_model_sends_quoted_image_and_records_text_history(tmp_path, monkeypatch):
+    image_url = "https://multimedia.nt.qq.com.cn/download?fileid=abc"
+    bot = FakeBot({"message": [{"type": "image", "data": {"url": image_url}}]})
+    store = make_store(tmp_path)
+    store.set_active_dsapi_model("deepseek-v4-flash-vision-exp", actor_id=0)
+    captured = {}
+
+    def fake_request(settings, messages, **kwargs):
+        captured["messages"] = messages
+        captured["options"] = kwargs
+        return "图中是一只猫。"
+
+    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
+
+    response = await generate_mention_reply(
+        bot,
+        make_event(
+            text="图里是什么？",
+            segments=({"type": "reply", "data": {"id": 42}},),
+        ),
+        make_settings(tmp_path),
+        store,
+    )
+
+    assert response == "图中是一只猫。"
+    assert captured["options"]["model"] == "deepseek-v4-flash-vision-exp"
+    assert captured["messages"][-1]["content"][1] == {
+        "type": "image_url",
+        "image_url": {"url": image_url, "detail": "auto"},
+    }
+    assert store.get_dsapi_chat_history(123, 2)[0]["content"].endswith(
+        "[引用图片 1 张]"
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("segment_type", ["image", "record", "video", "file", "json", "forward"])
 async def test_current_multimodal_message_is_discarded(segment_type):
     bot = FakeBot()

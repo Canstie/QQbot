@@ -24,6 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
+from qq_personal_bot.ai_models import public_dsapi_model_options
 from qq_personal_bot.classic_storage import ClassicStorageError, get_classic_storage
 from qq_personal_bot.download_storage import DownloadStorageError, get_download_storage
 from qq_personal_bot.lua_runner import (
@@ -246,6 +247,7 @@ def create_app():
             "default_max_tokens": settings.dsapi_max_tokens,
             "base_url": settings.dsapi_base_url,
             "history_idle_seconds": settings.dsapi_history_idle_seconds,
+            "model_options": public_dsapi_model_options(),
         }
 
     @app.post("/api/dsapi")

@@ -15,6 +15,8 @@ LLOneBot 或 NapCat Framework 使用。桌面 QQ 客户端可以正常使用，�
   - `/bot on [group_id]`
   - `/bot off [group_id]`
   - `/bot aion [group_id]`（开启指定群的 AI；群聊内省略群号则开启当前群）
+  - `/bot aim list|flash|pro|vision`（查看或切换当前知识库使用的 AI 模型）
+  - `/bot aik list|<序号>`（查看知识库，并按列表序号切换）
   - `/bot mode allowlist|blocklist`
   - `/bot status`
   - `/bot admin add <user_id>`（删除管理员仅允许在 Web 管理页操作）

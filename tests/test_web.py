@@ -216,6 +216,12 @@ def test_dsapi_config_api_roundtrip_and_clear_history(tmp_path, monkeypatch):
     assert data["random_sticker_percent"] == 35
     assert data["knowledge_enabled"] is True
     assert data["knowledge_prompt"] == "扮演档案管理员"
+    assert [item["key"] for item in data["model_options"]] == [
+        "flash",
+        "pro",
+        "vision",
+    ]
+    assert data["model_options"][2]["id"] == "deepseek-v4-flash-vision-exp"
 
     invalid = client.post(
         "/api/dsapi",

@@ -4,6 +4,27 @@ import { BookOpen, BrainCircuit, CheckCircle2, Eraser, ImagePlus, Plus, Save, Sp
 import { fileToDataUrl, formatBytes, formatIds, get, parseIds, post, put, remove } from "../api";
 import { Button, Empty, Field, IconButton, Metric, PageHeader, Panel, Status, Switch } from "../components/Ui";
 
+const DEFAULT_MODEL_OPTIONS = [
+  { key: "flash", id: "deepseek-v4-flash", label: "Flash", vision: false },
+  { key: "pro", id: "deepseek-v4-pro", label: "Pro", vision: false },
+  { key: "vision", id: "deepseek-v4-flash-vision-exp", label: "Flash Vision Exp", vision: true },
+];
+
+const modelOptionsWithCurrent = (options, currentModel) => {
+  if (!currentModel || options.some((item) => item.id === currentModel)) return options;
+  return [{ key: "custom", id: currentModel, label: `现有模型：${currentModel}`, vision: false }, ...options];
+};
+
+function ModelSelect({ value, options, onChange }) {
+  return (
+    <select value={value} onChange={(event) => onChange(event.target.value)}>
+      {modelOptionsWithCurrent(options, value).map((item) => (
+        <option key={item.id} value={item.id}>{item.label}（{item.key}）</option>
+      ))}
+    </select>
+  );
+}
+
 const knowledgeDraftFrom = (knowledge = {}, defaults = {}) => ({
   name: knowledge.name || "",
   prompt: knowledge.prompt || "",
@@ -30,6 +51,8 @@ export default function AiPage({ refreshVersion, onChanged }) {
   const [notice, setNotice] = useState("正在读取 AI 配置");
   const [stickers, setStickers] = useState([]);
   const [stickerFile, setStickerFile] = useState(null);
+  const modelOptions = data?.model_options || DEFAULT_MODEL_OPTIONS;
+  const visionEnabled = Boolean(modelOptions.find((item) => item.id === data?.model)?.vision);
 
   const applyConfig = (result, preferredId = null) => {
     setData(result);
@@ -219,7 +242,7 @@ export default function AiPage({ refreshVersion, onChanged }) {
                   <span><Sparkles size={14} /> {knowledgeDraft.prompt.length.toLocaleString()} 字符</span>
                 </div>
                 <div className="knowledge-runtime-grid">
-                  <Field label="模型"><input value={knowledgeDraft.model} maxLength={200} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, model: event.target.value }))} /></Field>
+                  <Field label="模型"><ModelSelect value={knowledgeDraft.model} options={modelOptions} onChange={(model) => setKnowledgeDraft((current) => ({ ...current, model }))} /></Field>
                   <Field label="最大输出 Token"><input type="number" min="1" max="32768" value={knowledgeDraft.max_tokens} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, max_tokens: event.target.value }))} /></Field>
                   <Field label="Temperature" hint="留空使用服务商默认值"><input type="number" min="0" max="2" step="0.1" value={knowledgeDraft.temperature} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, temperature: event.target.value }))} /></Field>
                   <Switch checked={knowledgeDraft.thinking_enabled} onChange={(value) => setKnowledgeDraft((current) => ({ ...current, thinking_enabled: value }))} label="Thinking 模式" description={knowledgeDraft.thinking_enabled ? "请求模型进行思考" : "Non-thinking，直接简短回复"} />
@@ -269,7 +292,7 @@ export default function AiPage({ refreshVersion, onChanged }) {
             ))}
           </div>
         </Panel>
-        <div className="span-12 panel-footer panel-footer--standalone"><Status>{notice}</Status><span className="quiet-note">多模态消息仍会在本地直接丢弃，不调用 API</span></div>
+        <div className="span-12 panel-footer panel-footer--standalone"><Status>{notice}</Status><span className="quiet-note">{visionEnabled ? "Vision 模型可识别被引用消息中的图片；其他多模态内容仍会丢弃" : "当前模型仅处理文本，不会将引用图片发送给 API"}</span></div>
       </div>
       {createOpen && (
         <div className="modal-scrim" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setCreateOpen(false); }}>
@@ -281,7 +304,7 @@ export default function AiPage({ refreshVersion, onChanged }) {
             <div className="knowledge-modal__body">
               <div className="form-grid form-grid--2">
                 <Field label="知识库名称"><input autoFocus value={createDraft.name} maxLength={80} onChange={(event) => setCreateDraft((current) => ({ ...current, name: event.target.value }))} /></Field>
-                <Field label="模型"><input value={createDraft.model} maxLength={200} onChange={(event) => setCreateDraft((current) => ({ ...current, model: event.target.value }))} /></Field>
+                <Field label="模型"><ModelSelect value={createDraft.model} options={modelOptions} onChange={(model) => setCreateDraft((current) => ({ ...current, model }))} /></Field>
                 <Field label="最大输出 Token"><input type="number" min="1" max="32768" value={createDraft.max_tokens} onChange={(event) => setCreateDraft((current) => ({ ...current, max_tokens: event.target.value }))} /></Field>
                 <Field label="Temperature" hint="留空使用服务商默认值"><input type="number" min="0" max="2" step="0.1" value={createDraft.temperature} onChange={(event) => setCreateDraft((current) => ({ ...current, temperature: event.target.value }))} /></Field>
               </div>

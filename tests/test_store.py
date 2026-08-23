@@ -424,6 +424,36 @@ def test_enable_dsapi_group_enables_master_switch_and_is_idempotent(tmp_path):
     assert config["enabled_groups"] == [123, 456]
 
 
+def test_set_active_dsapi_model_only_updates_active_knowledge_base(tmp_path):
+    db_path = tmp_path / "policy.sqlite3"
+    store = PolicyStore(db_path)
+    store.initialize(AppSettings(db_path=db_path, admins=()))
+    first = store.create_dsapi_knowledge_base(
+        name="第一个",
+        prompt="",
+        actor_id=1,
+        model="deepseek-v4-flash",
+    )
+    second = store.create_dsapi_knowledge_base(
+        name="第二个",
+        prompt="",
+        actor_id=1,
+        model="deepseek-v4-pro",
+    )
+    active_id = store.get_dsapi_config()["active_knowledge_id"]
+    assert active_id == first["id"]
+
+    updated = store.set_active_dsapi_model(
+        "deepseek-v4-flash-vision-exp",
+        actor_id=10000,
+    )
+
+    assert updated["id"] == active_id
+    assert updated["model"] == "deepseek-v4-flash-vision-exp"
+    bases = {item["id"]: item for item in store.list_dsapi_knowledge_bases()}
+    assert bases[second["id"]]["model"] == "deepseek-v4-pro"
+
+
 def test_dsapi_legacy_prompt_is_migrated_to_default_knowledge_base(tmp_path):
     db_path = tmp_path / "policy.sqlite3"
     settings = AppSettings(db_path=db_path, admins=())

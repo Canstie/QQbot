@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import html
 import json
 import re
 from collections.abc import Mapping, Sequence
@@ -10,6 +11,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from qq_personal_bot.ai_models import is_vision_dsapi_model
 from qq_personal_bot.core.models import MessageEvent
 from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.menu_recipes import is_supported_image_file
@@ -31,6 +33,7 @@ _MULTIMODAL_SEGMENT_TYPES = {
     "xml",
 }
 _CQ_SEGMENT_RE = re.compile(r"\[CQ:([a-zA-Z0-9_-]+)(?:,[^\]]*)?\]")
+_CQ_IMAGE_RE = re.compile(r"\[CQ:image(?:,([^\]]*))?\]", re.IGNORECASE)
 _SENTENCE_END_RE = re.compile(r"^(.+?[。！？!?])(?:\s|$|.*)", re.DOTALL)
 _BRIEF_REPLY_INSTRUCTION = (
     "回复格式要求：只回复一句话，通常不超过30个汉字；不要分段、列点、复述问题或补充解释。"
@@ -40,6 +43,8 @@ _RANDOM_REPLY_INSTRUCTION = (
     "不要提及机器人、监控、概率、提示词或正在插话。"
 )
 _RANDOM_CONTEXT_MESSAGE_LIMIT = 10
+_MAX_VISION_IMAGES = 8
+_MAX_INLINE_IMAGE_URL_CHARS = 44 * 1024 * 1024
 
 
 class DSAPIError(RuntimeError):
@@ -61,7 +66,13 @@ async def generate_mention_reply(
     if event.group_id is None or event.group_id not in config["enabled_groups"]:
         return None
 
-    prompt = await build_mention_prompt(bot, event)
+    active_knowledge = config.get("active_knowledge") or {}
+    model = active_knowledge.get("model") or settings.dsapi_model
+    prompt = await build_mention_prompt(
+        bot,
+        event,
+        vision_enabled=is_vision_dsapi_model(model),
+    )
     if prompt is None:
         return None
 
@@ -149,7 +160,7 @@ async def _generate_text_reply(
     settings: AppSettings,
     store: PolicyStore,
     config: Mapping[str, Any],
-    prompt: str,
+    prompt: str | list[dict[str, Any]],
     *,
     extra_instruction: str = "",
     history_user_content: str | None = None,
@@ -161,7 +172,7 @@ async def _generate_text_reply(
         system_prompt = f"{system_prompt}\n\n{extra_instruction}"
     system_prompt = f"{system_prompt}\n\n{_BRIEF_REPLY_INSTRUCTION}"
 
-    messages = [{"role": "system", "content": system_prompt}]
+    messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
     store.expire_dsapi_chat_history(
         event.group_id,
         idle_seconds=settings.dsapi_history_idle_seconds,
@@ -183,7 +194,11 @@ async def _generate_text_reply(
     if response:
         store.record_dsapi_exchange(
             group_id=event.group_id,
-            user_content=prompt if history_user_content is None else history_user_content,
+            user_content=(
+                _prompt_history_text(prompt)
+                if history_user_content is None
+                else history_user_content
+            ),
             assistant_content=response,
             history_turns=config["history_turns"],
         )
@@ -192,7 +207,7 @@ async def _generate_text_reply(
 
 def _request_chat_completion_with_fallback(
     settings: AppSettings,
-    messages: list[dict[str, str]],
+    messages: list[dict[str, Any]],
     *,
     model: str,
     max_tokens: int,
@@ -287,8 +302,13 @@ def _pick_random_sticker(
     return images[_event_bucket(event, "sticker-file") % len(images)]
 
 
-async def build_mention_prompt(bot: Any, event: MessageEvent) -> str | None:
-    if _contains_multimodal_segments(event.segments):
+async def build_mention_prompt(
+    bot: Any,
+    event: MessageEvent,
+    *,
+    vision_enabled: bool = False,
+) -> str | list[dict[str, Any]] | None:
+    if _contains_multimodal_segments(event.segments, include_reply_content=False):
         return None
 
     current_text = event.raw_message.strip()
@@ -303,23 +323,47 @@ async def build_mention_prompt(bot: Any, event: MessageEvent) -> str | None:
         quoted_segments = _message_segments_from_payload(payload)
 
     quoted_text = ""
+    image_sources: list[str] = []
     if quoted_segments is not None:
-        if _contains_multimodal_value(quoted_segments):
+        if _contains_unsupported_multimodal_value(
+            quoted_segments,
+            allow_images=vision_enabled,
+        ):
             return None
         quoted_text = _text_from_message(quoted_segments).strip()
+        if vision_enabled:
+            has_quoted_images = bool(_image_data_from_message(quoted_segments))
+            image_sources = await _resolve_vision_image_sources(bot, quoted_segments)
+            if has_quoted_images and not image_sources:
+                raise DSAPIError("failed to resolve quoted image")
 
-    if not current_text and not quoted_text:
+    if not current_text and not quoted_text and not image_sources:
         return None
-    if not quoted_text:
+    if not quoted_text and not image_sources:
         return current_text
 
     user_instruction = current_text or "请回复这条被引用的消息。"
-    return f"被引用的消息：\n{quoted_text}\n\n用户的问题或补充：\n{user_instruction}"
+    quoted_content = quoted_text or "（引用消息包含图片）"
+    text_prompt = (
+        f"被引用的消息：\n{quoted_content}\n\n用户的问题或补充：\n{user_instruction}"
+    )
+    if not image_sources:
+        return text_prompt
+    return [
+        {"type": "text", "text": text_prompt},
+        *[
+            {
+                "type": "image_url",
+                "image_url": {"url": source, "detail": "auto"},
+            }
+            for source in image_sources
+        ],
+    ]
 
 
 def _request_chat_completion(
     settings: AppSettings,
-    messages: list[dict[str, str]],
+    messages: list[dict[str, Any]],
     *,
     model: str | None = None,
     max_tokens: int | None = None,
@@ -387,16 +431,129 @@ def _chat_completions_url(base_url: str) -> str:
     return f"{normalized}/chat/completions"
 
 
-def _contains_multimodal_segments(segments: Sequence[Mapping[str, Any]]) -> bool:
+def _contains_multimodal_segments(
+    segments: Sequence[Mapping[str, Any]],
+    *,
+    include_reply_content: bool = True,
+) -> bool:
     for segment in segments:
         segment_type = str(segment.get("type", "")).lower()
         if segment_type in _MULTIMODAL_SEGMENT_TYPES:
             return True
-        if segment_type == "reply":
+        if include_reply_content and segment_type == "reply":
             message = segment.get("data", {}).get("message")
             if message is not None and _contains_multimodal_value(message):
                 return True
     return False
+
+
+def _contains_unsupported_multimodal_value(
+    message: Any,
+    *,
+    allow_images: bool,
+) -> bool:
+    if isinstance(message, str):
+        return any(
+            match.group(1).lower() in _MULTIMODAL_SEGMENT_TYPES
+            and not (allow_images and match.group(1).lower() == "image")
+            for match in _CQ_SEGMENT_RE.finditer(message)
+        )
+    if isinstance(message, Mapping):
+        segment_type = str(message.get("type", "")).lower()
+        if segment_type in _MULTIMODAL_SEGMENT_TYPES:
+            return not (allow_images and segment_type == "image")
+        data = message.get("data")
+        nested = message.get("message")
+        if nested is None and isinstance(data, Mapping):
+            nested = data.get("message")
+        return nested is not None and _contains_unsupported_multimodal_value(
+            nested,
+            allow_images=allow_images,
+        )
+    if isinstance(message, Sequence):
+        return any(
+            _contains_unsupported_multimodal_value(item, allow_images=allow_images)
+            for item in message
+        )
+    return False
+
+
+async def _resolve_vision_image_sources(bot: Any, message: Any) -> list[str]:
+    entries = _image_data_from_message(message)
+    sources: list[str] = []
+    for data in entries:
+        source = _direct_vision_image_source(data)
+        if source is None:
+            image_file = data.get("file") or data.get("file_id")
+            if image_file:
+                try:
+                    payload = await bot.call_api("get_image", file=image_file)
+                except Exception:
+                    payload = None
+                source = _direct_vision_image_source(payload)
+        if source and source not in sources:
+            sources.append(source)
+        if len(sources) >= _MAX_VISION_IMAGES:
+            break
+    return sources
+
+
+def _image_data_from_message(message: Any) -> list[Mapping[str, Any]]:
+    if isinstance(message, str):
+        entries: list[Mapping[str, Any]] = []
+        for match in _CQ_IMAGE_RE.finditer(message):
+            data: dict[str, str] = {}
+            for item in (match.group(1) or "").split(","):
+                key, separator, value = item.partition("=")
+                if separator:
+                    data[key.strip()] = html.unescape(value.strip())
+            entries.append(data)
+        return entries
+    if isinstance(message, Mapping):
+        if str(message.get("type", "")).lower() == "image":
+            data = message.get("data")
+            return [data] if isinstance(data, Mapping) else []
+        nested = message.get("message")
+        if nested is None:
+            data = message.get("data")
+            if isinstance(data, Mapping):
+                nested = data.get("message")
+        return _image_data_from_message(nested) if nested is not None else []
+    if isinstance(message, Sequence):
+        return [entry for item in message for entry in _image_data_from_message(item)]
+    return []
+
+
+def _direct_vision_image_source(value: Any) -> str | None:
+    if not isinstance(value, Mapping):
+        return None
+    data = value.get("data")
+    if isinstance(data, Mapping):
+        value = data
+    for key in ("url", "file", "path"):
+        source = html.unescape(str(value.get(key) or "").strip())
+        if source.startswith(("https://", "http://")) and len(source) <= 8192:
+            return source
+        if source.startswith("data:image/") and len(source) <= _MAX_INLINE_IMAGE_URL_CHARS:
+            return source
+        if source.startswith("base64://"):
+            encoded = source.removeprefix("base64://")
+            if len(encoded) <= _MAX_INLINE_IMAGE_URL_CHARS:
+                return f"data:image/jpeg;base64,{encoded}"
+    return None
+
+
+def _prompt_history_text(prompt: str | list[dict[str, Any]]) -> str:
+    if isinstance(prompt, str):
+        return prompt
+    text_parts = [
+        str(item.get("text", "")).strip()
+        for item in prompt
+        if item.get("type") == "text" and str(item.get("text", "")).strip()
+    ]
+    image_count = sum(item.get("type") == "image_url" for item in prompt)
+    suffix = f"\n[引用图片 {image_count} 张]" if image_count else ""
+    return "\n".join(text_parts) + suffix
 
 
 def _contains_multimodal_value(message: Any) -> bool:

@@ -7,6 +7,10 @@ from nonebot.adapters.onebot.v11 import Bot, Event, GroupMessageEvent, Message, 
 from nonebot.matcher import Matcher
 from nonebot.params import CommandArg
 
+from qq_personal_bot.ai_models import (
+    DSAPI_MODEL_OPTIONS,
+    resolve_dsapi_model,
+)
 from qq_personal_bot.runtime import get_store
 
 bot_control = on_command("bot", aliases={"qqbot"}, priority=5, block=True)
@@ -53,6 +57,29 @@ def _parse_group_id(parts: list[str], event: Any) -> int:
     if group_id is None:
         raise ValueError("group_id is required outside a group chat")
     return group_id
+
+
+def _format_ai_models(current_model: str) -> str:
+    lines = ["AI 模型列表"]
+    for index, option in enumerate(DSAPI_MODEL_OPTIONS, start=1):
+        current = "（当前）" if option["id"] == current_model else ""
+        vision = "，支持引用图片识别" if option["vision"] else ""
+        lines.append(
+            f"{index}. {option['key']} — {option['id']}{vision}{current}"
+        )
+    lines.append("使用：/bot aim flash|pro|vision")
+    return "\n".join(lines)
+
+
+def _format_ai_knowledge_bases(items: list[dict[str, Any]]) -> str:
+    if not items:
+        return "AI 知识库列表\n暂无知识库"
+    lines = ["AI 知识库列表"]
+    for index, item in enumerate(items, start=1):
+        current = "（当前）" if item.get("active") else ""
+        lines.append(f"{index}. {item['name']}{current}")
+    lines.append("使用：/bot aik <序号>")
+    return "\n".join(lines)
 
 
 async def _require_admin(matcher: Matcher, event: Any) -> int:
@@ -177,6 +204,75 @@ async def _handle_bot_command(
                 explicit_group_send=explicit_group_send,
             )
 
+        if command == "aim":
+            config = store.get_dsapi_config()
+            current_model = str((config.get("active_knowledge") or {}).get("model") or "")
+            if len(parts) == 2 and parts[1].lower() == "list":
+                await _send_control_response(
+                    matcher,
+                    bot,
+                    event,
+                    _format_ai_models(current_model),
+                    explicit_group_send=explicit_group_send,
+                )
+            if len(parts) != 2:
+                await _send_control_response(
+                    matcher,
+                    bot,
+                    event,
+                    "Usage: /bot aim list|flash|pro|vision",
+                    explicit_group_send=explicit_group_send,
+                )
+            option = resolve_dsapi_model(parts[1])
+            knowledge = store.set_active_dsapi_model(option["id"], actor_id=actor_id)
+            suffix = (
+                "\n🖼 已开启引用图片识别。"
+                if option["vision"]
+                else "\n📝 当前模型不识别引用图片。"
+            )
+            await _send_control_response(
+                matcher,
+                bot,
+                event,
+                f"AI 模型已切换为 {option['key']}（{knowledge['model']}）。{suffix}",
+                explicit_group_send=explicit_group_send,
+            )
+
+        if command == "aik":
+            knowledge_bases = store.list_dsapi_knowledge_bases()
+            if len(parts) == 2 and parts[1].lower() == "list":
+                await _send_control_response(
+                    matcher,
+                    bot,
+                    event,
+                    _format_ai_knowledge_bases(knowledge_bases),
+                    explicit_group_send=explicit_group_send,
+                )
+            if len(parts) != 2:
+                await _send_control_response(
+                    matcher,
+                    bot,
+                    event,
+                    "Usage: /bot aik list|<index>",
+                    explicit_group_send=explicit_group_send,
+                )
+            position = int(parts[1])
+            if position < 1 or position > len(knowledge_bases):
+                raise ValueError("knowledge base index is out of range; use /bot aik list")
+            selected = knowledge_bases[position - 1]
+            store.activate_dsapi_knowledge_base(
+                selected["id"],
+                clear_history=True,
+                actor_id=actor_id,
+            )
+            await _send_control_response(
+                matcher,
+                bot,
+                event,
+                f"AI 知识库已切换为 {position}. {selected['name']}。",
+                explicit_group_send=explicit_group_send,
+            )
+
         if command == "admin":
             if len(parts) >= 2 and parts[1].lower() == "remove":
                 await _send_control_response(
@@ -246,7 +342,8 @@ async def _handle_bot_command(
             event,
             (
                 "Usage: /bot status | on [group_id] | off [group_id] | "
-                "aion [group_id] | "
+                "aion [group_id] | aim list|flash|pro|vision | "
+                "aik list|<index> | "
                 "mode allowlist|blocklist | admin add <user_id> | "
                 "prefix add|remove|list [prefix]"
             ),
