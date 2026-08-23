@@ -280,7 +280,7 @@ async def _handle_bot_command(
             selected = knowledge_bases[position - 1]
             store.activate_dsapi_knowledge_base(
                 selected["id"],
-                clear_history=True,
+                clear_history=False,
                 actor_id=actor_id,
             )
             await _send_control_response(

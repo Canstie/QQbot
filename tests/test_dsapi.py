@@ -196,7 +196,10 @@ async def test_vision_model_sends_quoted_image_and_records_text_history(tmp_path
         "type": "image_url",
         "image_url": {"url": image_url, "detail": "auto"},
     }
-    assert store.get_dsapi_chat_history(123, 2)[0]["content"].endswith(
+    knowledge_id = store.get_dsapi_config()["active_knowledge_id"]
+    assert store.get_dsapi_chat_history(
+        123, 2, knowledge_id=knowledge_id
+    )[0]["content"].endswith(
         "[引用图片 1 张]"
     )
 
@@ -286,11 +289,13 @@ async def test_group_without_ai_enabled_does_not_resolve_quote_or_call_dsapi(tmp
 @pytest.mark.asyncio
 async def test_knowledge_and_group_history_are_sent_and_response_is_recorded(tmp_path, monkeypatch):
     store = make_store(tmp_path, knowledge_prompt="你是档案管理员，只依据档案回答。")
+    knowledge_id = store.get_dsapi_config()["active_knowledge_id"]
     store.record_dsapi_exchange(
         group_id=123,
         user_content="上一问",
         assistant_content="上一答",
         history_turns=2,
+        knowledge_id=knowledge_id,
     )
     captured = {}
 
@@ -315,7 +320,7 @@ async def test_knowledge_and_group_history_are_sent_and_response_is_recorded(tmp
         {"role": "assistant", "content": "上一答"},
         {"role": "user", "content": "本轮问题"},
     ]
-    assert store.get_dsapi_chat_history(123, 2) == [
+    assert store.get_dsapi_chat_history(123, 2, knowledge_id=knowledge_id) == [
         {"role": "user", "content": "上一问"},
         {"role": "assistant", "content": "上一答"},
         {"role": "user", "content": "本轮问题"},

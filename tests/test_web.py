@@ -261,6 +261,7 @@ def test_dsapi_knowledge_base_api_crud_and_switch(tmp_path, monkeypatch):
             "model": "deepseek-reasoner",
             "thinking_enabled": True,
             "max_tokens": 512,
+            "history_turns": 20,
             "temperature": 0.4,
         },
     )
@@ -277,6 +278,7 @@ def test_dsapi_knowledge_base_api_crud_and_switch(tmp_path, monkeypatch):
             "model": "deepseek-reasoner-v2",
             "thinking_enabled": True,
             "max_tokens": 640,
+            "history_turns": 18,
             "temperature": 0.2,
         },
     )
@@ -289,6 +291,7 @@ def test_dsapi_knowledge_base_api_crud_and_switch(tmp_path, monkeypatch):
             "model": "deepseek-reasoner-v3",
             "thinking_enabled": False,
             "max_tokens": 720,
+            "history_turns": 20,
             "temperature": 0.1,
         },
     )
@@ -302,6 +305,8 @@ def test_dsapi_knowledge_base_api_crud_and_switch(tmp_path, monkeypatch):
     assert activated.json()["model"] == "deepseek-reasoner-v3"
     assert activated.json()["thinking_enabled"] is False
     assert activated.json()["max_tokens"] == 720
+    assert activated.json()["history_turns"] == 20
+    assert activated.json()["active_knowledge"]["history_turns"] == 20
     assert activated.json()["temperature"] == 0.1
 
     deleted = client.delete(f"/api/dsapi/knowledge/{second_id}")

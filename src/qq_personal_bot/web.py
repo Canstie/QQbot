@@ -84,6 +84,7 @@ class KnowledgeBasePayload(BaseModel):
     model: str | None = None
     thinking_enabled: bool | None = None
     max_tokens: int | None = None
+    history_turns: int | None = None
     temperature: float | None = None
 
 
@@ -94,6 +95,7 @@ class KnowledgeActivationPayload(BaseModel):
     model: str | None = None
     thinking_enabled: bool | None = None
     max_tokens: int | None = None
+    history_turns: int | None = None
     temperature: float | None = None
 
 
@@ -289,6 +291,11 @@ def create_app():
                     if payload.max_tokens is not None
                     else get_settings().dsapi_max_tokens
                 ),
+                history_turns=(
+                    payload.history_turns
+                    if payload.history_turns is not None
+                    else 2
+                ),
                 temperature=payload.temperature,
             )
         except (TypeError, ValueError) as exc:
@@ -311,6 +318,7 @@ def create_app():
                 model=payload.model,
                 thinking_enabled=payload.thinking_enabled,
                 max_tokens=payload.max_tokens,
+                history_turns=payload.history_turns,
                 temperature=payload.temperature,
             )
         except (TypeError, ValueError) as exc:
@@ -345,6 +353,7 @@ def create_app():
                     model=payload.model,
                     thinking_enabled=payload.thinking_enabled,
                     max_tokens=payload.max_tokens,
+                    history_turns=payload.history_turns,
                     temperature=payload.temperature,
                     activate=True,
                     clear_history=payload.clear_history,

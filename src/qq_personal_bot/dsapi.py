@@ -104,16 +104,19 @@ async def generate_random_group_reply(
         return None
     if _contains_multimodal_segments(event.segments):
         return None
+    knowledge_id = int(config.get("active_knowledge_id") or 0)
     recent_context = store.get_dsapi_group_context(
         event.group_id,
         message_limit=_RANDOM_CONTEXT_MESSAGE_LIMIT,
         idle_seconds=settings.dsapi_history_idle_seconds,
+        knowledge_id=knowledge_id,
     )
     store.record_dsapi_group_message(
         group_id=event.group_id,
         user_id=event.user_id,
         content=event.raw_message,
         message_limit=_RANDOM_CONTEXT_MESSAGE_LIMIT,
+        knowledge_id=knowledge_id,
     )
     if not _random_reply_selected(event, config["random_reply_percent"]):
         return None
@@ -173,11 +176,19 @@ async def _generate_text_reply(
     system_prompt = f"{system_prompt}\n\n{_BRIEF_REPLY_INSTRUCTION}"
 
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
+    knowledge_id = int(config.get("active_knowledge_id") or 0)
     store.expire_dsapi_chat_history(
         event.group_id,
         idle_seconds=settings.dsapi_history_idle_seconds,
+        knowledge_id=knowledge_id,
     )
-    messages.extend(store.get_dsapi_chat_history(event.group_id, config["history_turns"]))
+    messages.extend(
+        store.get_dsapi_chat_history(
+            event.group_id,
+            config["history_turns"],
+            knowledge_id=knowledge_id,
+        )
+    )
     messages.append({"role": "user", "content": prompt})
 
     active_knowledge = config.get("active_knowledge") or {}
@@ -201,6 +212,7 @@ async def _generate_text_reply(
             ),
             assistant_content=response,
             history_turns=config["history_turns"],
+            knowledge_id=knowledge_id,
         )
     return response
 

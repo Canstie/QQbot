@@ -505,6 +505,43 @@ def test_dsapi_existing_knowledge_table_gains_runtime_configuration(tmp_path):
             VALUES ('旧知识库', '旧知识', 1, 1)
             """
         )
+        conn.execute(
+            "INSERT INTO settings(key, value) VALUES ('dsapi_history_turns', '7')"
+        )
+        conn.execute(
+            """
+            CREATE TABLE dsapi_chat_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id INTEGER NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at REAL NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO dsapi_chat_history(group_id, role, content, created_at)
+            VALUES (123, 'user', '升级前问题', 1)
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE dsapi_group_context (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                created_at REAL NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO dsapi_group_context(group_id, user_id, content, created_at)
+            VALUES (123, 456, '升级前群聊', 1)
+            """
+        )
 
     settings = AppSettings(
         db_path=db_path,
@@ -520,14 +557,24 @@ def test_dsapi_existing_knowledge_table_gains_runtime_configuration(tmp_path):
     assert knowledge["model"] == "deepseek-migrated"
     assert knowledge["thinking_enabled"] is False
     assert knowledge["max_tokens"] == 96
+    assert knowledge["history_turns"] == 7
     assert knowledge["temperature"] is None
+    assert store.get_dsapi_chat_history(
+        123, 7, knowledge_id=knowledge["id"]
+    ) == [{"role": "user", "content": "升级前问题"}]
+    with store._connect() as conn:
+        assert conn.execute(
+            "SELECT knowledge_id FROM dsapi_group_context"
+        ).fetchone()["knowledge_id"] == knowledge["id"]
 
 
 def test_dsapi_knowledge_bases_can_be_edited_switched_and_deleted(tmp_path):
     db_path = tmp_path / "policy.sqlite3"
     store = PolicyStore(db_path)
     store.initialize(AppSettings(db_path=db_path, admins=()))
-    first = store.create_dsapi_knowledge_base(name="果果", prompt="呆呆的", actor_id=1)
+    first = store.create_dsapi_knowledge_base(
+        name="果果", prompt="呆呆的", actor_id=1, history_turns=5
+    )
     second = store.create_dsapi_knowledge_base(
         name="档案员",
         prompt="只说事实",
@@ -535,6 +582,7 @@ def test_dsapi_knowledge_bases_can_be_edited_switched_and_deleted(tmp_path):
         model="deepseek-reasoner",
         thinking_enabled=True,
         max_tokens=512,
+        history_turns=20,
         temperature=0.3,
     )
     store.record_dsapi_exchange(
@@ -542,6 +590,7 @@ def test_dsapi_knowledge_bases_can_be_edited_switched_and_deleted(tmp_path):
         user_content="问题",
         assistant_content="回答",
         history_turns=2,
+        knowledge_id=second["id"],
     )
 
     switched = store.activate_dsapi_knowledge_base(
@@ -568,6 +617,8 @@ def test_dsapi_knowledge_bases_can_be_edited_switched_and_deleted(tmp_path):
     assert config["active_knowledge"]["model"] == "deepseek-reasoner-v2"
     assert config["active_knowledge"]["thinking_enabled"] is True
     assert config["active_knowledge"]["max_tokens"] == 640
+    assert config["active_knowledge"]["history_turns"] == 20
+    assert config["history_turns"] == 20
     assert config["active_knowledge"]["temperature"] == 0.2
     assert config["history_messages"] == 0
 
@@ -576,6 +627,7 @@ def test_dsapi_knowledge_bases_can_be_edited_switched_and_deleted(tmp_path):
         user_content="新问题",
         assistant_content="新回答",
         history_turns=2,
+        knowledge_id=second["id"],
     )
     unchanged = store.activate_dsapi_knowledge_base(
         second["id"],
@@ -589,7 +641,65 @@ def test_dsapi_knowledge_bases_can_be_edited_switched_and_deleted(tmp_path):
     config = store.get_dsapi_config()
     assert config["active_knowledge_id"] == first["id"]
     assert config["active_knowledge_name"] == "果果"
+    assert config["history_turns"] == 5
     assert config["history_messages"] == 0
+
+
+def test_dsapi_history_and_group_context_are_isolated_by_knowledge_base(tmp_path):
+    db_path = tmp_path / "policy.sqlite3"
+    store = PolicyStore(db_path)
+    store.initialize(AppSettings(db_path=db_path, admins=()))
+    first = store.create_dsapi_knowledge_base(
+        name="果果", prompt="果果", actor_id=1, history_turns=5
+    )
+    second = store.create_dsapi_knowledge_base(
+        name="普通回答", prompt="正常回答", actor_id=1, history_turns=20
+    )
+
+    for knowledge, label in ((first, "果果"), (second, "普通")):
+        store.record_dsapi_exchange(
+            group_id=123,
+            user_content=f"{label}问题",
+            assistant_content=f"{label}回答",
+            history_turns=knowledge["history_turns"],
+            knowledge_id=knowledge["id"],
+        )
+        store.record_dsapi_group_message(
+            group_id=123,
+            user_id=456,
+            content=f"{label}群聊",
+            knowledge_id=knowledge["id"],
+        )
+
+    assert store.get_dsapi_chat_history(
+        123, 5, knowledge_id=first["id"]
+    ) == [
+        {"role": "user", "content": "果果问题"},
+        {"role": "assistant", "content": "果果回答"},
+    ]
+    assert store.get_dsapi_chat_history(
+        123, 20, knowledge_id=second["id"]
+    ) == [
+        {"role": "user", "content": "普通问题"},
+        {"role": "assistant", "content": "普通回答"},
+    ]
+    assert store.get_dsapi_group_context(
+        123, knowledge_id=first["id"]
+    ) == [{"user_id": 456, "content": "果果群聊"}]
+    assert store.get_dsapi_group_context(
+        123, knowledge_id=second["id"]
+    ) == [{"user_id": 456, "content": "普通群聊"}]
+
+    switched = store.activate_dsapi_knowledge_base(
+        second["id"], clear_history=True, actor_id=1
+    )
+    assert switched["history_messages_cleared"] == 3
+    assert store.get_dsapi_chat_history(
+        123, 5, knowledge_id=first["id"]
+    )
+    assert store.get_dsapi_chat_history(
+        123, 20, knowledge_id=second["id"]
+    ) == []
 
 
 def test_dsapi_history_expires_after_group_is_idle(tmp_path):

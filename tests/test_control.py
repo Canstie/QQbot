@@ -198,5 +198,5 @@ async def test_aik_lists_and_switches_by_displayed_position(monkeypatch):
             SimpleNamespace(user_id=10000),
             ["aik", "2"],
         )
-    assert store.knowledge_changes == [(22, True, 10000)]
+    assert store.knowledge_changes == [(22, False, 10000)]
     assert switch_matcher.messages == ["AI 知识库已切换为 2. 判官果果。"]

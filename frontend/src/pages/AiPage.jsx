@@ -31,18 +31,20 @@ const knowledgeDraftFrom = (knowledge = {}, defaults = {}) => ({
   model: knowledge.model || defaults.model || defaults.default_model || "deepseek-v4-flash",
   thinking_enabled: knowledge.thinking_enabled ?? false,
   max_tokens: knowledge.max_tokens ?? defaults.max_tokens ?? defaults.default_max_tokens ?? 80,
+  history_turns: knowledge.history_turns ?? defaults.history_turns ?? 2,
   temperature: knowledge.temperature ?? "",
 });
 
 const knowledgePayload = (draft) => ({
   ...draft,
   max_tokens: Number(draft.max_tokens),
+  history_turns: Number(draft.history_turns),
   temperature: draft.temperature === "" ? null : Number(draft.temperature),
 });
 
 export default function AiPage({ refreshVersion, onChanged }) {
   const [data, setData] = useState(null);
-  const [form, setForm] = useState({ enabledGroups: "", turns: 2, randomPercent: 2, stickerPercent: 20, aiEnabled: true, knowledgeEnabled: false, clear: true });
+  const [form, setForm] = useState({ enabledGroups: "", randomPercent: 2, stickerPercent: 20, aiEnabled: true, knowledgeEnabled: false, clear: true });
   const [selectedKnowledgeId, setSelectedKnowledgeId] = useState(null);
   const [knowledgeDraft, setKnowledgeDraft] = useState(knowledgeDraftFrom());
   const [createDraft, setCreateDraft] = useState(knowledgeDraftFrom());
@@ -56,7 +58,7 @@ export default function AiPage({ refreshVersion, onChanged }) {
 
   const applyConfig = (result, preferredId = null) => {
     setData(result);
-    setForm((current) => ({ enabledGroups: formatIds(result.enabled_groups), turns: result.history_turns, randomPercent: result.random_reply_percent ?? 2, stickerPercent: result.random_sticker_percent ?? 20, aiEnabled: result.enabled ?? true, knowledgeEnabled: result.knowledge_enabled, clear: current.clear ?? true }));
+    setForm((current) => ({ enabledGroups: formatIds(result.enabled_groups), randomPercent: result.random_reply_percent ?? 2, stickerPercent: result.random_sticker_percent ?? 20, aiEnabled: result.enabled ?? true, knowledgeEnabled: result.knowledge_enabled, clear: current.clear ?? true }));
     const bases = result.knowledge_bases || [];
     const nextId = preferredId ?? result.active_knowledge_id ?? bases[0]?.id ?? null;
     const selected = bases.find((item) => item.id === nextId) || bases[0] || null;
@@ -123,7 +125,7 @@ export default function AiPage({ refreshVersion, onChanged }) {
   const save = async () => {
     try {
       if (selectedKnowledgeId) await saveAndActivateKnowledge(form.clear);
-      const result = await post("/dsapi", { enabled: form.aiEnabled, enabled_groups: parseIds(form.enabledGroups), history_turns: Number(form.turns), random_reply_percent: Number(form.randomPercent), random_sticker_percent: Number(form.stickerPercent), knowledge_enabled: form.knowledgeEnabled, active_knowledge_id: selectedKnowledgeId, clear_history: false });
+      const result = await post("/dsapi", { enabled: form.aiEnabled, enabled_groups: parseIds(form.enabledGroups), history_turns: Number(knowledgeDraft.history_turns), random_reply_percent: Number(form.randomPercent), random_sticker_percent: Number(form.stickerPercent), knowledge_enabled: form.knowledgeEnabled, active_knowledge_id: selectedKnowledgeId, clear_history: false });
       applyConfig(result, selectedKnowledgeId);
       setNotice("AI 配置已保存，选中的知识库已生效");
       setForm((current) => ({ ...current, clear: false }));
@@ -228,7 +230,7 @@ export default function AiPage({ refreshVersion, onChanged }) {
               {(data?.knowledge_bases || []).map((item) => (
                 <button type="button" key={item.id} disabled={switchingKnowledgeId !== null} className={`knowledge-card ${selectedKnowledgeId === item.id ? "is-selected" : ""} ${item.active ? "is-active" : ""}`} onClick={() => void selectKnowledge(item)}>
                   <BookOpen size={17} />
-                  <span><strong>{item.name}</strong><small>{item.model} · {item.thinking_enabled ? "Thinking" : "Fast"} · {item.prompt_chars.toLocaleString()} 字符</small></span>
+                  <span><strong>{item.name}</strong><small>{item.model} · {item.thinking_enabled ? "Thinking" : "Fast"} · {item.history_turns} 轮 · {item.prompt_chars.toLocaleString()} 字符</small></span>
                   {item.active && <b><CheckCircle2 size={12} />当前启用</b>}
                   {switchingKnowledgeId === item.id && <b>切换中</b>}
                 </button>
@@ -244,6 +246,7 @@ export default function AiPage({ refreshVersion, onChanged }) {
                 <div className="knowledge-runtime-grid">
                   <Field label="模型"><ModelSelect value={knowledgeDraft.model} options={modelOptions} onChange={(model) => setKnowledgeDraft((current) => ({ ...current, model }))} /></Field>
                   <Field label="最大输出 Token"><input type="number" min="1" max="32768" value={knowledgeDraft.max_tokens} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, max_tokens: event.target.value }))} /></Field>
+                  <Field label="上下文轮数"><input type="number" min="1" max="20" value={knowledgeDraft.history_turns} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, history_turns: event.target.value }))} /></Field>
                   <Field label="Temperature" hint="留空使用服务商默认值"><input type="number" min="0" max="2" step="0.1" value={knowledgeDraft.temperature} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, temperature: event.target.value }))} /></Field>
                   <Switch checked={knowledgeDraft.thinking_enabled} onChange={(value) => setKnowledgeDraft((current) => ({ ...current, thinking_enabled: value }))} label="Thinking 模式" description={knowledgeDraft.thinking_enabled ? "请求模型进行思考" : "Non-thinking，直接简短回复"} />
                 </div>
@@ -266,7 +269,7 @@ export default function AiPage({ refreshVersion, onChanged }) {
             <Field label="允许调用 AI 的群" hint="独立于总体 Bot 启用群，一行一个群号。"><textarea value={form.enabledGroups} onChange={(e) => update("enabledGroups", e.target.value)} /></Field>
           </Panel>
           <Panel title="短期记忆" eyebrow="Context window">
-            <Field label="每群保留轮数"><div className="range-value"><input type="range" min="1" max="20" value={form.turns} onChange={(e) => update("turns", e.target.value)} /><strong>{form.turns} 轮</strong></div></Field>
+            <p className="quiet-note">上下文轮数已绑定到各知识库，请在左侧知识库参数中分别设置。</p>
             <Field label="随机插话概率" hint="仅监听 AI 启用群的普通纯文本消息；0% 表示关闭。"><div className="range-value"><input type="range" min="0" max="100" step="0.5" value={form.randomPercent} onChange={(e) => update("randomPercent", e.target.value)} /><strong>{form.randomPercent}%</strong></div></Field>
             <Field label="表情包占插话比例" hint="从独立表情包库随机选择；无图时自动回退为文字。"><div className="range-value"><input type="range" min="0" max="100" step="1" value={form.stickerPercent} onChange={(e) => update("stickerPercent", e.target.value)} /><strong>{form.stickerPercent}%</strong></div></Field>
             <Switch checked={form.clear} onChange={(value) => update("clear", value)} label="保存时清空旧上下文" description="切换角色时建议开启" />
@@ -306,6 +309,7 @@ export default function AiPage({ refreshVersion, onChanged }) {
                 <Field label="知识库名称"><input autoFocus value={createDraft.name} maxLength={80} onChange={(event) => setCreateDraft((current) => ({ ...current, name: event.target.value }))} /></Field>
                 <Field label="模型"><ModelSelect value={createDraft.model} options={modelOptions} onChange={(model) => setCreateDraft((current) => ({ ...current, model }))} /></Field>
                 <Field label="最大输出 Token"><input type="number" min="1" max="32768" value={createDraft.max_tokens} onChange={(event) => setCreateDraft((current) => ({ ...current, max_tokens: event.target.value }))} /></Field>
+                <Field label="上下文轮数"><input type="number" min="1" max="20" value={createDraft.history_turns} onChange={(event) => setCreateDraft((current) => ({ ...current, history_turns: event.target.value }))} /></Field>
                 <Field label="Temperature" hint="留空使用服务商默认值"><input type="number" min="0" max="2" step="0.1" value={createDraft.temperature} onChange={(event) => setCreateDraft((current) => ({ ...current, temperature: event.target.value }))} /></Field>
               </div>
               <Switch checked={createDraft.thinking_enabled} onChange={(value) => setCreateDraft((current) => ({ ...current, thinking_enabled: value }))} label="开启 Thinking 模式" description={createDraft.thinking_enabled ? "随该知识库启用深度思考" : "保持 Non-thinking，优先快速短回复"} />

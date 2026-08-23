@@ -148,6 +148,7 @@ class PolicyStore:
 
             CREATE TABLE IF NOT EXISTS dsapi_chat_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                knowledge_id INTEGER NOT NULL DEFAULT 0,
                 group_id INTEGER NOT NULL,
                 role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
                 content TEXT NOT NULL,
@@ -159,6 +160,7 @@ class PolicyStore:
 
             CREATE TABLE IF NOT EXISTS dsapi_group_context (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                knowledge_id INTEGER NOT NULL DEFAULT 0,
                 group_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
                 content TEXT NOT NULL,
@@ -175,6 +177,7 @@ class PolicyStore:
                 model TEXT NOT NULL DEFAULT '',
                 thinking_enabled INTEGER NOT NULL DEFAULT 0,
                 max_tokens INTEGER NOT NULL DEFAULT 80,
+                history_turns INTEGER NOT NULL DEFAULT 2,
                 temperature REAL,
                 created_at REAL NOT NULL,
                 updated_at REAL NOT NULL
@@ -314,6 +317,7 @@ class PolicyStore:
             "model": "TEXT NOT NULL DEFAULT ''",
             "thinking_enabled": "INTEGER NOT NULL DEFAULT 0",
             "max_tokens": "INTEGER NOT NULL DEFAULT 0",
+            "history_turns": "INTEGER NOT NULL DEFAULT 0",
             "temperature": "REAL",
         }
         for column, definition in migrations.items():
@@ -328,6 +332,18 @@ class PolicyStore:
         conn.execute(
             "UPDATE dsapi_knowledge_bases SET max_tokens = ? WHERE max_tokens <= 0",
             (settings.dsapi_max_tokens,),
+        )
+        history_turns_row = conn.execute(
+            "SELECT value FROM settings WHERE key = 'dsapi_history_turns'"
+        ).fetchone()
+        try:
+            default_history_turns = int(history_turns_row["value"] if history_turns_row else 2)
+        except ValueError:
+            default_history_turns = 2
+        default_history_turns = max(1, min(default_history_turns, 20))
+        conn.execute(
+            "UPDATE dsapi_knowledge_bases SET history_turns = ? WHERE history_turns <= 0",
+            (default_history_turns,),
         )
         self.set_setting("dsapi_default_model", settings.dsapi_model, conn=conn)
         self.set_setting(
@@ -348,10 +364,11 @@ class PolicyStore:
             cursor = conn.execute(
                 """
                 INSERT INTO dsapi_knowledge_bases(
-                    name, prompt, model, thinking_enabled, max_tokens, temperature,
+                    name, prompt, model, thinking_enabled, max_tokens, history_turns,
+                    temperature,
                     created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     "默认知识库",
@@ -359,6 +376,7 @@ class PolicyStore:
                     settings.dsapi_model,
                     0,
                     settings.dsapi_max_tokens,
+                    default_history_turns,
                     None,
                     now,
                     now,
@@ -372,6 +390,40 @@ class PolicyStore:
             active_id = min(available_ids) if available_ids else None
         self._set_active_knowledge_id(active_id, conn)
         self._sync_legacy_knowledge_prompt(active_id, conn)
+        self._initialize_dsapi_history_scope(conn, active_id)
+
+    def _initialize_dsapi_history_scope(
+        self,
+        conn: sqlite3.Connection,
+        active_knowledge_id: int | None,
+    ) -> None:
+        for table in ("dsapi_chat_history", "dsapi_group_context"):
+            columns = {
+                str(row["name"])
+                for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            if "knowledge_id" not in columns:
+                conn.execute(
+                    f"ALTER TABLE {table} "
+                    "ADD COLUMN knowledge_id INTEGER NOT NULL DEFAULT 0"
+                )
+            if active_knowledge_id is not None:
+                conn.execute(
+                    f"UPDATE {table} SET knowledge_id = ? WHERE knowledge_id = 0",
+                    (int(active_knowledge_id),),
+                )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_dsapi_chat_history_knowledge_group
+            ON dsapi_chat_history(knowledge_id, group_id, id)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_dsapi_group_context_knowledge_group
+            ON dsapi_group_context(knowledge_id, group_id, id)
+            """
+        )
 
     def list_dsapi_knowledge_bases(self) -> list[dict[str, Any]]:
         with self._connect() as conn:
@@ -386,12 +438,14 @@ class PolicyStore:
         model: str = "deepseek-v4-flash",
         thinking_enabled: bool = False,
         max_tokens: int = 80,
+        history_turns: int = 2,
         temperature: float | None = None,
     ) -> dict[str, Any]:
         normalized_name = self._normalize_knowledge_name(name)
         normalized_prompt = self._normalize_knowledge_prompt(prompt)
         normalized_model = self._normalize_dsapi_model(model)
         normalized_max_tokens = self._normalize_dsapi_max_tokens(max_tokens)
+        normalized_history_turns = self._normalize_dsapi_history_turns(history_turns)
         normalized_temperature = self._normalize_dsapi_temperature(temperature)
         now = time.time()
         with self._connect() as conn:
@@ -399,10 +453,11 @@ class PolicyStore:
                 cursor = conn.execute(
                     """
                     INSERT INTO dsapi_knowledge_bases(
-                        name, prompt, model, thinking_enabled, max_tokens, temperature,
+                        name, prompt, model, thinking_enabled, max_tokens, history_turns,
+                        temperature,
                         created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         normalized_name,
@@ -410,6 +465,7 @@ class PolicyStore:
                         normalized_model,
                         1 if thinking_enabled else 0,
                         normalized_max_tokens,
+                        normalized_history_turns,
                         normalized_temperature,
                         now,
                         now,
@@ -431,6 +487,7 @@ class PolicyStore:
                     "model": normalized_model,
                     "thinking_enabled": bool(thinking_enabled),
                     "max_tokens": normalized_max_tokens,
+                    "history_turns": normalized_history_turns,
                     "temperature": normalized_temperature,
                 },
                 conn=conn,
@@ -451,6 +508,7 @@ class PolicyStore:
         model: str | None = None,
         thinking_enabled: bool | None = None,
         max_tokens: int | None = None,
+        history_turns: int | None = None,
         temperature: float | None = None,
         activate: bool = False,
         clear_history: bool = False,
@@ -476,13 +534,16 @@ class PolicyStore:
             normalized_max_tokens = self._normalize_dsapi_max_tokens(
                 current["max_tokens"] if max_tokens is None else max_tokens
             )
+            normalized_history_turns = self._normalize_dsapi_history_turns(
+                current["history_turns"] if history_turns is None else history_turns
+            )
             normalized_temperature = self._normalize_dsapi_temperature(temperature)
             try:
                 conn.execute(
                     """
                     UPDATE dsapi_knowledge_bases
                     SET name = ?, prompt = ?, model = ?, thinking_enabled = ?,
-                        max_tokens = ?, temperature = ?, updated_at = ?
+                        max_tokens = ?, history_turns = ?, temperature = ?, updated_at = ?
                     WHERE id = ?
                     """,
                     (
@@ -491,6 +552,7 @@ class PolicyStore:
                         normalized_model,
                         1 if normalized_thinking else 0,
                         normalized_max_tokens,
+                        normalized_history_turns,
                         normalized_temperature,
                         time.time(),
                         normalized_id,
@@ -505,7 +567,7 @@ class PolicyStore:
                 self._set_active_knowledge_id(normalized_id, conn)
                 self._sync_legacy_knowledge_prompt(normalized_id, conn)
                 if clear_history and changed:
-                    cleared = self._clear_dsapi_history(conn)
+                    cleared = self._clear_dsapi_history(conn, normalized_id)
             elif previous_id == normalized_id:
                 self._sync_legacy_knowledge_prompt(normalized_id, conn)
             self.audit(
@@ -518,6 +580,7 @@ class PolicyStore:
                     "model": normalized_model,
                     "thinking_enabled": normalized_thinking,
                     "max_tokens": normalized_max_tokens,
+                    "history_turns": normalized_history_turns,
                     "temperature": normalized_temperature,
                     "activated": bool(activate),
                     "previous_id": previous_id,
@@ -542,7 +605,7 @@ class PolicyStore:
                 raise ValueError("knowledge base not found")
             was_active = self._active_knowledge_id(conn) == normalized_id
             conn.execute("DELETE FROM dsapi_knowledge_bases WHERE id = ?", (normalized_id,))
-            cleared = 0
+            cleared = self._clear_dsapi_history(conn, normalized_id)
             if was_active:
                 next_row = conn.execute(
                     "SELECT id FROM dsapi_knowledge_bases ORDER BY id LIMIT 1"
@@ -550,7 +613,6 @@ class PolicyStore:
                 next_id = int(next_row["id"]) if next_row else None
                 self._set_active_knowledge_id(next_id, conn)
                 self._sync_legacy_knowledge_prompt(next_id, conn)
-                cleared = self._clear_dsapi_history(conn)
             self.audit(
                 actor_id,
                 "delete_dsapi_knowledge_base",
@@ -575,7 +637,11 @@ class PolicyStore:
             self._set_active_knowledge_id(normalized_id, conn)
             self._sync_legacy_knowledge_prompt(normalized_id, conn)
             changed = previous_id != normalized_id
-            cleared = self._clear_dsapi_history(conn) if clear_history and changed else 0
+            cleared = (
+                self._clear_dsapi_history(conn, normalized_id)
+                if clear_history and changed
+                else 0
+            )
             self.audit(
                 actor_id,
                 "activate_dsapi_knowledge_base",
@@ -601,16 +667,32 @@ class PolicyStore:
                 default_max_tokens = (
                     int(default_tokens_row["value"]) if default_tokens_row else 80
                 )
+                default_history_row = conn.execute(
+                    "SELECT value FROM settings WHERE key = 'dsapi_history_turns'"
+                ).fetchone()
+                try:
+                    default_history_turns = self._normalize_dsapi_history_turns(
+                        default_history_row["value"] if default_history_row else 2
+                    )
+                except ValueError:
+                    default_history_turns = 2
                 now = time.time()
                 cursor = conn.execute(
                     """
                     INSERT INTO dsapi_knowledge_bases(
-                        name, prompt, model, thinking_enabled, max_tokens, temperature,
+                        name, prompt, model, thinking_enabled, max_tokens, history_turns,
+                        temperature,
                         created_at, updated_at
                     )
-                    VALUES ('默认知识库', '', ?, 0, ?, NULL, ?, ?)
+                    VALUES ('默认知识库', '', ?, 0, ?, ?, NULL, ?, ?)
                     """,
-                    (normalized_model, default_max_tokens, now, now),
+                    (
+                        normalized_model,
+                        default_max_tokens,
+                        default_history_turns,
+                        now,
+                        now,
+                    ),
                 )
                 active_id = int(cursor.lastrowid)
                 self._set_active_knowledge_id(active_id, conn)
@@ -807,6 +889,8 @@ class PolicyStore:
                 (item for item in knowledge_bases if item["id"] == active_knowledge_id),
                 None,
             )
+            if active_knowledge is not None:
+                history_turns = int(active_knowledge["history_turns"])
         return {
             "enabled": self.get_setting("dsapi_enabled", "true").lower()
             in {"1", "true", "yes", "on"},
@@ -885,16 +969,18 @@ class PolicyStore:
                     cursor = conn.execute(
                         """
                         INSERT INTO dsapi_knowledge_bases(
-                            name, prompt, model, thinking_enabled, max_tokens, temperature,
+                            name, prompt, model, thinking_enabled, max_tokens,
+                            history_turns, temperature,
                             created_at, updated_at
                         )
-                        VALUES (?, ?, ?, 0, ?, NULL, ?, ?)
+                        VALUES (?, ?, ?, 0, ?, ?, NULL, ?, ?)
                         """,
                         (
                             "默认知识库",
                             prompt,
                             default_model,
                             default_max_tokens,
+                            turns,
                             now,
                             now,
                         ),
@@ -910,6 +996,11 @@ class PolicyStore:
                         """,
                         (prompt, time.time(), selected_id),
                     )
+            if selected_id is not None:
+                conn.execute(
+                    "UPDATE dsapi_knowledge_bases SET history_turns = ? WHERE id = ?",
+                    (turns, selected_id),
+                )
             self._sync_legacy_knowledge_prompt(selected_id, conn)
             self.set_setting(
                 "dsapi_enabled",
@@ -931,7 +1022,7 @@ class PolicyStore:
             )
             cleared = 0
             if clear_history:
-                cleared = self._clear_dsapi_history(conn)
+                cleared = self._clear_dsapi_history(conn, selected_id)
             self.audit(
                 actor_id,
                 "set_dsapi_config",
@@ -990,6 +1081,8 @@ class PolicyStore:
         self,
         group_id: int,
         history_turns: int,
+        *,
+        knowledge_id: int = 0,
     ) -> list[dict[str, str]]:
         message_limit = max(1, min(int(history_turns), 20)) * 2
         with self._connect() as conn:
@@ -999,13 +1092,13 @@ class PolicyStore:
                 FROM (
                     SELECT id, role, content
                     FROM dsapi_chat_history
-                    WHERE group_id = ?
+                    WHERE knowledge_id = ? AND group_id = ?
                     ORDER BY id DESC
                     LIMIT ?
                 )
                 ORDER BY id ASC
                 """,
-                (int(group_id), message_limit),
+                (int(knowledge_id), int(group_id), message_limit),
             ).fetchall()
         return [
             {"role": str(row["role"]), "content": str(row["content"])} for row in rows
@@ -1017,6 +1110,7 @@ class PolicyStore:
         *,
         idle_seconds: int,
         now: float | None = None,
+        knowledge_id: int = 0,
     ) -> int:
         normalized_idle_seconds = int(idle_seconds)
         if normalized_idle_seconds <= 0:
@@ -1026,14 +1120,20 @@ class PolicyStore:
             deleted = conn.execute(
                 """
                 DELETE FROM dsapi_chat_history
-                WHERE group_id = ?
+                WHERE knowledge_id = ? AND group_id = ?
                   AND NOT EXISTS (
                       SELECT 1
                       FROM dsapi_chat_history
-                      WHERE group_id = ? AND created_at >= ?
+                      WHERE knowledge_id = ? AND group_id = ? AND created_at >= ?
                   )
                 """,
-                (int(group_id), int(group_id), cutoff),
+                (
+                    int(knowledge_id),
+                    int(group_id),
+                    int(knowledge_id),
+                    int(group_id),
+                    cutoff,
+                ),
             ).rowcount
         return int(deleted)
 
@@ -1044,6 +1144,7 @@ class PolicyStore:
         user_content: str,
         assistant_content: str,
         history_turns: int,
+        knowledge_id: int = 0,
     ) -> None:
         message_limit = max(1, min(int(history_turns), 20)) * 2
         normalized_group_id = int(group_id)
@@ -1051,27 +1152,47 @@ class PolicyStore:
         with self._connect() as conn:
             conn.executemany(
                 """
-                INSERT INTO dsapi_chat_history(group_id, role, content, created_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO dsapi_chat_history(
+                    knowledge_id, group_id, role, content, created_at
+                )
+                VALUES (?, ?, ?, ?, ?)
                 """,
                 [
-                    (normalized_group_id, "user", str(user_content), now),
-                    (normalized_group_id, "assistant", str(assistant_content), now),
+                    (
+                        int(knowledge_id),
+                        normalized_group_id,
+                        "user",
+                        str(user_content),
+                        now,
+                    ),
+                    (
+                        int(knowledge_id),
+                        normalized_group_id,
+                        "assistant",
+                        str(assistant_content),
+                        now,
+                    ),
                 ],
             )
             conn.execute(
                 """
                 DELETE FROM dsapi_chat_history
-                WHERE group_id = ?
+                WHERE knowledge_id = ? AND group_id = ?
                   AND id NOT IN (
                       SELECT id
                       FROM dsapi_chat_history
-                      WHERE group_id = ?
+                      WHERE knowledge_id = ? AND group_id = ?
                       ORDER BY id DESC
                       LIMIT ?
                   )
                 """,
-                (normalized_group_id, normalized_group_id, message_limit),
+                (
+                    int(knowledge_id),
+                    normalized_group_id,
+                    int(knowledge_id),
+                    normalized_group_id,
+                    message_limit,
+                ),
             )
 
     def get_dsapi_group_context(
@@ -1081,6 +1202,7 @@ class PolicyStore:
         message_limit: int = 10,
         idle_seconds: int = 1200,
         now: float | None = None,
+        knowledge_id: int = 0,
     ) -> list[dict[str, Any]]:
         normalized_group_id = int(group_id)
         normalized_limit = max(1, min(int(message_limit), 50))
@@ -1092,14 +1214,20 @@ class PolicyStore:
             conn.execute(
                 """
                 DELETE FROM dsapi_group_context
-                WHERE group_id = ?
+                WHERE knowledge_id = ? AND group_id = ?
                   AND NOT EXISTS (
                       SELECT 1
                       FROM dsapi_group_context
-                      WHERE group_id = ? AND created_at >= ?
+                      WHERE knowledge_id = ? AND group_id = ? AND created_at >= ?
                   )
                 """,
-                (normalized_group_id, normalized_group_id, cutoff),
+                (
+                    int(knowledge_id),
+                    normalized_group_id,
+                    int(knowledge_id),
+                    normalized_group_id,
+                    cutoff,
+                ),
             )
             rows = conn.execute(
                 """
@@ -1107,13 +1235,13 @@ class PolicyStore:
                 FROM (
                     SELECT id, user_id, content
                     FROM dsapi_group_context
-                    WHERE group_id = ?
+                    WHERE knowledge_id = ? AND group_id = ?
                     ORDER BY id DESC
                     LIMIT ?
                 )
                 ORDER BY id ASC
                 """,
-                (normalized_group_id, normalized_limit),
+                (int(knowledge_id), normalized_group_id, normalized_limit),
             ).fetchall()
         return [
             {"user_id": int(row["user_id"]), "content": str(row["content"])}
@@ -1128,6 +1256,7 @@ class PolicyStore:
         content: str,
         message_limit: int = 10,
         now: float | None = None,
+        knowledge_id: int = 0,
     ) -> None:
         normalized_content = " ".join(str(content).split())[:300]
         if not normalized_content:
@@ -1138,24 +1267,38 @@ class PolicyStore:
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO dsapi_group_context(group_id, user_id, content, created_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO dsapi_group_context(
+                    knowledge_id, group_id, user_id, content, created_at
+                )
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (normalized_group_id, int(user_id), normalized_content, created_at),
+                (
+                    int(knowledge_id),
+                    normalized_group_id,
+                    int(user_id),
+                    normalized_content,
+                    created_at,
+                ),
             )
             conn.execute(
                 """
                 DELETE FROM dsapi_group_context
-                WHERE group_id = ?
+                WHERE knowledge_id = ? AND group_id = ?
                   AND id NOT IN (
                       SELECT id
                       FROM dsapi_group_context
-                      WHERE group_id = ?
+                      WHERE knowledge_id = ? AND group_id = ?
                       ORDER BY id DESC
                       LIMIT ?
                   )
                 """,
-                (normalized_group_id, normalized_group_id, normalized_limit),
+                (
+                    int(knowledge_id),
+                    normalized_group_id,
+                    int(knowledge_id),
+                    normalized_group_id,
+                    normalized_limit,
+                ),
             )
 
     def clear_dsapi_chat_history(self, *, actor_id: int) -> int:
@@ -1170,9 +1313,23 @@ class PolicyStore:
             )
         return int(deleted)
 
-    def _clear_dsapi_history(self, conn: sqlite3.Connection) -> int:
-        deleted = conn.execute("DELETE FROM dsapi_chat_history").rowcount
-        deleted += conn.execute("DELETE FROM dsapi_group_context").rowcount
+    def _clear_dsapi_history(
+        self,
+        conn: sqlite3.Connection,
+        knowledge_id: int | None = None,
+    ) -> int:
+        if knowledge_id is None:
+            deleted = conn.execute("DELETE FROM dsapi_chat_history").rowcount
+            deleted += conn.execute("DELETE FROM dsapi_group_context").rowcount
+            return int(deleted)
+        deleted = conn.execute(
+            "DELETE FROM dsapi_chat_history WHERE knowledge_id = ?",
+            (int(knowledge_id),),
+        ).rowcount
+        deleted += conn.execute(
+            "DELETE FROM dsapi_group_context WHERE knowledge_id = ?",
+            (int(knowledge_id),),
+        ).rowcount
         return int(deleted)
 
     def get_trigger_mention(self) -> bool:
@@ -2101,8 +2258,8 @@ class PolicyStore:
         active_id = self._active_knowledge_id(conn)
         rows = conn.execute(
             """
-            SELECT id, name, prompt, model, thinking_enabled, max_tokens, temperature,
-                   created_at, updated_at
+            SELECT id, name, prompt, model, thinking_enabled, max_tokens, history_turns,
+                   temperature, created_at, updated_at
             FROM dsapi_knowledge_bases
             ORDER BY updated_at DESC, id DESC
             """
@@ -2122,6 +2279,7 @@ class PolicyStore:
             "model": str(row["model"]),
             "thinking_enabled": bool(row["thinking_enabled"]),
             "max_tokens": int(row["max_tokens"]),
+            "history_turns": int(row["history_turns"]),
             "temperature": (
                 float(row["temperature"]) if row["temperature"] is not None else None
             ),
@@ -2155,6 +2313,12 @@ class PolicyStore:
         normalized = int(max_tokens)
         if normalized < 1 or normalized > 32_768:
             raise ValueError("DSAPI max_tokens must be between 1 and 32768")
+        return normalized
+
+    def _normalize_dsapi_history_turns(self, history_turns: int) -> int:
+        normalized = int(history_turns)
+        if normalized < 1 or normalized > 20:
+            raise ValueError("history_turns must be between 1 and 20")
         return normalized
 
     def _normalize_dsapi_temperature(self, temperature: float | None) -> float | None:
