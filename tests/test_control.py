@@ -27,6 +27,7 @@ class FakeStore:
     def __init__(self) -> None:
         self.removed: list[int] = []
         self.ai_enabled: list[tuple[int, int]] = []
+        self.ai_disabled: list[tuple[int | None, int]] = []
         self.model = "deepseek-v4-flash"
         self.model_changes: list[tuple[str, int]] = []
         self.knowledge_bases = [
@@ -44,6 +45,14 @@ class FakeStore:
 
     def enable_dsapi_group(self, group_id: int, *, actor_id: int) -> None:
         self.ai_enabled.append((group_id, actor_id))
+
+    def disable_dsapi_group(
+        self,
+        group_id: int | None,
+        *,
+        actor_id: int,
+    ) -> None:
+        self.ai_disabled.append((group_id, actor_id))
 
     def get_dsapi_config(self):
         return {"active_knowledge": {"model": self.model}}
@@ -119,6 +128,40 @@ async def test_aion_uses_current_group_when_group_id_is_omitted(monkeypatch):
 
     assert matcher.messages == ["AI enabled for group 67890."]
     assert store.ai_enabled == [(67890, 10000)]
+
+
+@pytest.mark.asyncio
+async def test_aioff_disables_current_group(monkeypatch):
+    store = FakeStore()
+    matcher = FakeMatcher()
+    monkeypatch.setattr(control, "get_store", lambda: store)
+
+    with pytest.raises(CommandFinished):
+        await control._handle_bot_command(
+            matcher,
+            SimpleNamespace(user_id=10000, group_id=67890),
+            ["aioff"],
+        )
+
+    assert matcher.messages == ["AI disabled for group 67890."]
+    assert store.ai_disabled == [(67890, 10000)]
+
+
+@pytest.mark.asyncio
+async def test_aioff_all_disables_every_group(monkeypatch):
+    store = FakeStore()
+    matcher = FakeMatcher()
+    monkeypatch.setattr(control, "get_store", lambda: store)
+
+    with pytest.raises(CommandFinished):
+        await control._handle_bot_command(
+            matcher,
+            SimpleNamespace(user_id=10000),
+            ["aioff", "all"],
+        )
+
+    assert matcher.messages == ["AI disabled for all groups."]
+    assert store.ai_disabled == [(None, 10000)]
 
 
 @pytest.mark.asyncio

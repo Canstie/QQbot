@@ -426,6 +426,18 @@ def test_enable_dsapi_group_enables_master_switch_and_is_idempotent(tmp_path):
     assert config["enabled_groups"] == [123, 456]
 
 
+def test_disable_dsapi_group_removes_one_or_all_groups(tmp_path):
+    db_path = tmp_path / "policy.sqlite3"
+    store = PolicyStore(db_path)
+    store.initialize(AppSettings(db_path=db_path, admins=()))
+    store.set_setting("dsapi_enabled_groups", "[123, 456]")
+
+    assert store.disable_dsapi_group(123, actor_id=10000) == [456]
+    assert store.disable_dsapi_group(123, actor_id=10000) == [456]
+    assert store.disable_dsapi_group(None, actor_id=10000) == []
+    assert store.get_dsapi_config()["enabled_groups"] == []
+
+
 def test_set_active_dsapi_model_only_updates_active_knowledge_base(tmp_path):
     db_path = tmp_path / "policy.sqlite3"
     store = PolicyStore(db_path)
