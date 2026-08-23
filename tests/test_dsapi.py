@@ -9,6 +9,7 @@ from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.dsapi import (
     _brief_reply,
     _chat_completions_url,
+    _format_reply,
     _pick_random_sticker,
     _random_reply_selected,
     _request_chat_completion,
@@ -338,6 +339,7 @@ async def test_active_knowledge_base_is_used_for_dsapi_prompt(tmp_path, monkeypa
         model="deepseek-reasoner",
         thinking_enabled=True,
         max_tokens=512,
+        response_mode="normal",
         temperature=0.25,
     )
     store.activate_dsapi_knowledge_base(archive["id"], clear_history=False, actor_id=0)
@@ -346,7 +348,7 @@ async def test_active_knowledge_base_is_used_for_dsapi_prompt(tmp_path, monkeypa
     def fake_request(settings, messages, **kwargs):
         captured["messages"] = messages
         captured["options"] = kwargs
-        return "档案回答"
+        return "档案回答第一段。\n\n档案回答第二段。"
 
     monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
 
@@ -357,9 +359,10 @@ async def test_active_knowledge_base_is_used_for_dsapi_prompt(tmp_path, monkeypa
         store,
     )
 
-    assert response == "档案回答"
+    assert response == "档案回答第一段。\n\n档案回答第二段。"
     assert "档案员角色" in captured["messages"][0]["content"]
     assert "果果角色" not in captured["messages"][0]["content"]
+    assert "1至3个短段落" in captured["messages"][0]["content"]
     assert captured["options"] == {
         "model": "deepseek-reasoner",
         "max_tokens": 512,
@@ -663,3 +666,11 @@ def test_full_chat_completion_url_is_not_duplicated():
 )
 def test_brief_reply_keeps_one_short_line(content, expected):
     assert _brief_reply(content) == expected
+
+
+def test_response_mode_only_truncates_short_replies():
+    content = "第一句话。\n\n第二段包含需要保留的识图细节。"
+
+    assert _format_reply(content, "short") == "第一句话。"
+    assert _format_reply(content, "normal") == content
+    assert _format_reply(content, "detailed") == content

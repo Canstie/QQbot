@@ -178,6 +178,7 @@ class PolicyStore:
                 thinking_enabled INTEGER NOT NULL DEFAULT 0,
                 max_tokens INTEGER NOT NULL DEFAULT 80,
                 history_turns INTEGER NOT NULL DEFAULT 2,
+                response_mode TEXT NOT NULL DEFAULT 'short',
                 temperature REAL,
                 created_at REAL NOT NULL,
                 updated_at REAL NOT NULL
@@ -318,6 +319,7 @@ class PolicyStore:
             "thinking_enabled": "INTEGER NOT NULL DEFAULT 0",
             "max_tokens": "INTEGER NOT NULL DEFAULT 0",
             "history_turns": "INTEGER NOT NULL DEFAULT 0",
+            "response_mode": "TEXT NOT NULL DEFAULT 'short'",
             "temperature": "REAL",
         }
         for column, definition in migrations.items():
@@ -439,6 +441,7 @@ class PolicyStore:
         thinking_enabled: bool = False,
         max_tokens: int = 80,
         history_turns: int = 2,
+        response_mode: str = "short",
         temperature: float | None = None,
     ) -> dict[str, Any]:
         normalized_name = self._normalize_knowledge_name(name)
@@ -446,6 +449,7 @@ class PolicyStore:
         normalized_model = self._normalize_dsapi_model(model)
         normalized_max_tokens = self._normalize_dsapi_max_tokens(max_tokens)
         normalized_history_turns = self._normalize_dsapi_history_turns(history_turns)
+        normalized_response_mode = self._normalize_dsapi_response_mode(response_mode)
         normalized_temperature = self._normalize_dsapi_temperature(temperature)
         now = time.time()
         with self._connect() as conn:
@@ -454,10 +458,10 @@ class PolicyStore:
                     """
                     INSERT INTO dsapi_knowledge_bases(
                         name, prompt, model, thinking_enabled, max_tokens, history_turns,
-                        temperature,
+                        response_mode, temperature,
                         created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         normalized_name,
@@ -466,6 +470,7 @@ class PolicyStore:
                         1 if thinking_enabled else 0,
                         normalized_max_tokens,
                         normalized_history_turns,
+                        normalized_response_mode,
                         normalized_temperature,
                         now,
                         now,
@@ -488,6 +493,7 @@ class PolicyStore:
                     "thinking_enabled": bool(thinking_enabled),
                     "max_tokens": normalized_max_tokens,
                     "history_turns": normalized_history_turns,
+                    "response_mode": normalized_response_mode,
                     "temperature": normalized_temperature,
                 },
                 conn=conn,
@@ -509,6 +515,7 @@ class PolicyStore:
         thinking_enabled: bool | None = None,
         max_tokens: int | None = None,
         history_turns: int | None = None,
+        response_mode: str | None = None,
         temperature: float | None = None,
         activate: bool = False,
         clear_history: bool = False,
@@ -537,13 +544,17 @@ class PolicyStore:
             normalized_history_turns = self._normalize_dsapi_history_turns(
                 current["history_turns"] if history_turns is None else history_turns
             )
+            normalized_response_mode = self._normalize_dsapi_response_mode(
+                current["response_mode"] if response_mode is None else response_mode
+            )
             normalized_temperature = self._normalize_dsapi_temperature(temperature)
             try:
                 conn.execute(
                     """
                     UPDATE dsapi_knowledge_bases
                     SET name = ?, prompt = ?, model = ?, thinking_enabled = ?,
-                        max_tokens = ?, history_turns = ?, temperature = ?, updated_at = ?
+                        max_tokens = ?, history_turns = ?, response_mode = ?,
+                        temperature = ?, updated_at = ?
                     WHERE id = ?
                     """,
                     (
@@ -553,6 +564,7 @@ class PolicyStore:
                         1 if normalized_thinking else 0,
                         normalized_max_tokens,
                         normalized_history_turns,
+                        normalized_response_mode,
                         normalized_temperature,
                         time.time(),
                         normalized_id,
@@ -581,6 +593,7 @@ class PolicyStore:
                     "thinking_enabled": normalized_thinking,
                     "max_tokens": normalized_max_tokens,
                     "history_turns": normalized_history_turns,
+                    "response_mode": normalized_response_mode,
                     "temperature": normalized_temperature,
                     "activated": bool(activate),
                     "previous_id": previous_id,
@@ -2259,7 +2272,7 @@ class PolicyStore:
         rows = conn.execute(
             """
             SELECT id, name, prompt, model, thinking_enabled, max_tokens, history_turns,
-                   temperature, created_at, updated_at
+                   response_mode, temperature, created_at, updated_at
             FROM dsapi_knowledge_bases
             ORDER BY updated_at DESC, id DESC
             """
@@ -2280,6 +2293,7 @@ class PolicyStore:
             "thinking_enabled": bool(row["thinking_enabled"]),
             "max_tokens": int(row["max_tokens"]),
             "history_turns": int(row["history_turns"]),
+            "response_mode": str(row["response_mode"]),
             "temperature": (
                 float(row["temperature"]) if row["temperature"] is not None else None
             ),
@@ -2319,6 +2333,12 @@ class PolicyStore:
         normalized = int(history_turns)
         if normalized < 1 or normalized > 20:
             raise ValueError("history_turns must be between 1 and 20")
+        return normalized
+
+    def _normalize_dsapi_response_mode(self, response_mode: str) -> str:
+        normalized = str(response_mode).strip().lower()
+        if normalized not in {"short", "normal", "detailed"}:
+            raise ValueError("response_mode must be short, normal, or detailed")
         return normalized
 
     def _normalize_dsapi_temperature(self, temperature: float | None) -> float | None:

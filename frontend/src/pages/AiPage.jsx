@@ -10,6 +10,12 @@ const DEFAULT_MODEL_OPTIONS = [
   { key: "vision", id: "deepseek-v4-flash-vision-exp", label: "Flash Vision Exp", vision: true },
 ];
 
+const RESPONSE_MODE_LABELS = {
+  short: "短回复",
+  normal: "正常回复",
+  detailed: "详细回复",
+};
+
 const modelOptionsWithCurrent = (options, currentModel) => {
   if (!currentModel || options.some((item) => item.id === currentModel)) return options;
   return [{ key: "custom", id: currentModel, label: `现有模型：${currentModel}`, vision: false }, ...options];
@@ -32,6 +38,7 @@ const knowledgeDraftFrom = (knowledge = {}, defaults = {}) => ({
   thinking_enabled: knowledge.thinking_enabled ?? false,
   max_tokens: knowledge.max_tokens ?? defaults.max_tokens ?? defaults.default_max_tokens ?? 80,
   history_turns: knowledge.history_turns ?? defaults.history_turns ?? 2,
+  response_mode: knowledge.response_mode || "short",
   temperature: knowledge.temperature ?? "",
 });
 
@@ -230,7 +237,7 @@ export default function AiPage({ refreshVersion, onChanged }) {
               {(data?.knowledge_bases || []).map((item) => (
                 <button type="button" key={item.id} disabled={switchingKnowledgeId !== null} className={`knowledge-card ${selectedKnowledgeId === item.id ? "is-selected" : ""} ${item.active ? "is-active" : ""}`} onClick={() => void selectKnowledge(item)}>
                   <BookOpen size={17} />
-                  <span><strong>{item.name}</strong><small>{item.model} · {item.thinking_enabled ? "Thinking" : "Fast"} · {item.history_turns} 轮 · {item.prompt_chars.toLocaleString()} 字符</small></span>
+                  <span><strong>{item.name}</strong><small>{item.model} · {item.thinking_enabled ? "Thinking" : "Fast"} · {RESPONSE_MODE_LABELS[item.response_mode] || "短回复"} · {item.history_turns} 轮 · {item.prompt_chars.toLocaleString()} 字符</small></span>
                   {item.active && <b><CheckCircle2 size={12} />当前启用</b>}
                   {switchingKnowledgeId === item.id && <b>切换中</b>}
                 </button>
@@ -247,8 +254,9 @@ export default function AiPage({ refreshVersion, onChanged }) {
                   <Field label="模型"><ModelSelect value={knowledgeDraft.model} options={modelOptions} onChange={(model) => setKnowledgeDraft((current) => ({ ...current, model }))} /></Field>
                   <Field label="最大输出 Token"><input type="number" min="1" max="32768" value={knowledgeDraft.max_tokens} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, max_tokens: event.target.value }))} /></Field>
                   <Field label="上下文轮数"><input type="number" min="1" max="20" value={knowledgeDraft.history_turns} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, history_turns: event.target.value }))} /></Field>
+                  <Field label="回复模式"><select value={knowledgeDraft.response_mode} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, response_mode: event.target.value }))}><option value="short">短回复</option><option value="normal">正常回复</option><option value="detailed">详细回复</option></select></Field>
                   <Field label="Temperature" hint="留空使用服务商默认值"><input type="number" min="0" max="2" step="0.1" value={knowledgeDraft.temperature} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, temperature: event.target.value }))} /></Field>
-                  <Switch checked={knowledgeDraft.thinking_enabled} onChange={(value) => setKnowledgeDraft((current) => ({ ...current, thinking_enabled: value }))} label="Thinking 模式" description={knowledgeDraft.thinking_enabled ? "请求模型进行思考" : "Non-thinking，直接简短回复"} />
+                  <Switch checked={knowledgeDraft.thinking_enabled} onChange={(value) => setKnowledgeDraft((current) => ({ ...current, thinking_enabled: value }))} label="Thinking 模式" description={knowledgeDraft.thinking_enabled ? "请求模型进行思考" : "Non-thinking，直接快速回复"} />
                 </div>
                 <Field label="知识与角色设定" hint="写清身份、语气、世界观、人物关系、事实边界和禁止事项。">
                   <textarea className="knowledge-editor" value={knowledgeDraft.prompt} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, prompt: event.target.value }))} placeholder="例如：你是群里的档案管理员。回答时使用简洁中文，只依据下方档案中的事实……" />
@@ -310,9 +318,10 @@ export default function AiPage({ refreshVersion, onChanged }) {
                 <Field label="模型"><ModelSelect value={createDraft.model} options={modelOptions} onChange={(model) => setCreateDraft((current) => ({ ...current, model }))} /></Field>
                 <Field label="最大输出 Token"><input type="number" min="1" max="32768" value={createDraft.max_tokens} onChange={(event) => setCreateDraft((current) => ({ ...current, max_tokens: event.target.value }))} /></Field>
                 <Field label="上下文轮数"><input type="number" min="1" max="20" value={createDraft.history_turns} onChange={(event) => setCreateDraft((current) => ({ ...current, history_turns: event.target.value }))} /></Field>
+                <Field label="回复模式"><select value={createDraft.response_mode} onChange={(event) => setCreateDraft((current) => ({ ...current, response_mode: event.target.value }))}><option value="short">短回复</option><option value="normal">正常回复</option><option value="detailed">详细回复</option></select></Field>
                 <Field label="Temperature" hint="留空使用服务商默认值"><input type="number" min="0" max="2" step="0.1" value={createDraft.temperature} onChange={(event) => setCreateDraft((current) => ({ ...current, temperature: event.target.value }))} /></Field>
               </div>
-              <Switch checked={createDraft.thinking_enabled} onChange={(value) => setCreateDraft((current) => ({ ...current, thinking_enabled: value }))} label="开启 Thinking 模式" description={createDraft.thinking_enabled ? "随该知识库启用深度思考" : "保持 Non-thinking，优先快速短回复"} />
+              <Switch checked={createDraft.thinking_enabled} onChange={(value) => setCreateDraft((current) => ({ ...current, thinking_enabled: value }))} label="开启 Thinking 模式" description={createDraft.thinking_enabled ? "随该知识库启用深度思考" : "保持 Non-thinking，优先快速回复"} />
               <Field label="知识与角色设定" hint="可留空，创建后仍可继续编辑。"><textarea value={createDraft.prompt} onChange={(event) => setCreateDraft((current) => ({ ...current, prompt: event.target.value }))} placeholder="输入身份、语气、世界观、人物关系与事实资料……" /></Field>
             </div>
             <footer className="knowledge-modal__actions"><Button tone="ghost" onClick={() => setCreateOpen(false)}>取消</Button><Button icon={Plus} onClick={createKnowledge}>创建知识库</Button></footer>

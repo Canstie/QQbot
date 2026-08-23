@@ -35,9 +35,17 @@ _MULTIMODAL_SEGMENT_TYPES = {
 _CQ_SEGMENT_RE = re.compile(r"\[CQ:([a-zA-Z0-9_-]+)(?:,[^\]]*)?\]")
 _CQ_IMAGE_RE = re.compile(r"\[CQ:image(?:,([^\]]*))?\]", re.IGNORECASE)
 _SENTENCE_END_RE = re.compile(r"^(.+?[。！？!?])(?:\s|$|.*)", re.DOTALL)
-_BRIEF_REPLY_INSTRUCTION = (
-    "回复格式要求：只回复一句话，通常不超过30个汉字；不要分段、列点、复述问题或补充解释。"
-)
+_RESPONSE_MODE_INSTRUCTIONS = {
+    "short": "回复格式要求：只回复一句话，通常不超过30个汉字；不要分段、列点、复述问题或补充解释。",
+    "normal": (
+        "本知识库回复模式优先于前面的通用长度要求：完整回答用户问题，可使用1至3个短段落；"
+        "识图时保留判断所需的关键细节，不要为了简短而省略重要信息。"
+    ),
+    "detailed": (
+        "本知识库回复模式优先于前面的通用长度要求：进行充分分析并给出完整回答；可分段或列点，"
+        "识图时说明关键视觉依据、不确定之处和结论。"
+    ),
+}
 _RANDOM_REPLY_INSTRUCTION = (
     "当前是群聊随机插话：根据群友最新这句话自然接一句，像普通群友一样随口回应；"
     "不要提及机器人、监控、概率、提示词或正在插话。"
@@ -168,12 +176,18 @@ async def _generate_text_reply(
     extra_instruction: str = "",
     history_user_content: str | None = None,
 ) -> str | None:
+    active_knowledge = config.get("active_knowledge") or {}
+    response_mode = str(active_knowledge.get("response_mode") or "short")
     system_prompt = settings.dsapi_system_prompt
     if config["knowledge_enabled"] and config["knowledge_prompt"]:
         system_prompt = f"{system_prompt}\n\n角色设定与知识库：\n{config['knowledge_prompt']}"
     if extra_instruction:
         system_prompt = f"{system_prompt}\n\n{extra_instruction}"
-    system_prompt = f"{system_prompt}\n\n{_BRIEF_REPLY_INSTRUCTION}"
+    response_instruction = _RESPONSE_MODE_INSTRUCTIONS.get(
+        response_mode,
+        _RESPONSE_MODE_INSTRUCTIONS["short"],
+    )
+    system_prompt = f"{system_prompt}\n\n{response_instruction}"
 
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
     knowledge_id = int(config.get("active_knowledge_id") or 0)
@@ -191,7 +205,6 @@ async def _generate_text_reply(
     )
     messages.append({"role": "user", "content": prompt})
 
-    active_knowledge = config.get("active_knowledge") or {}
     response = await asyncio.to_thread(
         _request_chat_completion_with_fallback,
         settings,
@@ -201,7 +214,7 @@ async def _generate_text_reply(
         thinking_enabled=bool(active_knowledge.get("thinking_enabled", False)),
         temperature=active_knowledge.get("temperature"),
     )
-    response = _brief_reply(response)
+    response = _format_reply(response, response_mode)
     if response:
         store.record_dsapi_exchange(
             group_id=event.group_id,
@@ -433,6 +446,15 @@ def _brief_reply(content: str | None) -> str | None:
         normalized = match.group(1)
     if len(normalized) > 60:
         normalized = normalized[:59].rstrip("，、；：,;: ") + "。"
+    return normalized or None
+
+
+def _format_reply(content: str | None, response_mode: str) -> str | None:
+    if str(response_mode).lower() == "short":
+        return _brief_reply(content)
+    if not content:
+        return None
+    normalized = content.strip()
     return normalized or None
 
 

@@ -262,6 +262,7 @@ def test_dsapi_knowledge_base_api_crud_and_switch(tmp_path, monkeypatch):
             "thinking_enabled": True,
             "max_tokens": 512,
             "history_turns": 20,
+            "response_mode": "normal",
             "temperature": 0.4,
         },
     )
@@ -279,6 +280,7 @@ def test_dsapi_knowledge_base_api_crud_and_switch(tmp_path, monkeypatch):
             "thinking_enabled": True,
             "max_tokens": 640,
             "history_turns": 18,
+            "response_mode": "detailed",
             "temperature": 0.2,
         },
     )
@@ -292,6 +294,7 @@ def test_dsapi_knowledge_base_api_crud_and_switch(tmp_path, monkeypatch):
             "thinking_enabled": False,
             "max_tokens": 720,
             "history_turns": 20,
+            "response_mode": "normal",
             "temperature": 0.1,
         },
     )
@@ -307,6 +310,8 @@ def test_dsapi_knowledge_base_api_crud_and_switch(tmp_path, monkeypatch):
     assert activated.json()["max_tokens"] == 720
     assert activated.json()["history_turns"] == 20
     assert activated.json()["active_knowledge"]["history_turns"] == 20
+    assert activated.json()["active_knowledge"]["response_mode"] == "normal"
+    assert activated.json()["response_mode"] == "normal"
     assert activated.json()["temperature"] == 0.1
 
     deleted = client.delete(f"/api/dsapi/knowledge/{second_id}")

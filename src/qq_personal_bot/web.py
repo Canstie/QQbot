@@ -85,6 +85,7 @@ class KnowledgeBasePayload(BaseModel):
     thinking_enabled: bool | None = None
     max_tokens: int | None = None
     history_turns: int | None = None
+    response_mode: str | None = None
     temperature: float | None = None
 
 
@@ -96,6 +97,7 @@ class KnowledgeActivationPayload(BaseModel):
     thinking_enabled: bool | None = None
     max_tokens: int | None = None
     history_turns: int | None = None
+    response_mode: str | None = None
     temperature: float | None = None
 
 
@@ -244,6 +246,7 @@ def create_app():
             "model": active_knowledge.get("model") or settings.dsapi_model,
             "max_tokens": active_knowledge.get("max_tokens") or settings.dsapi_max_tokens,
             "thinking_enabled": bool(active_knowledge.get("thinking_enabled", False)),
+            "response_mode": active_knowledge.get("response_mode") or "short",
             "temperature": active_knowledge.get("temperature"),
             "default_model": settings.dsapi_model,
             "default_max_tokens": settings.dsapi_max_tokens,
@@ -296,6 +299,7 @@ def create_app():
                     if payload.history_turns is not None
                     else 2
                 ),
+                response_mode=payload.response_mode or "short",
                 temperature=payload.temperature,
             )
         except (TypeError, ValueError) as exc:
@@ -319,6 +323,7 @@ def create_app():
                 thinking_enabled=payload.thinking_enabled,
                 max_tokens=payload.max_tokens,
                 history_turns=payload.history_turns,
+                response_mode=payload.response_mode,
                 temperature=payload.temperature,
             )
         except (TypeError, ValueError) as exc:
@@ -354,6 +359,7 @@ def create_app():
                     thinking_enabled=payload.thinking_enabled,
                     max_tokens=payload.max_tokens,
                     history_turns=payload.history_turns,
+                    response_mode=payload.response_mode,
                     temperature=payload.temperature,
                     activate=True,
                     clear_history=payload.clear_history,

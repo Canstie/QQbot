@@ -81,8 +81,8 @@ class AppSettings:
     dsapi_max_tokens: int = 80
     dsapi_history_idle_seconds: int = 1200
     dsapi_system_prompt: str = (
-        "你是 QQ 群里的聊天机器人。直接回答，不要复述问题，不要展开解释；只回复一句简短中文，"
-        "通常不超过30个汉字。不要声称看到了未提供的图片、语音、视频或文件。"
+        "你是 QQ 群里的聊天机器人。直接回答，不要复述问题。"
+        "不要声称看到了未提供的图片、语音、视频或文件。"
     )
     web_token: str | None = None
     nonebot_driver: str = "~fastapi"

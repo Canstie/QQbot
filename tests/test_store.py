@@ -6,6 +6,8 @@ import sqlite3
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.settings import AppSettings
 from tools.qqbot_launcher import DEFAULT_LOG_RETENTION_DAYS, cleanup_logs
@@ -558,6 +560,7 @@ def test_dsapi_existing_knowledge_table_gains_runtime_configuration(tmp_path):
     assert knowledge["thinking_enabled"] is False
     assert knowledge["max_tokens"] == 96
     assert knowledge["history_turns"] == 7
+    assert knowledge["response_mode"] == "short"
     assert knowledge["temperature"] is None
     assert store.get_dsapi_chat_history(
         123, 7, knowledge_id=knowledge["id"]
@@ -583,6 +586,7 @@ def test_dsapi_knowledge_bases_can_be_edited_switched_and_deleted(tmp_path):
         thinking_enabled=True,
         max_tokens=512,
         history_turns=20,
+        response_mode="normal",
         temperature=0.3,
     )
     store.record_dsapi_exchange(
@@ -606,6 +610,7 @@ def test_dsapi_knowledge_bases_can_be_edited_switched_and_deleted(tmp_path):
         model="deepseek-reasoner-v2",
         thinking_enabled=True,
         max_tokens=640,
+        response_mode="detailed",
         temperature=0.2,
     )
     config = store.get_dsapi_config()
@@ -618,6 +623,7 @@ def test_dsapi_knowledge_bases_can_be_edited_switched_and_deleted(tmp_path):
     assert config["active_knowledge"]["thinking_enabled"] is True
     assert config["active_knowledge"]["max_tokens"] == 640
     assert config["active_knowledge"]["history_turns"] == 20
+    assert config["active_knowledge"]["response_mode"] == "detailed"
     assert config["history_turns"] == 20
     assert config["active_knowledge"]["temperature"] == 0.2
     assert config["history_messages"] == 0
@@ -700,6 +706,20 @@ def test_dsapi_history_and_group_context_are_isolated_by_knowledge_base(tmp_path
     assert store.get_dsapi_chat_history(
         123, 20, knowledge_id=second["id"]
     ) == []
+
+
+def test_dsapi_knowledge_base_rejects_unknown_response_mode(tmp_path):
+    db_path = tmp_path / "policy.sqlite3"
+    store = PolicyStore(db_path)
+    store.initialize(AppSettings(db_path=db_path, admins=()))
+
+    with pytest.raises(ValueError, match="response_mode"):
+        store.create_dsapi_knowledge_base(
+            name="错误模式",
+            prompt="",
+            actor_id=1,
+            response_mode="very-long",
+        )
 
 
 def test_dsapi_history_expires_after_group_is_idle(tmp_path):
