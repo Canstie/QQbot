@@ -63,6 +63,7 @@ local ADMIN_COMMANDS = {
   "/bot on [group_id] 启用或解除屏蔽群",
   "/bot off [group_id] 停用或屏蔽群",
   "/bot aion [group_id] 开启指定群的 AI（省略则当前群）",
+  "/bot ai rs 清空全部 AI 短期上下文",
   "/bot aim list 查看模型；flash|pro|vision 切换模型",
   "/bot aik list 查看知识库；<序号> 切换知识库",
   "/bot mode allowlist|blocklist 切换策略模式",

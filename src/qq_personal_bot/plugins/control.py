@@ -204,6 +204,24 @@ async def _handle_bot_command(
                 explicit_group_send=explicit_group_send,
             )
 
+        if command == "ai":
+            if len(parts) != 2 or parts[1].lower() != "rs":
+                await _send_control_response(
+                    matcher,
+                    bot,
+                    event,
+                    "Usage: /bot ai rs",
+                    explicit_group_send=explicit_group_send,
+                )
+            deleted = store.clear_dsapi_chat_history(actor_id=actor_id)
+            await _send_control_response(
+                matcher,
+                bot,
+                event,
+                f"AI 上下文已清空：共删除 {deleted} 条。",
+                explicit_group_send=explicit_group_send,
+            )
+
         if command == "aim":
             config = store.get_dsapi_config()
             current_model = str((config.get("active_knowledge") or {}).get("model") or "")
@@ -342,7 +360,7 @@ async def _handle_bot_command(
             event,
             (
                 "Usage: /bot status | on [group_id] | off [group_id] | "
-                "aion [group_id] | aim list|flash|pro|vision | "
+                "aion [group_id] | ai rs | aim list|flash|pro|vision | "
                 "aik list|<index> | "
                 "mode allowlist|blocklist | admin add <user_id> | "
                 "prefix add|remove|list [prefix]"

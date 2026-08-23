@@ -1491,6 +1491,7 @@ async def test_builtin_help_appends_admin_features_for_admin(tmp_path, monkeypat
     assert "/download 引用聊天记录并下载其中的图片" in result.reply
     assert "/bot status 查看当前策略" in result.reply
     assert "/bot aion [group_id] 开启指定群的 AI（省略则当前群）" in result.reply
+    assert "/bot ai rs 清空全部 AI 短期上下文" in result.reply
     assert "/bot aim list 查看模型；flash|pro|vision 切换模型" in result.reply
     assert "/bot aik list 查看知识库；<序号> 切换知识库" in result.reply
     assert "/bot admin add <user_id> 添加管理员" in result.reply

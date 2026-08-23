@@ -34,6 +34,7 @@ class FakeStore:
             {"id": 22, "name": "判官果果", "active": False},
         ]
         self.knowledge_changes: list[tuple[int, bool, int]] = []
+        self.cleared_context_actors: list[int] = []
 
     def is_admin(self, user_id: int) -> bool:
         return True
@@ -63,6 +64,10 @@ class FakeStore:
         actor_id: int,
     ) -> None:
         self.knowledge_changes.append((knowledge_id, clear_history, actor_id))
+
+    def clear_dsapi_chat_history(self, *, actor_id: int) -> int:
+        self.cleared_context_actors.append(actor_id)
+        return 7
 
 
 @pytest.mark.asyncio
@@ -114,6 +119,23 @@ async def test_aion_uses_current_group_when_group_id_is_omitted(monkeypatch):
 
     assert matcher.messages == ["AI enabled for group 67890."]
     assert store.ai_enabled == [(67890, 10000)]
+
+
+@pytest.mark.asyncio
+async def test_ai_rs_clears_all_short_term_context(monkeypatch):
+    store = FakeStore()
+    matcher = FakeMatcher()
+    monkeypatch.setattr(control, "get_store", lambda: store)
+
+    with pytest.raises(CommandFinished):
+        await control._handle_bot_command(
+            matcher,
+            SimpleNamespace(user_id=10000),
+            ["ai", "rs"],
+        )
+
+    assert store.cleared_context_actors == [10000]
+    assert matcher.messages == ["AI 上下文已清空：共删除 7 条。"]
 
 
 @pytest.mark.asyncio
