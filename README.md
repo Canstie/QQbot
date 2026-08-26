@@ -30,10 +30,11 @@ LLOneBot 或 NapCat Framework 使用。桌面 QQ 客户端可以正常使用，�
 
 ## 安装
 
+项目固定使用 uv 管理的 Python 3.13.15。先安装
+[uv](https://docs.astral.sh/uv/getting-started/installation/)，然后同步项目环境：
+
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -e ".[dev]"
+uv sync
 Copy-Item .env.example .env
 ```
 
@@ -46,8 +47,19 @@ Copy-Item .env.example .env
 启动：
 
 ```powershell
-python bot.py
+uv run python bot.py
 ```
+
+生产服务器使用锁文件同步运行依赖，不安装开发依赖：
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
+uv sync --frozen --no-dev
+systemctl restart qqbot.service
+```
+
+`qqbot.service` 继续直接执行 `/opt/qqbot/.venv/bin/python /opt/qqbot/bot.py`，
+因此 uv 只负责创建和同步环境，不参与 Bot 运行时进程管理。
 
 也可以构建一个无终端窗口的启动器 exe：
 
@@ -278,7 +290,7 @@ end
 ## 测试
 
 ```powershell
-python -m pytest
+uv run pytest
 ```
 
 ## 安全说明
