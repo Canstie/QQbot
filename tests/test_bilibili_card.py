@@ -4,6 +4,7 @@ import json
 import shutil
 from email.message import Message
 from io import BytesIO
+from urllib.error import HTTPError
 
 import pytest
 from PIL import Image, ImageDraw
@@ -66,6 +67,19 @@ def test_rejects_b23_redirect_to_untrusted_host(monkeypatch):
 
     with pytest.raises(ValueError, match="did not resolve"):
         bilibili_card._resolve_bilibili_video_url("https://b23.tv/wrXwLXN")
+
+
+def test_accepts_bilibili_video_url_from_final_http_412(monkeypatch):
+    final_url = "https://www.bilibili.com/video/BV1Gyu36LEfL?p=1"
+
+    def fail_after_redirect(request, allowed_url, timeout):
+        raise HTTPError(final_url, 412, "Precondition Failed", Message(), None)
+
+    monkeypatch.setattr(bilibili_card, "_open_restricted", fail_after_redirect)
+
+    resolved = bilibili_card._resolve_bilibili_video_url("https://b23.tv/wrXwLXN")
+
+    assert resolved == final_url
 
 
 def test_fetches_bilibili_video_metadata(monkeypatch):

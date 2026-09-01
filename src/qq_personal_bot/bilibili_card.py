@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable, Mapping
+from urllib.error import HTTPError
 from urllib.parse import urljoin, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
@@ -158,8 +159,11 @@ def _resolve_bilibili_video_url(source_url: str) -> str:
             "Range": "bytes=0-0",
         },
     )
-    with _open_restricted(request, _is_bilibili_page_url, timeout=20) as response:
-        final_url = response.geturl()
+    try:
+        with _open_restricted(request, _is_bilibili_page_url, timeout=20) as response:
+            final_url = response.geturl()
+    except HTTPError as exc:
+        final_url = exc.geturl()
     if not _is_bilibili_page_url(final_url) or _extract_bvid(final_url) is None:
         raise ValueError("Bilibili share did not resolve to a video")
     return final_url
