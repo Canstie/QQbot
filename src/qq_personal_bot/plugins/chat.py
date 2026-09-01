@@ -20,8 +20,7 @@ from qq_personal_bot.lua_runner import pending_lua_command, run_lua_message
 from qq_personal_bot.miniapp import (
     CachedMiniAppImages,
     cache_miniapp_images,
-    extract_miniapp_link,
-    format_miniapp_link,
+    extract_miniapp_image_source,
 )
 from qq_personal_bot.plugins.custom_flows import handle_custom_flow
 from qq_personal_bot.replies import build_reply
@@ -144,36 +143,20 @@ async def _handle_onebot_message(
 ) -> None:
     internal_event = onebot_to_internal(event, self_id=bot.self_id)
     _record_group_activity(internal_event, self_id=bot.self_id)
-    miniapp_link = extract_miniapp_link(internal_event.segments)
-    if miniapp_link is not None and _automatic_reply_allowed(internal_event):
+    miniapp_image_source = extract_miniapp_image_source(internal_event.segments)
+    if miniapp_image_source is not None and _automatic_reply_allowed(internal_event):
         try:
-            cached_images = await cache_miniapp_images(miniapp_link)
+            cached_images = await cache_miniapp_images(miniapp_image_source)
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             logger.warning(f"Failed to cache mini app images: {exc}")
             cached_images = CachedMiniAppImages(directory=None, paths=())
         try:
-            link_response = format_miniapp_link(miniapp_link)
             if cached_images.paths:
-                await _send_response(
-                    matcher,
-                    bot,
-                    event,
-                    link_response,
-                    explicit_group_send=explicit_group_send,
-                )
                 await _finish_with_response(
                     matcher,
                     bot,
                     event,
                     _build_miniapp_image_response(cached_images),
-                    explicit_group_send=explicit_group_send,
-                )
-            else:
-                await _finish_with_response(
-                    matcher,
-                    bot,
-                    event,
-                    link_response,
                     explicit_group_send=explicit_group_send,
                 )
         finally:

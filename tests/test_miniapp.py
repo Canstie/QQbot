@@ -8,12 +8,11 @@ import pytest
 
 from qq_personal_bot.miniapp import (
     cache_miniapp_images,
-    extract_miniapp_link,
-    format_miniapp_link,
+    extract_miniapp_image_source,
 )
 
 
-def test_extracts_title_and_xiaohongshu_url_from_qq_miniapp():
+def test_extracts_xiaohongshu_image_source_from_qq_miniapp():
     payload = {
         "ver": "1.0.0.19",
         "prompt": "[QQ小程序]被治愈的一天",
@@ -27,14 +26,11 @@ def test_extracts_title_and_xiaohongshu_url_from_qq_miniapp():
     }
     segments = ({"type": "json", "data": {"data": json.dumps(payload)}},)
 
-    link = extract_miniapp_link(segments)
+    source = extract_miniapp_image_source(segments)
 
-    assert link is not None
-    assert link.title == "今天也要好好生活"
-    assert link.url == "https://www.xiaohongshu.com/explore/abc123"
-    assert format_miniapp_link(link) == (
-        "标题：今天也要好好生活\n"
-        "链接：https://www.xiaohongshu.com/explore/abc123"
+    assert source is not None
+    assert source.source_url == (
+        "https://www.xiaohongshu.com/explore/abc123?xsec_token=test"
     )
 
 
@@ -52,11 +48,10 @@ def test_extracts_prompt_and_unwraps_redirect_url():
         },
     }
 
-    link = extract_miniapp_link(({"type": "json", "data": payload},))
+    source = extract_miniapp_image_source(({"type": "json", "data": payload},))
 
-    assert link is not None
-    assert link.title == "小红书标题"
-    assert link.url == "https://xhslink.com/a/AbCd"
+    assert source is not None
+    assert source.source_url == "https://xhslink.com/a/AbCd"
 
 
 def test_extracts_real_xiaohongshu_tuwen_share():
@@ -76,16 +71,15 @@ def test_extracts_real_xiaohongshu_tuwen_share():
         "view": "news",
     }
 
-    link = extract_miniapp_link(
+    source = extract_miniapp_image_source(
         ({"type": "json", "data": {"data": json.dumps(payload, ensure_ascii=False)}},)
     )
 
-    assert link is not None
-    assert link.title == "姜萍最新近况"
-    assert link.url == "http://xhslink.com/m/8rpFU0xWGvV"
+    assert source is not None
+    assert source.source_url == "http://xhslink.com/m/8rpFU0xWGvV"
 
 
-def test_bilibili_share_uses_video_title_instead_of_platform_name():
+def test_ignores_bilibili_share_without_supported_image_parser():
     payload = {
         "ver": "1.0.0.19",
         "prompt": "[QQ小程序]马儿空气动力学",
@@ -101,16 +95,14 @@ def test_bilibili_share_uses_video_title_instead_of_platform_name():
         },
     }
 
-    link = extract_miniapp_link(
+    source = extract_miniapp_image_source(
         ({"type": "json", "data": {"data": json.dumps(payload, ensure_ascii=False)}},)
     )
 
-    assert link is not None
-    assert link.title == "马儿空气动力学"
-    assert link.url == "https://b23.tv/wrXwLXN?share_source=qq"
+    assert source is None
 
 
-def test_removes_tracking_parameters_from_xiaohongshu_discovery_url():
+def test_preserves_xiaohongshu_source_parameters_needed_for_image_fetch():
     payload = {
         "app": "com.tencent.tuwen.lua",
         "meta": {
@@ -126,12 +118,10 @@ def test_removes_tracking_parameters_from_xiaohongshu_discovery_url():
         },
     }
 
-    link = extract_miniapp_link(({"type": "json", "data": payload},))
+    source = extract_miniapp_image_source(({"type": "json", "data": payload},))
 
-    assert link is not None
-    assert link.title == "感受姐1能量"
-    assert link.url == "https://www.xiaohongshu.com/discovery/item/6a5db5790000000011013ecf"
-    assert "xsec_token=secret" in link.source_url
+    assert source is not None
+    assert "xsec_token=secret" in source.source_url
 
 
 @pytest.mark.asyncio
@@ -145,8 +135,8 @@ async def test_caches_all_xiaohongshu_images_and_cleans_up(monkeypatch):
             }
         },
     }
-    link = extract_miniapp_link(({"type": "json", "data": payload},))
-    assert link is not None
+    source = extract_miniapp_image_source(({"type": "json", "data": payload},))
+    assert source is not None
 
     state = {
         "note": {
@@ -202,7 +192,7 @@ async def test_caches_all_xiaohongshu_images_and_cleans_up(monkeypatch):
 
     monkeypatch.setattr("qq_personal_bot.miniapp.urlopen", fake_urlopen)
 
-    cached = await cache_miniapp_images(link)
+    cached = await cache_miniapp_images(source)
     directory = cached.directory
 
     assert directory is not None and directory.is_dir()
@@ -213,7 +203,7 @@ async def test_caches_all_xiaohongshu_images_and_cleans_up(monkeypatch):
     assert not directory.exists()
 
 
-def test_extracts_xiaoheihe_share_and_removes_tracking_parameters():
+def test_extracts_xiaoheihe_image_source():
     source_url = (
         "https://api.xiaoheihe.cn/v3/bbs/app/api/web/share?"
         "h_camp=link&h_session_id=session&h_src=encoded&link_id=c0687248f6da"
@@ -232,14 +222,10 @@ def test_extracts_xiaoheihe_share_and_removes_tracking_parameters():
         "prompt": "[分享]里昂的变化[cube_喜欢]",
     }
 
-    link = extract_miniapp_link(({"type": "json", "data": payload},))
+    source = extract_miniapp_image_source(({"type": "json", "data": payload},))
 
-    assert link is not None
-    assert link.title == "里昂的变化[cube_喜欢]"
-    assert link.url == (
-        "https://api.xiaoheihe.cn/v3/bbs/app/api/web/share?link_id=c0687248f6da"
-    )
-    assert link.source_url == source_url
+    assert source is not None
+    assert source.source_url == source_url
 
 
 @pytest.mark.asyncio
@@ -248,7 +234,7 @@ async def test_caches_all_xiaoheihe_images_from_signed_detail_api(monkeypatch):
         "https://api.xiaoheihe.cn/v3/bbs/app/api/web/share?"
         "h_session_id=session&link_id=c0687248f6da"
     )
-    link = extract_miniapp_link(
+    source = extract_miniapp_image_source(
         (
             {
                 "type": "json",
@@ -259,7 +245,7 @@ async def test_caches_all_xiaoheihe_images_from_signed_detail_api(monkeypatch):
             },
         )
     )
-    assert link is not None
+    assert source is not None
 
     first_url = "https://imgheybox1.max-c.com/bbs/first/thumb.jpeg?format=jpg"
     second_url = "https://bbsimg.maxjia.com/heybox/second.jpg"
@@ -323,7 +309,7 @@ async def test_caches_all_xiaoheihe_images_from_signed_detail_api(monkeypatch):
 
     monkeypatch.setattr("qq_personal_bot.miniapp.urlopen", fake_urlopen)
 
-    cached = await cache_miniapp_images(link)
+    cached = await cache_miniapp_images(source)
     directory = cached.directory
 
     assert directory is not None and directory.is_dir()
@@ -344,9 +330,15 @@ def test_ignores_regular_json_card_and_invalid_scheme():
         "meta": {"detail_1": {"qqdocurl": "javascript:alert(1)"}},
     }
 
-    assert extract_miniapp_link(({"type": "json", "data": {"data": json.dumps(regular_card)}},)) is None
-    assert extract_miniapp_link(({"type": "json", "data": {"data": json.dumps(invalid_miniapp)}},)) is None
+    assert extract_miniapp_image_source(
+        ({"type": "json", "data": {"data": json.dumps(regular_card)}},)
+    ) is None
+    assert extract_miniapp_image_source(
+        ({"type": "json", "data": {"data": json.dumps(invalid_miniapp)}},)
+    ) is None
 
 
 def test_ignores_malformed_json_segment():
-    assert extract_miniapp_link(({"type": "json", "data": {"data": "not-json"}},)) is None
+    assert extract_miniapp_image_source(
+        ({"type": "json", "data": {"data": "not-json"}},)
+    ) is None

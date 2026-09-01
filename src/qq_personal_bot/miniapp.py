@@ -27,8 +27,6 @@ _URL_KEYS = (
     "web_url",
     "url",
 )
-_TITLE_KEYS = ("title", "prompt", "desc")
-_PLATFORM_PLACEHOLDER_TITLES = {"哔哩哔哩"}
 _MEDIA_KEY_PARTS = ("icon", "image", "img", "preview", "cover", "avatar", "logo")
 _URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
 _INITIAL_STATE_MARKER = "window.__INITIAL_STATE__="
@@ -59,9 +57,7 @@ _IMAGE_EXTENSIONS = {
 
 
 @dataclass(frozen=True)
-class MiniAppLink:
-    title: str
-    url: str
+class MiniAppImageSource:
     source_url: str
 
 
@@ -75,7 +71,9 @@ class CachedMiniAppImages:
             shutil.rmtree(self.directory, ignore_errors=True)
 
 
-def extract_miniapp_link(segments: Sequence[Mapping[str, Any]]) -> MiniAppLink | None:
+def extract_miniapp_image_source(
+    segments: Sequence[Mapping[str, Any]],
+) -> MiniAppImageSource | None:
     for segment in segments:
         if str(segment.get("type", "")).lower() != "json":
             continue
@@ -83,24 +81,18 @@ def extract_miniapp_link(segments: Sequence[Mapping[str, Any]]) -> MiniAppLink |
         if payload is None or not _looks_like_miniapp(payload):
             continue
 
-        urls = _find_url(payload)
-        if urls is None:
+        source_url = _find_supported_image_source_url(payload)
+        if source_url is None:
             continue
-        url, source_url = urls
-        title = _find_title(payload) or "小程序分享"
-        return MiniAppLink(title=title, url=url, source_url=source_url)
+        return MiniAppImageSource(source_url=source_url)
     return None
 
 
-def format_miniapp_link(link: MiniAppLink) -> str:
-    return f"标题：{link.title}\n链接：{link.url}"
-
-
-async def cache_miniapp_images(link: MiniAppLink) -> CachedMiniAppImages:
-    if _is_xiaohongshu_page_url(link.source_url):
-        return await asyncio.to_thread(_cache_xiaohongshu_images, link.source_url)
-    if _is_xiaoheihe_share_url(link.source_url):
-        return await asyncio.to_thread(_cache_xiaoheihe_images, link.source_url)
+async def cache_miniapp_images(source: MiniAppImageSource) -> CachedMiniAppImages:
+    if _is_xiaohongshu_page_url(source.source_url):
+        return await asyncio.to_thread(_cache_xiaohongshu_images, source.source_url)
+    if _is_xiaoheihe_share_url(source.source_url):
+        return await asyncio.to_thread(_cache_xiaoheihe_images, source.source_url)
     return CachedMiniAppImages(directory=None, paths=())
 
 
@@ -129,28 +121,8 @@ def _looks_like_miniapp(payload: Mapping[str, Any]) -> bool:
     )
 
 
-def _find_title(payload: Mapping[str, Any]) -> str | None:
+def _find_supported_image_source_url(payload: Mapping[str, Any]) -> str | None:
     candidates: list[tuple[int, str]] = []
-    for path, value in _walk(payload):
-        key = path[-1].lower() if path else ""
-        if key not in _TITLE_KEYS or not isinstance(value, str):
-            continue
-        title = _clean_title(value)
-        if not title:
-            continue
-        if title in _PLATFORM_PLACEHOLDER_TITLES:
-            priority = 3
-        else:
-            priority = 0 if key == "title" else 1 if key == "prompt" else 2
-        candidates.append((priority, title))
-    if not candidates:
-        return None
-    candidates.sort(key=lambda item: item[0])
-    return candidates[0][1]
-
-
-def _find_url(payload: Mapping[str, Any]) -> tuple[str, str] | None:
-    candidates: list[tuple[int, str, str]] = []
     for path, value in _walk(payload):
         if not isinstance(value, str):
             continue
@@ -159,32 +131,13 @@ def _find_url(payload: Mapping[str, Any]) -> tuple[str, str] | None:
             continue
         priority = _URL_KEYS.index(key) if key in _URL_KEYS else len(_URL_KEYS)
         for match in _URL_RE.findall(html.unescape(value)):
-            normalized = _normalize_url(match)
-            if normalized is not None:
-                candidates.append((priority, normalized, _source_url(match)))
+            source_url = _source_url(match)
+            if _is_xiaohongshu_page_url(source_url) or _is_xiaoheihe_share_url(source_url):
+                candidates.append((priority, source_url))
     if not candidates:
         return None
     candidates.sort(key=lambda item: item[0])
-    _, normalized, source = candidates[0]
-    return normalized, source
-
-
-def _normalize_url(value: str) -> str | None:
-    url = html.unescape(value).rstrip(".,;!?)，。；！？）]")
-    parsed = urlparse(url)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        return None
-
-    query = parse_qs(parsed.query)
-    for key in ("url", "target", "redirect", "redirect_url"):
-        nested_values = query.get(key)
-        if not nested_values:
-            continue
-        nested = unquote(nested_values[0])
-        nested_parsed = urlparse(nested)
-        if nested_parsed.scheme in {"http", "https"} and nested_parsed.netloc:
-            return _shorten_supported_url(nested)
-    return _shorten_supported_url(url)
+    return candidates[0][1]
 
 
 def _source_url(value: str) -> str:
@@ -198,29 +151,6 @@ def _source_url(value: str) -> str:
             if _is_xiaohongshu_page_url(nested) or _is_xiaoheihe_share_url(nested):
                 return nested
     return url
-
-
-def _shorten_xiaohongshu_url(url: str) -> str:
-    parsed = urlparse(url)
-    host = (parsed.hostname or "").lower()
-    is_xiaohongshu = host == "xiaohongshu.com" or host.endswith(".xiaohongshu.com")
-    is_note = parsed.path.startswith(("/discovery/item/", "/explore/"))
-    if not is_xiaohongshu or not is_note:
-        return url
-    return urlunparse(parsed._replace(scheme="https", params="", query="", fragment=""))
-
-
-def _shorten_supported_url(url: str) -> str:
-    shortened = _shorten_xiaohongshu_url(url)
-    if shortened != url:
-        return shortened
-    link_id = _xiaoheihe_link_id(url)
-    if link_id is None:
-        return url
-    return (
-        "https://api.xiaoheihe.cn"
-        f"{_XIAOHEIHE_SHARE_PATH}?{urlencode({'link_id': link_id})}"
-    )
 
 
 def _cache_xiaohongshu_images(source_url: str) -> CachedMiniAppImages:
@@ -567,14 +497,6 @@ def _xiaohongshu_note_id(url: str) -> str:
     if len(parts) >= 2 and parts[-2] == "explore":
         return parts[-1]
     return ""
-
-
-def _clean_title(value: str) -> str:
-    title = value.strip()
-    if title.startswith(_MINIAPP_PROMPT_PREFIX):
-        title = title[len(_MINIAPP_PROMPT_PREFIX) :].strip()
-    title = " ".join(title.split())
-    return title[:200]
 
 
 def _walk(value: Any, path: tuple[str, ...] = ()):
