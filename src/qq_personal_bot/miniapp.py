@@ -16,6 +16,13 @@ from typing import Any, Mapping, Sequence
 from urllib.parse import parse_qs, unquote, urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
+from qq_personal_bot.bilibili_card import (
+    BilibiliCardRequest,
+    generate_bilibili_card,
+    is_bilibili_preview_url,
+    is_bilibili_share_url,
+)
+
 _MINIAPP_PROMPT_PREFIX = "[QQ小程序]"
 _URL_KEYS = (
     "qqdocurl",
@@ -28,6 +35,8 @@ _URL_KEYS = (
     "url",
 )
 _MEDIA_KEY_PARTS = ("icon", "image", "img", "preview", "cover", "avatar", "logo")
+_BILIBILI_TITLE_KEYS = ("title", "desc", "prompt")
+_BILIBILI_PLACEHOLDER_TITLES = {"bilibili", "哔哩哔哩", "哔哩哔哩弹幕网"}
 _URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
 _INITIAL_STATE_MARKER = "window.__INITIAL_STATE__="
 _XIAOHEIHE_DETAIL_PATH = "/bbs/app/link/tree"
@@ -59,6 +68,9 @@ _IMAGE_EXTENSIONS = {
 @dataclass(frozen=True)
 class MiniAppImageSource:
     source_url: str
+    platform: str = "auto"
+    fallback_title: str | None = None
+    fallback_cover_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -81,14 +93,26 @@ def extract_miniapp_image_source(
         if payload is None or not _looks_like_miniapp(payload):
             continue
 
-        source_url = _find_supported_image_source_url(payload)
-        if source_url is None:
+        source = _find_supported_image_source(payload)
+        if source is None:
             continue
-        return MiniAppImageSource(source_url=source_url)
+        return source
     return None
 
 
 async def cache_miniapp_images(source: MiniAppImageSource) -> CachedMiniAppImages:
+    if source.platform == "bilibili" or is_bilibili_share_url(source.source_url):
+        card = await asyncio.to_thread(
+            generate_bilibili_card,
+            BilibiliCardRequest(
+                source_url=source.source_url,
+                fallback_title=source.fallback_title,
+                fallback_cover_url=source.fallback_cover_url,
+            ),
+        )
+        if card is not None:
+            return CachedMiniAppImages(directory=card.parent, paths=(card,))
+        return CachedMiniAppImages(directory=None, paths=())
     if _is_xiaohongshu_page_url(source.source_url):
         return await asyncio.to_thread(_cache_xiaohongshu_images, source.source_url)
     if _is_xiaoheihe_share_url(source.source_url):
@@ -121,8 +145,8 @@ def _looks_like_miniapp(payload: Mapping[str, Any]) -> bool:
     )
 
 
-def _find_supported_image_source_url(payload: Mapping[str, Any]) -> str | None:
-    candidates: list[tuple[int, str]] = []
+def _find_supported_image_source(payload: Mapping[str, Any]) -> MiniAppImageSource | None:
+    candidates: list[tuple[int, str, str]] = []
     for path, value in _walk(payload):
         if not isinstance(value, str):
             continue
@@ -132,12 +156,24 @@ def _find_supported_image_source_url(payload: Mapping[str, Any]) -> str | None:
         priority = _URL_KEYS.index(key) if key in _URL_KEYS else len(_URL_KEYS)
         for match in _URL_RE.findall(html.unescape(value)):
             source_url = _source_url(match)
-            if _is_xiaohongshu_page_url(source_url) or _is_xiaoheihe_share_url(source_url):
-                candidates.append((priority, source_url))
+            if _is_xiaohongshu_page_url(source_url):
+                candidates.append((priority, "xiaohongshu", source_url))
+            elif _is_xiaoheihe_share_url(source_url):
+                candidates.append((priority, "xiaoheihe", source_url))
+            elif is_bilibili_share_url(source_url):
+                candidates.append((priority, "bilibili", source_url))
     if not candidates:
         return None
     candidates.sort(key=lambda item: item[0])
-    return candidates[0][1]
+    _, platform, source_url = candidates[0]
+    if platform != "bilibili":
+        return MiniAppImageSource(source_url=source_url, platform=platform)
+    return MiniAppImageSource(
+        source_url=source_url,
+        platform=platform,
+        fallback_title=_find_bilibili_fallback_title(payload),
+        fallback_cover_url=_find_bilibili_fallback_cover(payload),
+    )
 
 
 def _source_url(value: str) -> str:
@@ -148,9 +184,55 @@ def _source_url(value: str) -> str:
         nested_values = query.get(key)
         if nested_values:
             nested = unquote(nested_values[0])
-            if _is_xiaohongshu_page_url(nested) or _is_xiaoheihe_share_url(nested):
+            if (
+                _is_xiaohongshu_page_url(nested)
+                or _is_xiaoheihe_share_url(nested)
+                or is_bilibili_share_url(nested)
+            ):
                 return nested
     return url
+
+
+def _find_bilibili_fallback_title(payload: Mapping[str, Any]) -> str | None:
+    candidates: list[tuple[int, str]] = []
+    for path, value in _walk(payload):
+        key = path[-1].lower() if path else ""
+        if key not in _BILIBILI_TITLE_KEYS or not isinstance(value, str):
+            continue
+        title = _clean_bilibili_title(value)
+        if not title or title.casefold() in _BILIBILI_PLACEHOLDER_TITLES:
+            continue
+        candidates.append((_BILIBILI_TITLE_KEYS.index(key), title))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0])
+    return candidates[0][1]
+
+
+def _find_bilibili_fallback_cover(payload: Mapping[str, Any]) -> str | None:
+    candidates: list[tuple[int, str]] = []
+    cover_keys = ("preview", "cover", "image", "image_url", "imageurl")
+    for path, value in _walk(payload):
+        key = path[-1].lower() if path else ""
+        if key not in cover_keys or not isinstance(value, str):
+            continue
+        priority = cover_keys.index(key)
+        for match in _URL_RE.findall(html.unescape(value)):
+            if is_bilibili_preview_url(match):
+                candidates.append((priority, match))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0])
+    return candidates[0][1]
+
+
+def _clean_bilibili_title(value: str) -> str:
+    title = value.strip()
+    if title.startswith(_MINIAPP_PROMPT_PREFIX):
+        title = title[len(_MINIAPP_PROMPT_PREFIX) :].strip()
+    elif title.startswith("[分享]"):
+        title = title[len("[分享]") :].strip()
+    return " ".join(title.split())[:200]
 
 
 def _cache_xiaohongshu_images(source_url: str) -> CachedMiniAppImages:

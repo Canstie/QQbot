@@ -79,7 +79,7 @@ def test_extracts_real_xiaohongshu_tuwen_share():
     assert source.source_url == "http://xhslink.com/m/8rpFU0xWGvV"
 
 
-def test_ignores_bilibili_share_without_supported_image_parser():
+def test_extracts_bilibili_card_source_and_fallback_fields():
     payload = {
         "ver": "1.0.0.19",
         "prompt": "[QQ小程序]马儿空气动力学",
@@ -97,6 +97,18 @@ def test_ignores_bilibili_share_without_supported_image_parser():
 
     source = extract_miniapp_image_source(
         ({"type": "json", "data": {"data": json.dumps(payload, ensure_ascii=False)}},)
+    )
+
+    assert source is not None
+    assert source.platform == "bilibili"
+    assert source.source_url == "https://b23.tv/wrXwLXN?share_source=qq"
+    assert source.fallback_title == "马儿空气动力学"
+    assert source.fallback_cover_url == "https://qq.ugcimg.cn/preview"
+
+
+def test_plain_bilibili_url_is_not_treated_as_qq_miniapp():
+    source = extract_miniapp_image_source(
+        ({"type": "text", "data": {"text": "https://b23.tv/wrXwLXN"}},)
     )
 
     assert source is None
