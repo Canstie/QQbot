@@ -281,6 +281,7 @@ def test_snapshot_shape(tmp_path):
     assert snapshot["trigger"]["mention"] is True
     assert "~" in snapshot["trigger"]["prefixes"]
     assert snapshot["trigger"]["direct_trigger_percent"] == 10.0
+    assert snapshot["bilibili_blocked_groups"] == []
 
 
 def test_direct_trigger_percent_is_clamped_and_persisted(tmp_path):
@@ -312,6 +313,7 @@ def test_core_config_replaces_policy_snapshot(tmp_path):
         per_group_seconds=1.5,
         per_user_per_minute=9,
         actor_id=10000,
+        bilibili_blocked_groups=[456, 456, 123],
     )
 
     snapshot = store.snapshot()
@@ -326,6 +328,13 @@ def test_core_config_replaces_policy_snapshot(tmp_path):
         "direct_trigger_percent": 35.0,
     }
     assert snapshot["limits"] == {"per_group_seconds": 1.5, "per_user_per_minute": 9}
+    assert snapshot["bilibili_blocked_groups"] == [123, 456]
+    assert store.is_bilibili_group_blocked(123) is True
+    assert store.is_bilibili_group_blocked(789) is False
+
+    reopened = PolicyStore(db_path)
+    reopened.initialize(AppSettings(db_path=db_path, admins=(10000,)))
+    assert reopened.get_bilibili_blocked_groups() == [123, 456]
 
 
 def test_bootstrap_admin_is_not_restored_after_web_config_removes_it(tmp_path):

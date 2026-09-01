@@ -379,6 +379,7 @@ def test_core_policy_api_updates_full_config(tmp_path, monkeypatch):
                 "per_group_seconds": 2.5,
                 "per_user_per_minute": 8,
             },
+            "bilibili_blocked_groups": [456, 456, 321],
         },
     )
 
@@ -392,6 +393,7 @@ def test_core_policy_api_updates_full_config(tmp_path, monkeypatch):
     assert data["trigger"]["prefixes"] == ["!", "/"]
     assert data["trigger"]["direct_trigger_percent"] == 42.0
     assert data["limits"] == {"per_group_seconds": 2.5, "per_user_per_minute": 8}
+    assert data["bilibili_blocked_groups"] == [321, 456]
 
 
 def test_web_can_remove_bootstrap_admin_permanently(tmp_path, monkeypatch):

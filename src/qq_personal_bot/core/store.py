@@ -757,6 +757,7 @@ class PolicyStore:
         per_group_seconds: float,
         per_user_per_minute: int,
         actor_id: int,
+        bilibili_blocked_groups: list[int] | None = None,
     ) -> None:
         if mode not in {"allowlist", "blocklist"}:
             raise ValueError("mode must be allowlist or blocklist")
@@ -769,6 +770,14 @@ class PolicyStore:
         normalized_enabled_groups = self._normalize_int_ids(enabled_groups, "enabled_groups")
         normalized_blocked_groups = self._normalize_int_ids(blocked_groups, "blocked_groups")
         normalized_admins = self._normalize_int_ids(admins, "admins")
+        normalized_bilibili_blocked_groups = (
+            self._normalize_int_ids(
+                bilibili_blocked_groups,
+                "bilibili_blocked_groups",
+            )
+            if bilibili_blocked_groups is not None
+            else None
+        )
 
         with self._connect() as conn:
             self.set_setting("policy_mode", mode, conn=conn)
@@ -776,6 +785,12 @@ class PolicyStore:
             self.set_setting("direct_trigger_percent", str(float(direct_trigger_percent)), conn=conn)
             self.set_setting("per_group_seconds", str(float(per_group_seconds)), conn=conn)
             self.set_setting("per_user_per_minute", str(int(per_user_per_minute)), conn=conn)
+            if normalized_bilibili_blocked_groups is not None:
+                self.set_setting(
+                    "bilibili_blocked_groups",
+                    json.dumps(normalized_bilibili_blocked_groups),
+                    conn=conn,
+                )
 
             conn.execute("DELETE FROM trigger_prefixes")
             for prefix in normalized_prefixes:
@@ -823,6 +838,7 @@ class PolicyStore:
                         "per_group_seconds": per_group_seconds,
                         "per_user_per_minute": per_user_per_minute,
                     },
+                    "bilibili_blocked_groups": normalized_bilibili_blocked_groups,
                 },
                 conn=conn,
             )
@@ -845,6 +861,19 @@ class PolicyStore:
             """,
             (key, value),
         )
+
+    def get_bilibili_blocked_groups(self) -> list[int]:
+        raw_value = self.get_setting("bilibili_blocked_groups", "[]")
+        try:
+            values = json.loads(raw_value)
+            if not isinstance(values, list):
+                return []
+            return sorted(self._normalize_int_ids(values, "bilibili_blocked_groups"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return []
+
+    def is_bilibili_group_blocked(self, group_id: int) -> bool:
+        return int(group_id) in self.get_bilibili_blocked_groups()
 
     def get_dsapi_config(self) -> dict[str, Any]:
         try:
@@ -1580,6 +1609,7 @@ class PolicyStore:
             "enabled_groups": self.enabled_groups(),
             "blocked_groups": self.blocked_groups(),
             "admins": self.admins(),
+            "bilibili_blocked_groups": self.get_bilibili_blocked_groups(),
             "trigger": {
                 "mention": self.get_trigger_mention(),
                 "prefixes": self.prefixes(),

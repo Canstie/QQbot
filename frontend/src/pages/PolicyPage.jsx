@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Radio, Save, ShieldCheck, Zap } from "lucide-react";
+import { Radio, Save, ShieldBan, ShieldCheck, Zap } from "lucide-react";
 
 import { formatIds, get, parseIds, post } from "../api";
 import { Button, Field, PageHeader, Panel, Status, Switch } from "../components/Ui";
@@ -7,6 +7,7 @@ import { Button, Field, PageHeader, Panel, Status, Switch } from "../components/
 const emptyForm = {
   mode: "allowlist", prefixes: "~,#bot", mention: true, directPercent: 10,
   groupSeconds: 5, userMinute: 5, enabled: "", blocked: "", admins: "",
+  bilibiliBlocked: "",
 };
 
 export default function PolicyPage({ refreshVersion, onChanged }) {
@@ -28,6 +29,7 @@ export default function PolicyPage({ refreshVersion, onChanged }) {
       enabled: formatIds(data.enabled_groups),
       blocked: formatIds(data.blocked_groups),
       admins: formatIds(data.admins),
+      bilibiliBlocked: formatIds(data.bilibili_blocked_groups),
     });
     setNotice("配置已同步");
   }).catch((error) => setNotice(error.message));
@@ -53,6 +55,7 @@ export default function PolicyPage({ refreshVersion, onChanged }) {
           per_group_seconds: Number(form.groupSeconds),
           per_user_per_minute: Number(form.userMinute),
         },
+        bilibili_blocked_groups: parseIds(form.bilibiliBlocked),
       });
       setNotice("策略已保存并立即生效");
       onChanged();
@@ -110,6 +113,20 @@ export default function PolicyPage({ refreshVersion, onChanged }) {
             <Field label="管理员 QQ" hint="新增可用 /bot admin add；删除仅允许在本页保存"><textarea value={form.admins} onChange={(e) => update("admins", e.target.value)} /></Field>
           </div>
           <div className="panel-footer"><Status icon={ShieldCheck}>{notice}</Status><span className="quiet-note"><Zap size={14} /> 保存后无需重启</span></div>
+        </Panel>
+
+        <Panel title="B站卡片解析黑名单" eyebrow="Bilibili guard" className="span-12">
+          <div className="bilibili-guard">
+            <div className="bilibili-guard__signal">
+              <div><ShieldBan /></div>
+              <span>解析隔离区</span>
+              <strong>{String(form.bilibiliBlocked || "").split(/[\s,，]+/).filter(Boolean).length}</strong>
+              <small>BLOCKED GROUPS</small>
+            </div>
+            <Field label="不解析 B站卡片的群" hint="一行一个群号。命中后静默跳过，仅影响 B站卡片；小红书和小黑盒保持原行为。">
+              <textarea value={form.bilibiliBlocked} onChange={(e) => update("bilibiliBlocked", e.target.value)} placeholder={"例如：\n123456789\n987654321"} />
+            </Field>
+          </div>
         </Panel>
       </div>
     </>

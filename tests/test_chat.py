@@ -75,6 +75,23 @@ def test_miniapp_image_collection_response(tmp_path):
     assert image_response[1].data["file"] == second.resolve().as_uri()
 
 
+def test_bilibili_miniapp_is_silently_blocked_for_configured_group(monkeypatch):
+    store = SimpleNamespace(is_bilibili_group_blocked=lambda group_id: group_id == 123)
+    monkeypatch.setattr(chat, "get_store", lambda: store)
+    bilibili = MiniAppImageSource(
+        source_url="https://b23.tv/wrXwLXN",
+        platform="bilibili",
+    )
+    xiaohongshu = MiniAppImageSource(
+        source_url="https://www.xiaohongshu.com/explore/example",
+        platform="xiaohongshu",
+    )
+
+    assert chat._miniapp_image_source_allowed(bilibili, SimpleNamespace(group_id=123)) is False
+    assert chat._miniapp_image_source_allowed(bilibili, SimpleNamespace(group_id=456)) is True
+    assert chat._miniapp_image_source_allowed(xiaohongshu, SimpleNamespace(group_id=123)) is True
+
+
 @pytest.mark.asyncio
 async def test_miniapp_sends_only_image_collection(monkeypatch, tmp_path):
     directory = tmp_path / "cached"

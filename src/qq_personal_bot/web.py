@@ -64,6 +64,7 @@ class CoreConfigPayload(BaseModel):
     admins: list[int]
     trigger: dict[str, Any]
     limits: dict[str, Any]
+    bilibili_blocked_groups: list[int] = Field(default_factory=list)
 
 
 class DSAPIConfigPayload(BaseModel):
@@ -230,6 +231,7 @@ def create_app():
                 per_group_seconds=float(payload.limits.get("per_group_seconds", 5)),
                 per_user_per_minute=int(payload.limits.get("per_user_per_minute", 5)),
                 actor_id=0,
+                bilibili_blocked_groups=payload.bilibili_blocked_groups,
             )
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

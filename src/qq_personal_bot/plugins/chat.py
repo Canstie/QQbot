@@ -144,7 +144,11 @@ async def _handle_onebot_message(
     internal_event = onebot_to_internal(event, self_id=bot.self_id)
     _record_group_activity(internal_event, self_id=bot.self_id)
     miniapp_image_source = extract_miniapp_image_source(internal_event.segments)
-    if miniapp_image_source is not None and _automatic_reply_allowed(internal_event):
+    if (
+        miniapp_image_source is not None
+        and _automatic_reply_allowed(internal_event)
+        and _miniapp_image_source_allowed(miniapp_image_source, internal_event)
+    ):
         try:
             cached_images = await cache_miniapp_images(miniapp_image_source)
         except (OSError, ValueError, json.JSONDecodeError) as exc:
@@ -331,3 +335,11 @@ def _automatic_reply_allowed(event: Any) -> bool:
     if mode == "blocklist":
         return not store.is_group_blocked(event.group_id)
     return True
+
+
+def _miniapp_image_source_allowed(source: Any, event: Any) -> bool:
+    if source.platform != "bilibili":
+        return True
+    if event.group_id is None:
+        return False
+    return not get_store().is_bilibili_group_blocked(event.group_id)
