@@ -2787,8 +2787,8 @@ class PolicyStore:
             ).fetchone()
             return self._classic_image_from_row(row) if row is not None else None
 
-    def list_classic_images(self, group_id: int, *, limit: int = 1000) -> list[dict[str, Any]]:
-        normalized_limit = min(max(1, int(limit)), 100_000)
+    def list_classic_images(self, group_id: int, *, limit: int | None = 1000) -> list[dict[str, Any]]:
+        normalized_limit = -1 if limit is None else min(max(1, int(limit)), 100_000)
         with self._connect() as conn:
             rows = conn.execute(
                 """

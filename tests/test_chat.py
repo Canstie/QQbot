@@ -92,6 +92,43 @@ async def test_gallery_command_policy_and_image_send(monkeypatch, tmp_path, reas
     lua.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["ok", "group_not_enabled", "group_rate_limited", "user_rate_limited"])
+@pytest.mark.parametrize("explicit_send", [False, True])
+async def test_all_classics_policy_and_current_group_forward(monkeypatch, reason, explicit_send):
+    from unittest.mock import AsyncMock
+    event = SimpleNamespace(segments=(), group_id=123, is_at_bot=False)
+    decision = PolicyDecision(reason == "ok", reason, handler="default", normalized_message="爆典all")
+    monkeypatch.setattr(chat, "onebot_to_internal", lambda event, self_id: event)
+    monkeypatch.setattr(chat, "_record_group_activity", lambda *a, **kw: None)
+    monkeypatch.setattr(chat, "pending_lua_command", lambda event: None)
+    monkeypatch.setattr(chat, "handle_custom_flow", lambda event: None)
+    monkeypatch.setattr(chat, "get_policy_engine", lambda: SimpleNamespace(evaluate=lambda *a, **kw: decision))
+    nodes = [{"type": "node", "data": {"content": []}}]
+    async def export(group_id, self_id, send, notice):
+        assert group_id == 123 and self_id == "456"
+        await notice("正在整理")
+        await send(nodes)
+    export_mock = AsyncMock(side_effect=export)
+    monkeypatch.setattr(chat, "send_all_classics", export_mock)
+    lua = AsyncMock(side_effect=AssertionError("export must finish before Lua"))
+    monkeypatch.setattr(chat, "run_lua_message", lua)
+    matcher = SimpleNamespace(send=AsyncMock(), finish=AsyncMock())
+    bot = SimpleNamespace(self_id=456, send_group_msg=AsyncMock(), call_api=AsyncMock())
+    await chat._handle_onebot_message(matcher, bot, event, explicit_group_send=explicit_send)
+    if reason == "ok":
+        export_mock.assert_awaited_once()
+        bot.call_api.assert_awaited_once_with("send_group_forward_msg", group_id=123, messages=nodes, _timeout=180)
+        response = (bot.send_group_msg.call_args.kwargs["message"] if explicit_send else matcher.send.call_args.args[0])
+        assert response.type == "text"
+    else:
+        export_mock.assert_not_awaited()
+        bot.call_api.assert_not_awaited()
+        matcher.send.assert_not_awaited()
+        bot.send_group_msg.assert_not_awaited()
+    lua.assert_not_awaited()
+
+
 def test_recent_bot_output_event_expires():
     chat._recent_bot_outputs.clear()
     original = make_event(raw_message="~抽群老婆")

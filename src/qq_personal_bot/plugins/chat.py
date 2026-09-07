@@ -10,6 +10,7 @@ from nonebot import logger, on, on_message
 from nonebot.adapters.onebot.v11 import Bot, Event, GroupMessageEvent, Message, MessageSegment
 
 from qq_personal_bot.adapters.onebot import onebot_to_internal
+from qq_personal_bot.classic_forward import send_all_classics
 from qq_personal_bot.core.models import PolicyDecision
 from qq_personal_bot.dsapi import (
     DSAPIError,
@@ -232,6 +233,19 @@ async def _handle_onebot_message(
                     _build_random_group_response(response),
                     explicit_group_send=explicit_group_send,
                 )
+        return
+
+    if decision.handler == "default" and decision.normalized_message.strip() == "爆典all":
+        async def send_classic_forward(nodes: list[dict]) -> None:
+            await bot.call_api("send_group_forward_msg", group_id=int(internal_event.group_id),
+                               messages=nodes, _timeout=180)
+
+        async def send_classic_notice(text: str) -> None:
+            await _send_response(matcher, bot, event, MessageSegment.text(text),
+                                 explicit_group_send=explicit_group_send)
+
+        await send_all_classics(internal_event.group_id, str(bot.self_id),
+                                send_classic_forward, send_classic_notice)
         return
 
     if decision.handler == "default" and decision.normalized_message.strip() == "涩图":
