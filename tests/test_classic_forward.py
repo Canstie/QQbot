@@ -79,6 +79,29 @@ async def test_private_or_empty_never_reads_minio(archive, group_id):
 
 
 @pytest.mark.asyncio
+async def test_default_batch_limit_is_ten_with_remainder(archive):
+    store, _, records = archive
+    store.list_classic_images.return_value = [
+        dict(records[i % len(records)], id=i) for i in range(62)
+    ]
+    batches = []
+    paths = []
+
+    async def send(nodes):
+        batches.append(len(nodes))
+        for node in nodes:
+            path = node_path(node)
+            assert path.is_file()
+            paths.append(path)
+
+    await forward.send_all_classics(123, "456", send, AsyncMock())
+    assert forward.MAX_BATCH_IMAGES == 10
+    assert batches == [10, 10, 10, 10, 10, 10, 2]
+    assert len({path.name for path in paths}) == 62
+    assert all(not path.parent.exists() for path in paths)
+
+
+@pytest.mark.asyncio
 async def test_corrupt_and_missing_images_are_skipped(archive):
     _, storage, records = archive
     records[0]["sha256"] = "0" * 64

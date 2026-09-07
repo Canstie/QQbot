@@ -13,7 +13,7 @@ from qq_personal_bot.runtime import get_store
 
 logger = logging.getLogger(__name__)
 # Application limits, not protocol limits: keep each upload and temporary batch modest.
-MAX_BATCH_IMAGES = 50
+MAX_BATCH_IMAGES = 10
 MAX_BATCH_BYTES = 50 * 1024 * 1024
 _active_groups: set[int] = set()
 _EXTENSIONS = {"image/jpeg": ".jpg", "image/png": ".png",
