@@ -292,6 +292,27 @@ end
 
 ## 测试
 
+### LLBot 合并转发发送超时补丁
+
+服务器 LLBot 7.12.15 默认给合并转发卡片的最终发送回执等待约 10 秒。
+本项目提供受版本和源码片段校验保护的补丁，只对 `com.tencent.multimsg` 卡片设置至少 60 秒；
+普通文本、图片及其他卡片仍沿用原公式，不缩短大型附件的等待时间。
+
+```bash
+cd /opt/qqbot
+.venv/bin/python tools/patch_llbot_forward_timeout.py
+.venv/bin/python tools/patch_llbot_forward_timeout.py --apply
+systemctl restart llbot.service
+```
+
+默认只检查，`--apply` 才写入：先用 LLBot 自带 Node 校验语法，备份原文件，再原子替换；重复执行不叠加补丁。
+备份位于 LLBot 原目录下的 `llbot.js.before-forward-timeout-<原文件哈希>.bak`。
+回滚时用本次输出的确切备份文件覆盖 `llbot.js` 后重启 LLBot。
+升级 LLBot 可能覆盖补丁；新版本会拒绝套用，须重新检查源码和测试。
+此补丁仅延长等待，不会重试发送，也不保证 QQ 接受消息。
+
+### 完整测试套件
+
 ```powershell
 uv run pytest
 ```
