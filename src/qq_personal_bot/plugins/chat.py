@@ -25,6 +25,7 @@ from qq_personal_bot.miniapp import (
 from qq_personal_bot.plugins.custom_flows import handle_custom_flow
 from qq_personal_bot.replies import build_reply
 from qq_personal_bot.runtime import get_policy_engine, get_settings, get_store
+from qq_personal_bot.teachers import parse_teacher_command, query_teachers
 
 chat = on_message(priority=50, block=False)
 self_sent = on("message_sent", priority=50, block=False)
@@ -230,6 +231,18 @@ async def _handle_onebot_message(
                     _build_random_group_response(response),
                     explicit_group_send=explicit_group_send,
                 )
+        return
+
+    teacher_args = (
+        parse_teacher_command(decision.normalized_message)
+        if decision.handler == "default" else None
+    )
+    if teacher_args is not None:
+        for text in await query_teachers(*teacher_args):
+            await _send_response(
+                matcher, bot, event, MessageSegment.text(text),
+                explicit_group_send=explicit_group_send,
+            )
         return
 
     lua_result = await run_lua_message(bot, internal_event, decision)
