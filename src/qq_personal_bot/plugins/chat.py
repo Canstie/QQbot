@@ -238,7 +238,7 @@ async def _handle_onebot_message(
     if decision.handler == "default" and decision.normalized_message.strip() == "爆典all":
         async def send_classic_forward(nodes: list[dict]) -> None:
             await bot.call_api("send_group_forward_msg", group_id=int(internal_event.group_id),
-                               messages=nodes, _timeout=180)
+                               messages=nodes, _timeout=600)
 
         async def send_classic_notice(text: str) -> None:
             await _send_response(matcher, bot, event, MessageSegment.text(text),

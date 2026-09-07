@@ -118,7 +118,7 @@ async def test_all_classics_policy_and_current_group_forward(monkeypatch, reason
     await chat._handle_onebot_message(matcher, bot, event, explicit_group_send=explicit_send)
     if reason == "ok":
         export_mock.assert_awaited_once()
-        bot.call_api.assert_awaited_once_with("send_group_forward_msg", group_id=123, messages=nodes, _timeout=180)
+        bot.call_api.assert_awaited_once_with("send_group_forward_msg", group_id=123, messages=nodes, _timeout=600)
         response = (bot.send_group_msg.call_args.kwargs["message"] if explicit_send else matcher.send.call_args.args[0])
         assert response.type == "text"
     else:
