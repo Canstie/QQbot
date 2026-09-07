@@ -47,7 +47,8 @@ def test_format_general_scores_latest_comments_and_missing_values():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("course", ["", "模拟 电子技术"])
-async def test_search_three_details_order_dedup_and_parameters(monkeypatch, course):
+@pytest.mark.parametrize("query", ["吴", "吴晓"])
+async def test_search_three_details_order_dedup_and_parameters(monkeypatch, course, query):
     names = ["吴晓", "吴晓青", "吴晓雄"]
     requests = []
 
@@ -55,7 +56,7 @@ async def test_search_three_details_order_dedup_and_parameters(monkeypatch, cour
         requests.append(request)
         if request.url.path == "/api/teachers":
             assert dict(request.url.params) == {
-                "q_p": "吴晓", "q_c": course, "sort": "默认排序", "offset": "0", "limit": "24"}
+                "q_p": query, "q_c": course, "sort": "默认排序", "offset": "0", "limit": "24"}
             return httpx.Response(200, json={"items": [{"prof": n} for n in names + names[:1]],
                                              "total": 3, "has_more": False})
         name = request.url.path.rsplit("/", 1)[1]
@@ -64,10 +65,28 @@ async def test_search_three_details_order_dedup_and_parameters(monkeypatch, cour
         return httpx.Response(200, json=detail(name))
 
     install_client(monkeypatch, handler)
-    result = await teachers.query_teachers("吴晓", course)
-    assert [text.splitlines()[0] for text in result] == [f"🧬 教师画像：{n}" for n in names]
-    assert len(requests) == 4
+    result = await teachers.query_teachers(query, course)
+    expected_names = ["吴晓"] if query == "吴晓" else names
+    assert [text.splitlines()[0] for text in result] == [
+        f"🧬 教师画像：{n}" for n in expected_names]
+    assert len(requests) == len(expected_names) + 1
     assert b"%E5%90%B4%E6%99%93" in requests[1].url.raw_path
+
+
+@pytest.mark.asyncio
+async def test_exact_name_takes_priority_over_many_results(monkeypatch):
+    def handler(request):
+        if request.url.path == "/api/teachers":
+            return httpx.Response(200, json={
+                "items": [{"prof": n} for n in ["吴晓青", "吴晓", "吴晓雄"]],
+                "total": 30, "has_more": True,
+            })
+        assert request.url.path == "/api/detail/吴晓"
+        return httpx.Response(200, json=detail("吴晓"))
+    install_client(monkeypatch, handler)
+    result = await teachers.query_teachers("吴晓")
+    assert len(result) == 1
+    assert result[0].startswith("🧬 教师画像：吴晓\n")
 
 
 @pytest.mark.asyncio

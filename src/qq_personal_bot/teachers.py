@@ -118,7 +118,9 @@ async def query_teachers(name: str, course: str = "") -> list[str]:
                 if total or more:
                     raise ValueError("incomplete teacher search")
                 return ["当前老师没有数据"]
-            if total > 5 or more or len(names) > 5:
+            if name in names:
+                names = [name]
+            elif total > 5 or more or len(names) > 5:
                 return [
                     f"匹配到多位老师（接口报告共{total}位），请补全姓名或添加课程后重试。\n"
                     + "候选姓名：" + "、".join(names[:24])
