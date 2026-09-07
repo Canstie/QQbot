@@ -217,6 +217,19 @@ class PolicyStore:
             """
         )
         self._initialize_classic_image_selection(conn)
+        self._initialize_download_image_selection(conn)
+
+    def _initialize_download_image_selection(self, conn: sqlite3.Connection) -> None:
+        columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(download_images)")}
+        if "last_used_seq" not in columns:
+            conn.execute("ALTER TABLE download_images ADD COLUMN last_used_seq INTEGER NOT NULL DEFAULT 0")
+        if "random_order" not in columns:
+            conn.execute("ALTER TABLE download_images ADD COLUMN random_order INTEGER NOT NULL DEFAULT 0")
+            conn.execute("UPDATE download_images SET random_order = RANDOM()")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_download_images_lru "
+            "ON download_images(last_used_seq, random_order, id)"
+        )
 
     def _initialize_classic_image_selection(self, conn: sqlite3.Connection) -> None:
         columns = {
@@ -2948,8 +2961,9 @@ class PolicyStore:
                 cursor = conn.execute(
                     """
                     INSERT INTO download_images(
-                        sha256, object_key, content_type, size_bytes, downloaded_date, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?)
+                        sha256, object_key, content_type, size_bytes, downloaded_date, created_at,
+                        random_order
+                    ) VALUES (?, ?, ?, ?, ?, ?, RANDOM())
                     """,
                     (
                         normalized_hash,
@@ -2975,6 +2989,40 @@ class PolicyStore:
             if row is None:
                 raise RuntimeError("download image index insert failed")
             return self._download_image_from_row(row), True
+
+    def reserve_download_images(self, count: int) -> list[dict[str, Any]]:
+        """Atomically rotate the least recently used images to the end of the queue."""
+        count = max(1, min(int(count), 5))
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                "SELECT * FROM download_images ORDER BY last_used_seq, random_order, id LIMIT ?",
+                (count,),
+            ).fetchall()
+            sequence_row = conn.execute(
+                "SELECT value FROM settings WHERE key = 'download_lru_sequence'"
+            ).fetchone()
+            sequence = int(sequence_row["value"]) if sequence_row else 0
+            selected = []
+            for row in rows:
+                sequence += 1
+                conn.execute("UPDATE download_images SET last_used_seq = ? WHERE id = ?",
+                             (sequence, row["id"]))
+                selected.append({**self._download_image_from_row(row),
+                                 "previous_seq": int(row["last_used_seq"]), "reserved_seq": sequence})
+            if rows:
+                self.set_setting("download_lru_sequence", str(sequence), conn=conn)
+        return selected
+
+    def release_download_images(self, images: list[dict[str, Any]]) -> None:
+        """Undo failed reservations without overwriting a newer use of the same image."""
+        if not images:
+            return
+        with self._connect() as conn:
+            conn.executemany(
+                "UPDATE download_images SET last_used_seq = ? WHERE id = ? AND last_used_seq = ?",
+                [(item["previous_seq"], item["id"], item["reserved_seq"]) for item in images],
+            )
 
     def get_download_image_by_hash(self, sha256: str) -> dict[str, Any] | None:
         with self._connect() as conn:

@@ -26,6 +26,7 @@ from qq_personal_bot.plugins.custom_flows import handle_custom_flow
 from qq_personal_bot.replies import build_reply
 from qq_personal_bot.runtime import get_policy_engine, get_settings, get_store
 from qq_personal_bot.teachers import parse_teacher_command, query_teachers
+from qq_personal_bot.random_gallery import send_random_gallery
 
 chat = on_message(priority=50, block=False)
 self_sent = on("message_sent", priority=50, block=False)
@@ -231,6 +232,19 @@ async def _handle_onebot_message(
                     _build_random_group_response(response),
                     explicit_group_send=explicit_group_send,
                 )
+        return
+
+    if decision.handler == "default" and decision.normalized_message.strip() == "涩图":
+        async def send_gallery_image(path: Path) -> None:
+            await _send_response(
+                matcher, bot, event, MessageSegment.image(path.resolve().as_uri()),
+                explicit_group_send=explicit_group_send,
+            )
+
+        notice = await send_random_gallery(send_gallery_image)
+        if notice:
+            await _send_response(matcher, bot, event, MessageSegment.text(notice),
+                                 explicit_group_send=explicit_group_send)
         return
 
     teacher_args = (

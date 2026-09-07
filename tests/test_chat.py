@@ -57,6 +57,41 @@ def test_recent_bot_output_event_is_ignored():
     assert chat._is_recent_bot_output_event(echoed, now=101.0) is True
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["ok", "group_not_enabled", "group_rate_limited"])
+@pytest.mark.parametrize("explicit_send", [False, True])
+async def test_gallery_command_policy_and_image_send(monkeypatch, tmp_path, reason, explicit_send):
+    from unittest.mock import AsyncMock
+    event = SimpleNamespace(segments=(), group_id=123, is_at_bot=False)
+    decision = PolicyDecision(reason == "ok", reason, handler="default", normalized_message="涩图")
+    monkeypatch.setattr(chat, "onebot_to_internal", lambda event, self_id: event)
+    monkeypatch.setattr(chat, "_record_group_activity", lambda *a, **kw: None)
+    monkeypatch.setattr(chat, "pending_lua_command", lambda event: None)
+    monkeypatch.setattr(chat, "handle_custom_flow", lambda event: None)
+    monkeypatch.setattr(chat, "get_policy_engine", lambda: SimpleNamespace(evaluate=lambda *a, **kw: decision))
+    async def gallery(send):
+        await send(tmp_path / "first.png")
+        await send(tmp_path / "second.gif")
+    query = AsyncMock(side_effect=gallery)
+    monkeypatch.setattr(chat, "send_random_gallery", query)
+    lua = AsyncMock(side_effect=AssertionError("gallery must finish before Lua"))
+    monkeypatch.setattr(chat, "run_lua_message", lua)
+    matcher = SimpleNamespace(send=AsyncMock(), finish=AsyncMock())
+    bot = SimpleNamespace(self_id=456, send_group_msg=AsyncMock())
+    await chat._handle_onebot_message(matcher, bot, event, explicit_group_send=explicit_send)
+    if reason == "ok":
+        query.assert_awaited_once()
+        responses = ([call.kwargs["message"] for call in bot.send_group_msg.call_args_list]
+                     if explicit_send else [call.args[0] for call in matcher.send.call_args_list])
+        assert [response.type for response in responses] == ["image", "image"]
+        assert responses[0].data["file"] == (tmp_path / "first.png").resolve().as_uri()
+    else:
+        query.assert_not_awaited()
+        matcher.send.assert_not_awaited()
+        bot.send_group_msg.assert_not_awaited()
+    lua.assert_not_awaited()
+
+
 def test_recent_bot_output_event_expires():
     chat._recent_bot_outputs.clear()
     original = make_event(raw_message="~抽群老婆")
