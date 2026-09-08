@@ -20,35 +20,6 @@ _EXTENSIONS = {"image/jpeg": ".jpg", "image/png": ".png",
                "image/gif": ".gif", "image/webp": ".webp"}
 
 
-class ClassicSelfSendError(RuntimeError):
-    """Staging in the bot's own private chat failed; this batch was not forwarded."""
-
-
-async def send_classic_batch_via_self(bot: Any, group_id: int, nodes: list[dict]) -> None:
-    references: list[dict] = []
-    seen_ids: set[str] = set()
-    for index, node in enumerate(nodes, 1):
-        try:
-            result = await bot.call_api(
-                "send_private_msg", user_id=int(bot.self_id),
-                message=node["data"]["content"], _timeout=600,
-            )
-            message_id = result.get("message_id") if isinstance(result, dict) else None
-            if isinstance(message_id, bool) or not isinstance(message_id, (int, str)):
-                raise ValueError("Private send did not return a message ID")
-            normalized_id = str(int(message_id))
-            if normalized_id == "0" or normalized_id in seen_ids:
-                raise ValueError("Private send returned an invalid or repeated message ID")
-        except Exception as exc:
-            raise ClassicSelfSendError(f"本批第 {index} 张图片发送给 Bot 本体失败或未取得有效消息 ID") from exc
-        seen_ids.add(normalized_id)
-        references.append({"type": "node", "data": {"id": normalized_id}})
-    if references:
-        # All real messages have the same source peer, selecting LLBot's native forward path.
-        await bot.call_api("send_group_forward_msg", group_id=int(group_id),
-                           messages=references, _timeout=600)
-
-
 def _cache_image(storage: Any, group_id: int, record: dict, directory: Path) -> Path:
     body = storage.read_image(group_id, record["object_key"])
     if len(body) != record["size_bytes"] or hashlib.sha256(body).hexdigest() != record["sha256"]:
@@ -135,14 +106,11 @@ async def send_all_classics(
                     paths.append(path)
                     batch_bytes += record["size_bytes"]
                 await send_batch()
-        except Exception as exc:
+        except Exception:
             # Do not automatically retry an ambiguous send: QQ may already have accepted it.
             logger.exception("Classic forward stopped: group=%s phase=%s confirmed_sent=%s batches=%s total=%s",
                              group_id, phase, sent, sent_batches, len(records))
-            if isinstance(exc, ClassicSelfSendError):
-                await send_notice(f"{exc}，本批尚未转发到群。"
-                                  f"已确认转发 {sent} 张，共 {len(records)} 张，已停止后续批次。")
-            elif phase == "发送":
+            if phase == "发送":
                 await send_notice(f"第 {sent_batches + 1} 批聊天记录发送失败或超时，未确认送达；"
                                   f"前 {sent_batches} 批已确认发送 {sent} 张，共 {len(records)} 张。"
                                   "已停止后续批次，请先检查群里是否已收到，避免重复发送。")
