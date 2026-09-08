@@ -13,8 +13,7 @@ from qq_personal_bot.runtime import get_store
 
 logger = logging.getLogger(__name__)
 # Application limits for each independently sent record, not protocol limits.
-MAX_BATCH_IMAGES = 40
-MAX_BATCH_BYTES = 50 * 1024 * 1024
+MAX_BATCH_IMAGES = 100
 _active_groups: set[int] = set()
 _EXTENSIONS = {"image/jpeg": ".jpg", "image/png": ".png",
                "image/gif": ".gif", "image/webp": ".webp"}
@@ -65,7 +64,9 @@ async def send_all_classics(
         if not records:
             await send_notice("这个群还没有存过典，先发送 ~存典 存一张吧。")
             return
-        await send_notice(f"正在整理本群 {len(records)} 张典图，每批最多 {MAX_BATCH_IMAGES} 张分批发送，请稍候……")
+        delivery = ("将合并为一份聊天记录发送" if len(records) <= MAX_BATCH_IMAGES
+                    else f"将按每批最多 {MAX_BATCH_IMAGES} 张分批发送")
+        await send_notice(f"正在整理本群 {len(records)} 张典图，{delivery}，请稍候……")
         sent = 0
         sent_batches = 0
         failed = 0
@@ -74,10 +75,9 @@ async def send_all_classics(
             storage = get_classic_storage()
             with tempfile.TemporaryDirectory(prefix="qqbot-classic-forward-") as directory:
                 paths: list[Path] = []
-                batch_bytes = 0
 
                 async def send_batch() -> None:
-                    nonlocal batch_bytes, sent, sent_batches, phase
+                    nonlocal sent, sent_batches, phase
                     if not paths:
                         return
                     phase = "发送"
@@ -91,11 +91,9 @@ async def send_all_classics(
                     for path in paths:
                         path.unlink(missing_ok=True)
                     paths.clear()
-                    batch_bytes = 0
 
                 for record in records:
-                    if paths and (len(paths) >= MAX_BATCH_IMAGES or
-                                  batch_bytes + record["size_bytes"] > MAX_BATCH_BYTES):
+                    if len(paths) >= MAX_BATCH_IMAGES:
                         await send_batch()
                     try:
                         path = await _cache_image_async(storage, group_id, record, Path(directory))
@@ -104,7 +102,6 @@ async def send_all_classics(
                         failed += 1
                         continue
                     paths.append(path)
-                    batch_bytes += record["size_bytes"]
                 await send_batch()
         except Exception:
             # Do not automatically retry an ambiguous send: QQ may already have accepted it.

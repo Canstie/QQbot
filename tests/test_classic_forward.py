@@ -35,11 +35,10 @@ def archive(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("count_limit,byte_limit,expected", [(50, 1000, [7]), (3, 1000, [3, 3, 1]), (50, 14, [2, 2, 2, 1])])
-async def test_all_nodes_batches_and_cleanup(archive, monkeypatch, count_limit, byte_limit, expected):
+@pytest.mark.parametrize("count_limit,expected", [(100, [7]), (3, [3, 3, 1])])
+async def test_all_nodes_batches_and_cleanup(archive, monkeypatch, count_limit, expected):
     store, storage, records = archive
     monkeypatch.setattr(forward, "MAX_BATCH_IMAGES", count_limit)
-    monkeypatch.setattr(forward, "MAX_BATCH_BYTES", byte_limit)
     notices = AsyncMock()
     seen = []
     sizes = []
@@ -84,10 +83,13 @@ async def test_private_or_empty_never_reads_minio(archive, group_id):
 
 
 @pytest.mark.asyncio
-async def test_default_batch_limit_is_forty_with_independent_remainder(archive):
+@pytest.mark.parametrize("count,expected", [(1, [1]), (62, [62]), (99, [99]),
+                                          (100, [100]), (101, [100, 1]),
+                                          (200, [100, 100]), (201, [100, 100, 1])])
+async def test_default_batch_limit_is_hundred_with_independent_remainder(archive, count, expected):
     store, _, records = archive
     store.list_classic_images.return_value = [
-        dict(records[i % len(records)], id=i) for i in range(62)
+        dict(records[i % len(records)], id=i) for i in range(count)
     ]
     batches = []
     paths = []
@@ -101,11 +103,32 @@ async def test_default_batch_limit_is_forty_with_independent_remainder(archive):
             assert path.is_file()
             paths.append(path)
 
-    await forward.send_all_classics(123, "456", send, AsyncMock())
-    assert forward.MAX_BATCH_IMAGES == 40
-    assert batches == [40, 22]
-    assert len({path.name for path in paths}) == 62
+    notice = AsyncMock()
+    await forward.send_all_classics(123, "456", send, notice)
+    assert forward.MAX_BATCH_IMAGES == 100
+    assert batches == expected
+    assert len({path.name for path in paths}) == count
+    assert ("一份聊天记录" if count <= 100 else "每批最多 100 张") in notice.call_args.args[0]
     assert all(not path.parent.exists() for path in paths)
+
+
+@pytest.mark.asyncio
+async def test_total_bytes_do_not_split_record(archive, monkeypatch):
+    _, _, records = archive
+    for record in records:
+        record["size_bytes"] = 30 * 1024 * 1024
+
+    async def cache(storage, group_id, record, directory):
+        path = directory / f'{record["id"]}.png'
+        path.touch()
+        return path
+
+    # Stub file materialization only; large aggregate metadata must not trigger splitting.
+    monkeypatch.setattr(forward, "_cache_image_async", cache)
+    send = AsyncMock()
+    await forward.send_all_classics(123, "456", send, AsyncMock())
+    send.assert_awaited_once()
+    assert len(send.call_args.args[0]) == 7
 
 
 @pytest.mark.asyncio
