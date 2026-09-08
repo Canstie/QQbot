@@ -12,8 +12,8 @@ from qq_personal_bot.classic_storage import ClassicStorageError, get_classic_sto
 from qq_personal_bot.runtime import get_store
 
 logger = logging.getLogger(__name__)
-# Application limits for each nested record, not protocol limits or whole-archive limits.
-MAX_BATCH_IMAGES = 20
+# Application limits for each independently sent record, not protocol limits.
+MAX_BATCH_IMAGES = 40
 MAX_BATCH_BYTES = 50 * 1024 * 1024
 _active_groups: set[int] = set()
 _EXTENSIONS = {"image/jpeg": ".jpg", "image/png": ".png",
@@ -65,8 +65,9 @@ async def send_all_classics(
         if not records:
             await send_notice("这个群还没有存过典，先发送 ~存典 存一张吧。")
             return
-        await send_notice(f"正在整理本群 {len(records)} 张典图，请稍候……")
-        prepared = 0
+        await send_notice(f"正在整理本群 {len(records)} 张典图，每批最多 {MAX_BATCH_IMAGES} 张分批发送，请稍候……")
+        sent = 0
+        sent_batches = 0
         failed = 0
         phase = "整理"
         try:
@@ -74,28 +75,28 @@ async def send_all_classics(
             with tempfile.TemporaryDirectory(prefix="qqbot-classic-forward-") as directory:
                 paths: list[Path] = []
                 batch_bytes = 0
-                batches: list[dict] = []
 
-                def finish_batch() -> None:
-                    nonlocal batch_bytes
+                async def send_batch() -> None:
+                    nonlocal batch_bytes, sent, sent_batches, phase
                     if not paths:
                         return
-                    number = len(batches) + 1
-                    # LLBot encodes node content containing nodes as an embedded forward.
-                    batches.append({"type": "node", "data": {
-                        "user_id": str(self_id), "nickname": "本群典藏",
-                        "source": f"本群典藏 · 第 {number} 批",
-                        "summary": f"查看本批 {len(paths)} 张典图",
-                        "content": build_forward_nodes(paths, self_id),
-                    }})
-                    # Files must survive until the single outer send has completed.
+                    phase = "发送"
+                    logger.info("Classic forward batch: group=%s batch=%s images=%s",
+                                group_id, sent_batches + 1, len(paths))
+                    await send_forward(build_forward_nodes(paths, self_id))
+                    sent += len(paths)
+                    sent_batches += 1
+                    phase = "整理"
+                    # Release this batch only after the awaited send has completed.
+                    for path in paths:
+                        path.unlink(missing_ok=True)
                     paths.clear()
                     batch_bytes = 0
 
                 for record in records:
                     if paths and (len(paths) >= MAX_BATCH_IMAGES or
                                   batch_bytes + record["size_bytes"] > MAX_BATCH_BYTES):
-                        finish_batch()
+                        await send_batch()
                     try:
                         path = await _cache_image_async(storage, group_id, record, Path(directory))
                     except Exception:
@@ -103,25 +104,20 @@ async def send_all_classics(
                         failed += 1
                         continue
                     paths.append(path)
-                    prepared += 1
                     batch_bytes += record["size_bytes"]
-                finish_batch()
-                if batches:
-                    phase = "发送"
-                    logger.info("Classic nested forward: group=%s images=%s batches=%s",
-                                group_id, prepared, [len(batch["data"]["content"]) for batch in batches])
-                    await send_forward(batches)
+                await send_batch()
         except Exception:
             # Do not automatically retry an ambiguous send: QQ may already have accepted it.
-            logger.exception("Classic nested forward stopped: group=%s phase=%s prepared=%s total=%s",
-                             group_id, phase, prepared, len(records))
+            logger.exception("Classic forward stopped: group=%s phase=%s confirmed_sent=%s batches=%s total=%s",
+                             group_id, phase, sent, sent_batches, len(records))
             if phase == "发送":
-                await send_notice(f"嵌套聊天记录发送失败或超时，未确认送达（已整理 {prepared} 张，共 {len(records)} 张）。"
-                                  "请先检查群里是否已收到，避免重复发送。")
+                await send_notice(f"第 {sent_batches + 1} 批聊天记录发送失败或超时，未确认送达；"
+                                  f"前 {sent_batches} 批已确认发送 {sent} 张，共 {len(records)} 张。"
+                                  "已停止后续批次，请先检查群里是否已收到，避免重复发送。")
             else:
-                await send_notice("典图整理失败，尚未发送聊天记录，请稍后再试。")
+                await send_notice(f"典图整理中断，已确认发送 {sent} 张，共 {len(records)} 张，请稍后再试。")
             return
         if failed:
-            await send_notice(f"本群典图已发送 {prepared} 张，另有 {failed} 张读取失败。")
+            await send_notice(f"本群典图已发送 {sent} 张，另有 {failed} 张读取失败。")
     finally:
         _active_groups.discard(group_id)

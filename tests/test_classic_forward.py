@@ -49,25 +49,20 @@ async def test_all_nodes_batches_and_cleanup(archive, monkeypatch, count_limit, 
         nonlocal calls
         calls += 1
         notices.assert_awaited_once()
-        for index, batch in enumerate(nodes, 1):
-            assert batch["type"] == "node"
-            assert batch["data"]["user_id"] == "456"
-            assert batch["data"]["source"] == f"本群典藏 · 第 {index} 批"
-            children = batch["data"]["content"]
-            sizes.append(len(children))
-            assert batch["data"]["summary"] == f"查看本批 {len(children)} 张典图"
-            for node in children:
-                assert node["type"] == "node"
-                assert node["data"]["user_id"] == "456"
-                assert node["data"]["nickname"] == "本群典藏"
-                assert node["data"]["content"][0]["type"] == "image"
-                path = node_path(node)
-                assert path.read_bytes() == f"image-{len(seen)}".encode()
-                seen.append(path)
+        sizes.append(len(nodes))
+        assert all(not path.exists() for path in seen)
+        for node in nodes:
+            assert node["type"] == "node"
+            assert node["data"]["user_id"] == "456"
+            assert node["data"]["nickname"] == "本群典藏"
+            assert [segment["type"] for segment in node["data"]["content"]] == ["image"]
+            path = node_path(node)
+            assert path.read_bytes() == f"image-{len(seen)}".encode()
+            seen.append(path)
 
     await forward.send_all_classics(123, "456", send, notices)
     assert sizes == expected
-    assert calls == 1
+    assert calls == len(expected)
     assert len(seen) == len(records)
     assert all(not path.exists() and not path.parent.exists() for path in seen)
     store.list_classic_images.assert_called_once_with(123, limit=None)
@@ -89,7 +84,7 @@ async def test_private_or_empty_never_reads_minio(archive, group_id):
 
 
 @pytest.mark.asyncio
-async def test_default_batch_limit_is_twenty_with_remainder(archive):
+async def test_default_batch_limit_is_forty_with_independent_remainder(archive):
     store, _, records = archive
     store.list_classic_images.return_value = [
         dict(records[i % len(records)], id=i) for i in range(62)
@@ -98,18 +93,17 @@ async def test_default_batch_limit_is_twenty_with_remainder(archive):
     paths = []
 
     async def send(nodes):
-        assert not batches, "all batches must be sent in one outer record"
-        for batch in nodes:
-            children = batch["data"]["content"]
-            batches.append(len(children))
-            for node in children:
-                path = node_path(node)
-                assert path.is_file()
-                paths.append(path)
+        batches.append(len(nodes))
+        assert all(not path.exists() for path in paths)
+        for node in nodes:
+            assert [segment["type"] for segment in node["data"]["content"]] == ["image"]
+            path = node_path(node)
+            assert path.is_file()
+            paths.append(path)
 
     await forward.send_all_classics(123, "456", send, AsyncMock())
-    assert forward.MAX_BATCH_IMAGES == 20
-    assert batches == [20, 20, 20, 2]
+    assert forward.MAX_BATCH_IMAGES == 40
+    assert batches == [40, 22]
     assert len({path.name for path in paths}) == 62
     assert all(not path.parent.exists() for path in paths)
 
@@ -128,26 +122,33 @@ async def test_corrupt_and_missing_images_are_skipped(archive):
     send, notice = AsyncMock(), AsyncMock()
     await forward.send_all_classics(123, "456", send, notice)
     send.assert_awaited_once()
-    assert len(send.call_args.args[0]) == 1
-    assert len(send.call_args.args[0][0]["data"]["content"]) == 4
+    assert len(send.call_args.args[0]) == 4
     assert notice.call_args.args[0] == "本群典图已发送 4 张，另有 3 张读取失败。"
 
 
 @pytest.mark.asyncio
-async def test_send_failure_stops_and_cleans_files(archive, monkeypatch):
+@pytest.mark.parametrize("failure_batch", [1, 2])
+async def test_send_failure_stops_and_cleans_files(archive, monkeypatch, failure_batch):
     monkeypatch.setattr(forward, "MAX_BATCH_IMAGES", 2)
     sent_paths = []
+    calls = 0
     async def send(nodes):
-        sent_paths.extend(node_path(node) for batch in nodes for node in batch["data"]["content"])
-        assert all(path.is_file() for path in sent_paths)
-        raise RuntimeError("API timeout")
+        nonlocal calls
+        calls += 1
+        current_paths = [node_path(node) for node in nodes]
+        assert all(path.is_file() for path in current_paths)
+        assert all(not path.exists() for path in sent_paths)
+        sent_paths.extend(current_paths)
+        if calls == failure_batch:
+            raise RuntimeError("API timeout")
     send_mock = AsyncMock(side_effect=send)
     notice = AsyncMock()
     await forward.send_all_classics(123, "456", send_mock, notice)
-    send_mock.assert_awaited_once()
-    assert "未确认送达（已整理 7 张，共 7 张）" in notice.call_args.args[0]
+    assert send_mock.await_count == failure_batch
+    assert f"第 {failure_batch} 批聊天记录发送失败或超时" in notice.call_args.args[0]
+    assert f"前 {failure_batch - 1} 批已确认发送 {(failure_batch - 1) * 2} 张，共 7 张" in notice.call_args.args[0]
     assert "避免重复发送" in notice.call_args.args[0]
-    assert archive[1].read_image.call_count == 7
+    assert archive[1].read_image.call_count == failure_batch * 2
     assert all(not path.parent.exists() for path in sent_paths)
     assert 123 not in forward._active_groups
 
@@ -158,7 +159,7 @@ async def test_storage_unavailable_releases_group(archive, monkeypatch):
     send, notice = AsyncMock(), AsyncMock()
     await forward.send_all_classics(123, "456", send, notice)
     send.assert_not_awaited()
-    assert "尚未发送聊天记录" in notice.call_args.args[0]
+    assert "已确认发送 0 张，共 7 张" in notice.call_args.args[0]
     assert 123 not in forward._active_groups
 
 
@@ -172,12 +173,12 @@ async def test_all_images_unreadable_does_not_send_empty_forward(archive):
 
 
 @pytest.mark.asyncio
-async def test_cancellation_during_outer_send_cleans_every_batch(archive, monkeypatch):
+async def test_cancellation_during_batch_send_cleans_files(archive, monkeypatch):
     monkeypatch.setattr(forward, "MAX_BATCH_IMAGES", 2)
     paths = []
     async def send(nodes):
-        paths.extend(node_path(node) for batch in nodes for node in batch["data"]["content"])
-        assert len(paths) == 7 and all(path.exists() for path in paths)
+        paths.extend(node_path(node) for node in nodes)
+        assert len(paths) == 2 and all(path.exists() for path in paths)
         raise asyncio.CancelledError()
     with pytest.raises(asyncio.CancelledError):
         await forward.send_all_classics(123, "456", send, AsyncMock())
