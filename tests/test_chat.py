@@ -96,7 +96,7 @@ async def test_gallery_command_policy_and_image_send(monkeypatch, tmp_path, reas
 @pytest.mark.parametrize("reason", ["ok", "group_not_enabled", "group_rate_limited", "user_rate_limited"])
 @pytest.mark.parametrize("explicit_send", [False, True])
 async def test_all_classics_policy_and_current_group_forward(monkeypatch, reason, explicit_send):
-    from unittest.mock import AsyncMock
+    from unittest.mock import AsyncMock, call
     event = SimpleNamespace(segments=(), group_id=123, is_at_bot=False)
     decision = PolicyDecision(reason == "ok", reason, handler="default", normalized_message="爆典all")
     monkeypatch.setattr(chat, "onebot_to_internal", lambda event, self_id: event)
@@ -104,7 +104,7 @@ async def test_all_classics_policy_and_current_group_forward(monkeypatch, reason
     monkeypatch.setattr(chat, "pending_lua_command", lambda event: None)
     monkeypatch.setattr(chat, "handle_custom_flow", lambda event: None)
     monkeypatch.setattr(chat, "get_policy_engine", lambda: SimpleNamespace(evaluate=lambda *a, **kw: decision))
-    nodes = [{"type": "node", "data": {"content": []}}]
+    nodes = [{"type": "node", "data": {"content": [{"type": "image", "data": {"file": "file:///tmp/classic.png"}}]}}]
     async def export(group_id, self_id, send, notice):
         assert group_id == 123 and self_id == "456"
         await notice("正在整理")
@@ -114,11 +114,15 @@ async def test_all_classics_policy_and_current_group_forward(monkeypatch, reason
     lua = AsyncMock(side_effect=AssertionError("export must finish before Lua"))
     monkeypatch.setattr(chat, "run_lua_message", lua)
     matcher = SimpleNamespace(send=AsyncMock(), finish=AsyncMock())
-    bot = SimpleNamespace(self_id=456, send_group_msg=AsyncMock(), call_api=AsyncMock())
+    bot = SimpleNamespace(self_id=456, send_group_msg=AsyncMock(), call_api=AsyncMock(return_value={"message_id": -99}))
     await chat._handle_onebot_message(matcher, bot, event, explicit_group_send=explicit_send)
     if reason == "ok":
         export_mock.assert_awaited_once()
-        bot.call_api.assert_awaited_once_with("send_group_forward_msg", group_id=123, messages=nodes, _timeout=600)
+        assert bot.call_api.await_args_list == [
+            call("send_private_msg", user_id=456, message=nodes[0]["data"]["content"], _timeout=600),
+            call("send_group_forward_msg", group_id=123,
+                 messages=[{"type": "node", "data": {"id": "-99"}}], _timeout=600),
+        ]
         response = (bot.send_group_msg.call_args.kwargs["message"] if explicit_send else matcher.send.call_args.args[0])
         assert response.type == "text"
     else:

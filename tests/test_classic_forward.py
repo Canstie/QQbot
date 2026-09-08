@@ -244,3 +244,63 @@ def test_store_all_is_group_scoped_unlimited_and_does_not_change_counts(tmp_path
     assert len(records) == 1001
     assert records[0]["object_key"] == "1000.png"
     assert all(record["group_id"] == 123 and record["blast_count"] == 0 for record in records)
+
+
+@pytest.mark.asyncio
+async def test_self_staging_then_native_forward_uses_only_real_ids(tmp_path):
+    from unittest.mock import call
+    nodes = forward.build_forward_nodes([tmp_path / "a.png", tmp_path / "b.png"], "456")
+    bot = SimpleNamespace(self_id="456", call_api=AsyncMock(side_effect=[
+        {"message_id": -12}, {"message_id": "34"}, {"message_id": 99},
+    ]))
+    await forward.send_classic_batch_via_self(bot, 123, nodes)
+    assert bot.call_api.await_args_list == [
+        call("send_private_msg", user_id=456, message=nodes[0]["data"]["content"], _timeout=600),
+        call("send_private_msg", user_id=456, message=nodes[1]["data"]["content"], _timeout=600),
+        call("send_group_forward_msg", group_id=123,
+             messages=[{"type": "node", "data": {"id": "-12"}},
+                       {"type": "node", "data": {"id": "34"}}], _timeout=600),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_result", [None, {}, {"message_id": True}, {"message_id": 0},
+                                        {"message_id": "bad"}, {"message_id": 1},
+                                        RuntimeError("send failed")])
+async def test_self_staging_failure_never_forwards_partial_batch(tmp_path, bad_result):
+    nodes = forward.build_forward_nodes([tmp_path / f"{i}.png" for i in range(3)], "456")
+    bot = SimpleNamespace(self_id=456, call_api=AsyncMock(side_effect=[{"message_id": 1}, bad_result]))
+    with pytest.raises(forward.ClassicSelfSendError, match="第 2 张"):
+        await forward.send_classic_batch_via_self(bot, 123, nodes)
+    assert [call.args[0] for call in bot.call_api.await_args_list] == ["send_private_msg", "send_private_msg"]
+
+
+@pytest.mark.asyncio
+async def test_private_send_failure_reports_stage_and_cleans_files(archive):
+    paths = []
+    async def send(nodes):
+        paths.extend(node_path(node) for node in nodes)
+        bot = SimpleNamespace(self_id=456, call_api=AsyncMock(side_effect=RuntimeError("offline")))
+        await forward.send_classic_batch_via_self(bot, 123, nodes)
+    notice = AsyncMock()
+    await forward.send_all_classics(123, "456", send, notice)
+    assert "发送给 Bot 本体失败" in notice.call_args.args[0]
+    assert "本批尚未转发到群" in notice.call_args.args[0]
+    assert "已确认转发 0 张，共 7 张" in notice.call_args.args[0]
+    assert all(not path.parent.exists() for path in paths)
+
+
+@pytest.mark.asyncio
+async def test_native_group_failure_is_not_retried_or_faked(tmp_path):
+    nodes = forward.build_forward_nodes([tmp_path / "a.png"], "456")
+    bot = SimpleNamespace(self_id=456, call_api=AsyncMock(side_effect=[{"message_id": 1}, RuntimeError("group failed")]))
+    with pytest.raises(RuntimeError, match="group failed"):
+        await forward.send_classic_batch_via_self(bot, 123, nodes)
+    assert bot.call_api.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_empty_staging_batch_sends_nothing():
+    bot = SimpleNamespace(self_id=456, call_api=AsyncMock())
+    await forward.send_classic_batch_via_self(bot, 123, [])
+    bot.call_api.assert_not_awaited()
