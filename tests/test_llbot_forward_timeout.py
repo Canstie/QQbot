@@ -109,3 +109,56 @@ class Sender {
 """
     result = subprocess.run([str(node), "-e", script], check=True, capture_output=True, text=True)
     assert json.loads(result.stdout) == [10000, 60000, 14000, 210000, 210000, 10000, 10000, 10000, 10000]
+
+
+NATIVE_FIXTURE = (patch.NATIVE_HEAD + "\n\t\t" + patch.NATIVE_RETURN + """
+            msgIds, srcPeer, destPeer
+        ], {
+            resultCb: (payload) => {
+                for (const msgRecord of payload) if (CONDITION) return true;
+                return false;
+            }
+        })).find((msgRecord) => {
+            if (CONDITION) return true;
+            return false;
+        });
+\t}""".replace("CONDITION", patch.NATIVE_CONDITION) + patch.NATIVE_TAIL + " return null; }")
+
+
+def test_native_forward_patch_is_scoped_and_idempotent():
+    source = "before\n" + NATIVE_FIXTURE + "\nafter"
+    result = patch.native_patched_source(source)
+    assert result.startswith("before\n") and result.endswith("\nafter")
+    assert result.count(patch.NATIVE_CONFIRMED) == 2
+    assert patch.NATIVE_END in result
+    assert patch.native_patched_source(result) == result
+
+
+@pytest.mark.parametrize("source", ["unknown", NATIVE_FIXTURE * 2,
+                                          NATIVE_FIXTURE.replace("return false", "return sendStatus")])
+def test_native_forward_patch_rejects_changed_layout(source):
+    with pytest.raises(ValueError):
+        patch.native_patched_source(source)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node required for JS execution")
+def test_native_forward_waits_for_final_status_and_rejects_failure():
+    script = "const selfInfo={uid:'bot'}; class Sender {\n" + patch.native_patched_source(NATIVE_FIXTURE) + "\n}\n" + """
+(async()=>{
+    const outcomes=[];
+    for(const status of [2,3]) {
+        const sender=new Sender();
+        const message={msgType:11,subMsgType:7,peerUid:'123',senderUid:'bot',sendStatus:status};
+        sender.ctx={pmhq:{invoke:async (name,args,options)=>{
+            if(options.resultCb([{...message,sendStatus:1}])) throw new Error('accepted pending status');
+            if(!options.resultCb([message])) throw new Error('ignored terminal status');
+            return [message];
+        }}};
+        try { const result=await sender.multiForwardMsg({}, {peerUid:'123'}, ['1']); outcomes.push(result.sendStatus); }
+        catch(error) { if(!error.message.includes('sendStatus=3')) throw error; outcomes.push('failed'); }
+    }
+    process.stdout.write(JSON.stringify(outcomes));
+})();
+"""
+    result = subprocess.run([shutil.which("node"), "-e", script], check=True, capture_output=True, text=True)
+    assert json.loads(result.stdout) == [2, "failed"]

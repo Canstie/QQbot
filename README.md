@@ -311,6 +311,15 @@ systemctl restart llbot.service
 升级 LLBot 可能覆盖补丁；新版本会拒绝套用，须重新检查源码和测试。
 此补丁仅延长等待，不会重试发送，也不保证 QQ 接受消息。
 
+原生合并转发还需启用返回状态修正，避免 LLBot 将 `sendStatus=1`（处理中）或 `3`（失败）当成成功返回：
+
+```bash
+.venv/bin/python tools/patch_llbot_forward_timeout.py --native-result --apply
+systemctl restart llbot.service
+```
+
+此模式等待原生转发进入成功或失败状态，只有 `sendStatus=2` 才返回成功；不自动补发。
+
 ### 完整测试套件
 
 ```powershell
