@@ -13,7 +13,7 @@ from qq_personal_bot.runtime import get_store
 
 logger = logging.getLogger(__name__)
 # Application limits for each nested record, not protocol limits or whole-archive limits.
-MAX_BATCH_IMAGES = 10
+MAX_BATCH_IMAGES = 20
 MAX_BATCH_BYTES = 50 * 1024 * 1024
 _active_groups: set[int] = set()
 _EXTENSIONS = {"image/jpeg": ".jpg", "image/png": ".png",
