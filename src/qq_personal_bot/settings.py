@@ -84,6 +84,11 @@ class AppSettings:
         "你是 QQ 群里的聊天机器人。直接回答，不要复述问题。"
         "不要声称看到了未提供的图片、语音、视频或文件。"
     )
+    steam_api_key: str = ""
+    sgdb_api_key: str = ""
+    itad_api_key: str = ""
+    steam_proxy_url: str = ""
+    steam_font_path: Path | None = None
     web_token: str | None = None
     nonebot_driver: str = "~fastapi"
     host: str = "127.0.0.1"
@@ -152,6 +157,15 @@ class AppSettings:
             dsapi_system_prompt=(
                 env.get("QQBOT_DSAPI_SYSTEM_PROMPT", cls.dsapi_system_prompt).strip()
                 or cls.dsapi_system_prompt
+            ),
+            steam_api_key=env.get("QQBOT_STEAM_API_KEY", "").strip(),
+            sgdb_api_key=env.get("QQBOT_SGDB_API_KEY", "").strip(),
+            itad_api_key=env.get("QQBOT_ITAD_API_KEY", "").strip(),
+            steam_proxy_url=env.get("QQBOT_STEAM_PROXY_URL", "").strip(),
+            steam_font_path=(
+                Path(env["QQBOT_STEAM_FONT_PATH"])
+                if env.get("QQBOT_STEAM_FONT_PATH", "").strip()
+                else None
             ),
             web_token=web_token,
             nonebot_driver=env.get("DRIVER", "~fastapi"),

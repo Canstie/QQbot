@@ -64,7 +64,7 @@ export function Field({ label, hint, children, className = "" }) {
   );
 }
 
-export function Switch({ checked, onChange, label, description }) {
+export function Switch({ checked, onChange, label, description, disabled = false }) {
   return (
     <label className="switch-row">
       <button
@@ -72,6 +72,7 @@ export function Switch({ checked, onChange, label, description }) {
         className={`switch ${checked ? "is-on" : ""}`}
         role="switch"
         aria-checked={checked}
+        disabled={disabled}
         onClick={() => onChange(!checked)}
       >
         <span />

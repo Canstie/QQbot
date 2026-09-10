@@ -56,7 +56,10 @@ class DownloadInputError(ValueError):
 
 
 async def _handle_download(matcher: Matcher, bot: Bot, event: MessageEvent) -> None:
-    if not get_store().is_admin(int(event.user_id)):
+    store = get_store()
+    if not getattr(store, "is_feature_enabled", lambda _feature: True)("downloads.ingest"):
+        return
+    if not store.is_admin(int(event.user_id)):
         return
 
     embedded_message, reply_id = _referenced_message(event)
@@ -107,7 +110,10 @@ async def handle_download_overview(matcher: Matcher, event: MessageEvent) -> Non
 
 
 async def _handle_download_overview(matcher: Matcher, event: MessageEvent) -> None:
-    if not get_store().is_admin(int(event.user_id)):
+    store = get_store()
+    if not getattr(store, "is_feature_enabled", lambda _feature: True)("downloads.overview"):
+        return
+    if not store.is_admin(int(event.user_id)):
         return
     try:
         storage = get_download_storage()

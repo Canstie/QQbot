@@ -19,10 +19,19 @@ def handle_custom_flow(event: MessageEvent) -> str | None:
     key = _flow_key(event)
     existing = _load_flow(key)
     if existing is not None:
+        feature_id = {
+            "menu": "flows.menu_add",
+            "restaurant": "flows.restaurant_add",
+        }.get(str(existing.get("type", "")))
+        if feature_id and not store.is_feature_enabled(feature_id):
+            store.delete_lua_state(_FLOW_NAMESPACE, key)
+            return None
         return _continue_flow(key, existing, event)
 
     command = _prefixed_command(event.raw_message)
     if command == "添加菜单":
+        if not store.is_feature_enabled("flows.menu_add"):
+            return None
         _save_flow(
             key,
             {
@@ -34,6 +43,8 @@ def handle_custom_flow(event: MessageEvent) -> str | None:
         return "请发送菜单名字，发送“取消”退出。"
 
     if command == "添加饭店":
+        if not store.is_feature_enabled("flows.restaurant_add"):
+            return None
         _save_flow(
             key,
             {
@@ -46,6 +57,8 @@ def handle_custom_flow(event: MessageEvent) -> str | None:
         return "请发送饭店名字，发送“取消”退出。"
 
     if command == "今日饭店":
+        if not store.is_feature_enabled("flows.restaurant_pick"):
+            return None
         picked = store.pick_restaurant(event.group_id, _event_seed(event))
         if picked is None:
             return "还没有可抽取的饭店，先发送 ~添加饭店 添加一个吧。"

@@ -3,8 +3,10 @@ import {
   Archive,
   Bot,
   BrainCircuit,
+  CircuitBoard,
   ChefHat,
   Code2,
+  Gamepad2,
   LayoutDashboard,
   Images,
   LogOut,
@@ -21,15 +23,19 @@ import { IconButton, Status } from "./components/Ui";
 import AiPage from "./pages/AiPage";
 import ClassicsPage from "./pages/ClassicsPage";
 import DownloadImagesPage from "./pages/DownloadImagesPage";
+import FeaturesPage from "./pages/FeaturesPage";
 import LuaPage from "./pages/LuaPage";
 import MenusPage from "./pages/MenusPage";
 import OverviewPage from "./pages/OverviewPage";
 import PolicyPage from "./pages/PolicyPage";
 import RepliesPage from "./pages/RepliesPage";
 import RestaurantsPage from "./pages/RestaurantsPage";
+import SteamPage from "./pages/SteamPage";
 
 const navigation = [
   { id: "overview", label: "运行总览", short: "总览", icon: LayoutDashboard },
+  { id: "features", label: "功能中心", short: "开关", icon: CircuitBoard },
+  { id: "steam", label: "Steam 监控", short: "Steam", icon: Gamepad2 },
   { id: "policy", label: "群与策略", short: "策略", icon: Settings2 },
   { id: "ai", label: "AI 角色", short: "AI", icon: BrainCircuit },
   { id: "replies", label: "回复规则", short: "回复", icon: MessageSquareText },
@@ -42,6 +48,8 @@ const navigation = [
 
 const pageMap = {
   overview: OverviewPage,
+  features: FeaturesPage,
+  steam: SteamPage,
   policy: PolicyPage,
   ai: AiPage,
   replies: RepliesPage,
@@ -93,10 +101,12 @@ export default function App() {
       get("/restaurants?limit=200"),
       get("/classics/groups?limit=200"),
       get("/download-images/overview"),
+      get("/features"),
+      get("/steam/overview"),
     ])
-      .then(([policy, ai, lua, menus, restaurants, classics, downloads]) => {
+      .then(([policy, ai, lua, menus, restaurants, classics, downloads, features, steam]) => {
         if (!active) return;
-        setSummary({ policy, ai, lua, menus, restaurants, classics, downloads });
+        setSummary({ policy, ai, lua, menus, restaurants, classics, downloads, features, steam });
       })
       .catch((reason) => active && setError(reason.message))
       .finally(() => active && setSyncing(false));

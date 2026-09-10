@@ -43,6 +43,17 @@ local PUBLIC_SECTIONS = {
     },
   },
   {
+    title = "Steam",
+    commands = {
+      "/steam list 查看本群监控玩家",
+      "/steam openbox <SteamID/链接/好友码> 查看玩家",
+      "/steam game <游戏名/AppID> 查看游戏",
+      "/steam price <游戏名/AppID> 查询价格",
+      "/steamwho @群成员 / 在干嘛 @群成员 查询已绑定玩家",
+      "未绑定 QQ 的玩家也会正常监控和通知",
+    },
+  },
+  {
     title = "菜单与饭店",
     commands = {
       "~添加菜单 按提示发送菜名和图片",
@@ -74,6 +85,11 @@ local ADMIN_COMMANDS = {
   "/bot admin add <user_id> 添加管理员",
   "/bot prefix list 查看触发前缀",
   "/bot prefix add|remove <prefix> 增删触发前缀",
+  "/steam on|off 开关本群 Steam 监控",
+  "/steam addid <SteamID/链接/好友码> [@用户] [备注]",
+  "/steam delid <SteamID> 删除本群监控玩家",
+  "/steam bind <SteamID> @用户 / unbind @用户",
+  "/steam achievement_on|achievement_off 开关本群成就通知",
   "也可以使用 /qqbot 代替 /bot",
 }
 

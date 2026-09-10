@@ -1,6 +1,6 @@
 {
   "empty": "Bot 已启用，请在触发词后输入内容。",
-  "fallback": "{message}",
+  "fallback": "",
   "rules": [],
   "direct_rules": [
     {

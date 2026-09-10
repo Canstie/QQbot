@@ -17,6 +17,7 @@ from qq_personal_bot.dsapi import (
     generate_mention_reply,
     generate_random_group_reply,
 )
+from qq_personal_bot.features import feature_id_for_platform
 from qq_personal_bot.lua_runner import pending_lua_command, run_lua_message
 from qq_personal_bot.miniapp import (
     CachedMiniAppImages,
@@ -147,8 +148,14 @@ async def _handle_onebot_message(
     internal_event = onebot_to_internal(event, self_id=bot.self_id)
     _record_group_activity(internal_event, self_id=bot.self_id)
     miniapp_image_source = extract_miniapp_image_source(internal_event.segments)
+    miniapp_feature = (
+        feature_id_for_platform(miniapp_image_source.platform)
+        if miniapp_image_source is not None
+        else None
+    )
     if (
         miniapp_image_source is not None
+        and (miniapp_feature is None or get_store().is_feature_enabled(miniapp_feature))
         and _automatic_reply_allowed(internal_event)
         and _miniapp_image_source_allowed(miniapp_image_source, internal_event)
     ):
@@ -216,6 +223,11 @@ async def _handle_onebot_message(
                 explicit_group_send=explicit_group_send,
             )
         if decision.reason == "no_trigger":
+            if not (
+                get_store().is_feature_enabled("ai.master")
+                and get_store().is_feature_enabled("ai.random")
+            ):
+                return
             try:
                 response = await generate_random_group_reply(
                     internal_event,
@@ -236,6 +248,8 @@ async def _handle_onebot_message(
         return
 
     if decision.handler == "default" and decision.normalized_message.strip() == "爆典all":
+        if not get_store().is_feature_enabled("classics.forward_all"):
+            return
         async def send_classic_forward(nodes: list[dict]) -> None:
             await bot.call_api("send_group_forward_msg", group_id=int(internal_event.group_id),
                                messages=nodes, _timeout=600)
@@ -249,6 +263,8 @@ async def _handle_onebot_message(
         return
 
     if decision.handler == "default" and decision.normalized_message.strip() == "涩图":
+        if not get_store().is_feature_enabled("gallery.random"):
+            return
         async def send_gallery_image(path: Path) -> None:
             await _send_response(
                 matcher, bot, event, MessageSegment.image(path.resolve().as_uri()),
@@ -266,6 +282,8 @@ async def _handle_onebot_message(
         if decision.handler == "default" else None
     )
     if teacher_args is not None:
+        if not get_store().is_feature_enabled("teacher.lookup"):
+            return
         for text in await query_teachers(*teacher_args):
             await _send_response(
                 matcher, bot, event, MessageSegment.text(text),
@@ -286,6 +304,11 @@ async def _handle_onebot_message(
         return
 
     if decision.handler == "mention":
+        if not (
+            get_store().is_feature_enabled("ai.master")
+            and get_store().is_feature_enabled("ai.mention")
+        ):
+            return
         try:
             response = await generate_mention_reply(
                 bot,
@@ -322,6 +345,8 @@ async def _handle_onebot_message(
             f"falling back to replies.json"
         )
 
+    if not get_store().is_feature_enabled("replies.fixed"):
+        return
     await _finish_with_response(
         matcher,
         bot,
@@ -348,6 +373,8 @@ def _record_group_activity(event: Any, *, self_id: int | str) -> None:
         return
 
     store = get_store()
+    if not store.is_feature_enabled("activity.record"):
+        return
     mode = store.get_mode()
     if mode == "allowlist" and not store.is_group_enabled(event.group_id):
         return

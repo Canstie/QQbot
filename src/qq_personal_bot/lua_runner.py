@@ -386,7 +386,8 @@ async def run_lua_message(
     decision: PolicyDecision,
 ) -> LuaMessageResult:
     settings = get_settings()
-    if not settings.lua_enabled:
+    store = get_store()
+    if not store.is_feature_enabled("lua.master", settings.lua_enabled):
         return LuaMessageResult()
 
     if decision.handler == "direct":
@@ -398,6 +399,8 @@ async def run_lua_message(
         return LuaMessageResult()
 
     command, args = command_parts
+    if not store.is_feature_enabled(f"lua.command.{command}"):
+        return LuaMessageResult()
     try:
         script_path = lua_command_path(command)
     except ValueError as exc:

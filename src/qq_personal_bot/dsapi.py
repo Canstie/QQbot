@@ -65,7 +65,7 @@ async def generate_mention_reply(
     settings: AppSettings,
     store: PolicyStore,
 ) -> str | None:
-    if not settings.dsapi_enabled or not settings.dsapi_api_key:
+    if not store.is_feature_enabled("ai.master", settings.dsapi_enabled) or not settings.dsapi_api_key:
         return None
 
     config = store.get_dsapi_config()
@@ -98,7 +98,7 @@ async def generate_random_group_reply(
     settings: AppSettings,
     store: PolicyStore,
 ) -> str | Path | None:
-    if not settings.dsapi_enabled or not settings.dsapi_api_key:
+    if not store.is_feature_enabled("ai.master", settings.dsapi_enabled) or not settings.dsapi_api_key:
         return None
 
     config = store.get_dsapi_config()
