@@ -1387,14 +1387,16 @@ class PolicyStore:
         actor_id: int = 0,
     ) -> dict[str, Any]:
         normalized = self._normalize_steam_id(steam_id)
+        try:
+            self.get_steam_subscription(int(group_id), normalized)
+        except KeyError:
+            self.add_steam_subscription(
+                int(group_id),
+                normalized,
+                actor_id=actor_id,
+            )
         now = time.time()
         with self._connect() as conn:
-            exists = conn.execute(
-                "SELECT 1 FROM steam_subscriptions WHERE group_id = ? AND steam_id = ?",
-                (int(group_id), normalized),
-            ).fetchone()
-            if exists is None:
-                raise ValueError("Steam player must be subscribed before binding")
             conn.execute(
                 """
                 INSERT INTO steam_bindings(group_id, qq_user_id, steam_id, created_at, updated_at)

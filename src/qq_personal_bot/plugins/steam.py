@@ -16,6 +16,7 @@ from nonebot.params import CommandArg
 
 from qq_personal_bot.runtime import get_steam_service, get_store
 from qq_personal_bot.steam.client import SteamClientError
+from qq_personal_bot.steam.permissions import requires_group_manager
 
 steam = on_command("steam", priority=6, block=True)
 steamwho = on_command("steamwho", aliases={"在干嘛"}, priority=6, block=True)
@@ -55,19 +56,7 @@ async def handle_steam(
     group_id = int(event.group_id)
     actor_id = int(event.user_id)
 
-    mutation_commands = {
-        "on",
-        "off",
-        "addid",
-        "delid",
-        "bind",
-        "unbind",
-        "push_group",
-        "delpush_group",
-        "achievement_on",
-        "achievement_off",
-    }
-    if command in mutation_commands and not _can_manage_group(event):
+    if requires_group_manager(command) and not _can_manage_group(event):
         return
 
     try:
@@ -336,7 +325,7 @@ def _help_text() -> str:
         "Steam 指令\n"
         "/steam list｜openbox <玩家>｜game <游戏>｜price <游戏>\n"
         "/steam addid <玩家> [@用户] [备注]｜delid <玩家>\n"
-        "/steam bind <玩家> @用户｜unbind @用户\n"
+        "/steam bind <玩家> @用户（自动加入监控）｜unbind @用户\n"
         "/steam on｜off｜achievement_on｜achievement_off\n"
         "/steamwho @用户"
     )
