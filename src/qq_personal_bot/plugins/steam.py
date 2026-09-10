@@ -10,6 +10,7 @@ from nonebot.adapters.onebot.v11 import (
     Message,
     MessageEvent,
 )
+from nonebot.exception import FinishedException
 from nonebot.matcher import Matcher
 from nonebot.params import CommandArg
 
@@ -171,6 +172,8 @@ async def handle_steam(
                 return
             await matcher.finish(await _price_detail(" ".join(rest)))
         await matcher.finish(_help_text())
+    except FinishedException:
+        raise
     except (SteamClientError, ValueError, KeyError) as exc:
         await matcher.finish(str(exc))
     except Exception as exc:  # noqa: BLE001 - command boundary must not escape
