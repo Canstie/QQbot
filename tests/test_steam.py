@@ -10,6 +10,7 @@ from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.runtime import reset_runtime
 from qq_personal_bot.settings import AppSettings
 from qq_personal_bot.steam.client import SteamClient, SteamClientError
+from qq_personal_bot.steam.permissions import requires_group_manager
 from qq_personal_bot.steam.service import SteamMonitorService
 from qq_personal_bot.steam.session import apply_player_snapshot, close_due_sessions
 from qq_personal_bot.web import create_app
@@ -74,6 +75,17 @@ def test_binding_automatically_adds_missing_subscription(tmp_path):
 
     assert binding["steam_id"] == STEAM_ID
     assert store.get_steam_subscription(123, STEAM_ID)["qq_user_id"] == 456
+
+
+def test_only_add_bind_and_unbind_are_open_to_group_members():
+    assert not requires_group_manager("addid")
+    assert not requires_group_manager("bind")
+    assert not requires_group_manager("unbind")
+    assert requires_group_manager("delid")
+    assert requires_group_manager("on")
+    assert requires_group_manager("off")
+    assert requires_group_manager("achievement_on")
+    assert requires_group_manager("achievement_off")
 
 
 def test_session_state_machine_debounces_exit_and_handles_switch(tmp_path):
