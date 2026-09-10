@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from nonebot import on, on_command
@@ -12,13 +13,15 @@ from qq_personal_bot.ai_models import (
     resolve_dsapi_model,
 )
 from qq_personal_bot.runtime import get_store
+from qq_personal_bot.system_metrics import collect_system_metrics, format_system_metrics
 
 bot_control = on_command("bot", aliases={"qqbot"}, priority=5, block=True)
+system_check = on_command("check", priority=5, block=True)
 self_sent_control = on("message_sent", priority=4, block=True)
 
 
 def _actor_id(event: Any) -> int:
-    return int(getattr(event, "user_id"))
+    return int(event.user_id)
 
 
 def _current_group_id(event: Any) -> int | None:
@@ -87,6 +90,13 @@ async def _require_admin(matcher: Matcher, event: Any) -> int:
     if not get_store().is_admin(actor_id):
         await matcher.finish("Permission denied. Add this QQ number to QQBOT_ADMINS first.")
     return actor_id
+
+
+@system_check.handle()
+async def handle_system_check(matcher: Matcher, event: MessageEvent) -> None:
+    await _require_admin(matcher, event)
+    metrics = await asyncio.to_thread(collect_system_metrics)
+    await matcher.finish(format_system_metrics(metrics))
 
 
 async def _send_control_response(
@@ -409,7 +419,11 @@ async def _handle_bot_command(
 
 
 @bot_control.handle()
-async def handle_bot_command(matcher: Matcher, event: MessageEvent, args: Message = CommandArg()):
+async def handle_bot_command(
+    matcher: Matcher,
+    event: MessageEvent,
+    args: Message = CommandArg(),  # noqa: B008 - NoneBot dependency marker
+) -> None:
     await _handle_bot_command(matcher, event, str(args).strip().split())
 
 
@@ -426,5 +440,4 @@ async def handle_self_sent_bot_command(matcher: Matcher, bot: Bot, event: Event)
                 bot=bot,
                 explicit_group_send=True,
             )
-    return
 

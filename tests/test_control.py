@@ -80,6 +80,33 @@ class FakeStore:
 
 
 @pytest.mark.asyncio
+async def test_check_returns_metrics_to_admin(monkeypatch):
+    store = FakeStore()
+    matcher = FakeMatcher()
+    marker = object()
+    monkeypatch.setattr(control, "get_store", lambda: store)
+    monkeypatch.setattr(control, "collect_system_metrics", lambda: marker)
+    monkeypatch.setattr(control, "format_system_metrics", lambda metrics: "server report")
+
+    with pytest.raises(CommandFinished):
+        await control.handle_system_check(matcher, SimpleNamespace(user_id=10000))
+
+    assert matcher.messages == ["server report"]
+
+
+@pytest.mark.asyncio
+async def test_check_rejects_non_admin(monkeypatch):
+    matcher = FakeMatcher()
+    store = SimpleNamespace(is_admin=lambda user_id: False)
+    monkeypatch.setattr(control, "get_store", lambda: store)
+
+    with pytest.raises(CommandFinished):
+        await control.handle_system_check(matcher, SimpleNamespace(user_id=20000))
+
+    assert matcher.messages == ["Permission denied. Add this QQ number to QQBOT_ADMINS first."]
+
+
+@pytest.mark.asyncio
 async def test_admin_remove_command_is_web_only(monkeypatch):
     store = FakeStore()
     matcher = FakeMatcher()
