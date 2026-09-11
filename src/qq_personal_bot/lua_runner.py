@@ -24,6 +24,7 @@ from qq_personal_bot.classic_storage import (
     read_classic_image_source,
 )
 from qq_personal_bot.core.models import MessageEvent, PolicyDecision
+from qq_personal_bot.help_card import render_help_card
 from qq_personal_bot.lunar import solar_to_lunar
 from qq_personal_bot.menu_recipes import (
     cache_image,
@@ -362,6 +363,14 @@ class LuaApi:
             return None
 
         return _mirror_image_source(image_source, str(direction), self._timeout_seconds)
+
+    def help_card(self, is_admin: bool = False) -> str:
+        image_path = render_help_card(
+            get_settings(),
+            get_store(),
+            is_admin=bool(is_admin),
+        )
+        return f"[CQ:image,file={image_path.as_uri()}]"
 
     def _call_api(self, action: str, **params: Any) -> Any:
         return _to_lua(self._lua, self._call_api_raw(action, **params))

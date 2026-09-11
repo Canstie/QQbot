@@ -13,12 +13,13 @@ from PIL import Image
 
 from qq_personal_bot import lua_runner
 from qq_personal_bot.core.models import MessageEvent, PolicyDecision
+from qq_personal_bot.help_card import build_help_sections, render_help_card
 from qq_personal_bot.lua_runner import (
     default_lua_command_script,
     pending_lua_command,
     run_lua_message,
 )
-from qq_personal_bot.runtime import get_store, reset_runtime
+from qq_personal_bot.runtime import get_settings, get_store, reset_runtime
 
 
 class FakeBot:
@@ -1556,21 +1557,28 @@ async def test_builtin_help_lists_public_features_only_for_regular_user(tmp_path
         PolicyDecision(True, "ok", handler="default", normalized_message="help"),
     )
 
-    assert result.quote is True
-    assert result.reply is not None
+    assert result.quote is False
+    assert result.stop is True
+    assert result.reply is not None and result.reply.startswith("[CQ:image,file=file:///")
+    cards = list((tmp_path / "help_cache").glob("help-public-*.png"))
+    assert len(cards) == 1
+    with Image.open(cards[0]) as image:
+        assert image.format == "PNG"
+        assert image.width == 1200
+        assert image.height > 700
+
+    sections = build_help_sections(get_settings(), get_store(), is_admin=False)
+    help_text = "\n".join(item for section in sections for item in section.items)
     for script_path in (PROJECT_ROOT / "scripts" / "lua").glob("*.lua"):
-        assert f"~{script_path.stem}" in result.reply
-    assert "~help 查看这份帮助" in result.reply
-    assert "~今日菜单 随机推荐今日吃什么" in result.reply
-    assert "~抽群老婆 抽取今日群老婆" in result.reply
-    assert "~群总结 查看昨天的群消息总结" in result.reply
-    assert "~今日饭店 随机抽一家本群饭店" in result.reply
-    assert "吃什么 / csm / 今天吃什么 等可直接触发今日菜单" in result.reply
-    assert "进行中的添加流程可发送“取消”退出" in result.reply
-    assert "管理员命令" not in result.reply
-    assert "/bot" not in result.reply
-    assert "/download" not in result.reply
-    assert "群排行" not in result.reply
+        assert f"~{script_path.stem}" in help_text
+    assert "~help  查看动态功能菜单" in help_text
+    assert "~今日菜单  随机推荐今日吃什么" in help_text
+    assert "~抽群老婆  抽取今日双向绑定对象" in help_text
+    assert "~群总结  查看昨天的群消息总结" in help_text
+    assert "~今日饭店  随机抽一家本群饭店" in help_text
+    assert "/bot" not in help_text
+    assert "/download" not in help_text
+    assert "/steam" not in help_text
 
 
 @pytest.mark.asyncio
@@ -1584,18 +1592,46 @@ async def test_builtin_help_appends_admin_features_for_admin(tmp_path, monkeypat
         PolicyDecision(True, "ok", handler="default", normalized_message="help"),
     )
 
-    assert result.quote is True
-    assert result.reply is not None
-    assert "~help 查看这份帮助" in result.reply
-    assert "管理员命令（仅管理员可用）" in result.reply
-    assert result.reply.index("~help 查看这份帮助") < result.reply.index("管理员命令")
-    assert "/download 引用聊天记录并下载其中的图片" in result.reply
-    assert "/bot status 查看当前策略" in result.reply
-    assert "/bot aion [group_id] 开启指定群的 AI（省略则当前群）" in result.reply
-    assert "/bot aioff 关闭当前群 AI；aioff all 关闭全部群 AI" in result.reply
-    assert "/bot ai rs 清空全部 AI 短期上下文" in result.reply
-    assert "/bot aim list 查看模型；flash|pro|vision 切换模型" in result.reply
-    assert "/bot aik list 查看知识库；<序号> 切换知识库" in result.reply
-    assert "/bot admin add <user_id> 添加管理员" in result.reply
-    assert "/bot prefix add|remove <prefix> 增删触发前缀" in result.reply
-    assert "/bot admin add|remove" not in result.reply
+    assert result.quote is False
+    assert result.stop is True
+    assert result.reply is not None and result.reply.startswith("[CQ:image,file=file:///")
+    cards = list((tmp_path / "help_cache").glob("help-admin-*.png"))
+    assert len(cards) == 1
+
+    sections = build_help_sections(get_settings(), get_store(), is_admin=True)
+    assert sections[-1].title == "管理员命令"
+    help_text = "\n".join(item for section in sections for item in section.items)
+    assert "~help  查看动态功能菜单" in help_text
+    assert "/check  查看服务器 CPU、内存和磁盘" in help_text
+    assert "/download  下载引用聊天记录中的图片" in help_text
+    assert "/bot status  查看当前群策略" in help_text
+    assert "/bot aion|aioff [群号]  开关群 AI" in help_text
+    assert "/bot aim list|<模型>  查看或切换模型" in help_text
+    assert "/bot aik list|<序号>  查看或切换知识库" in help_text
+    assert "/bot prefix list|add|remove  管理前缀" in help_text
+
+
+def test_help_card_hides_disabled_features_immediately(tmp_path, monkeypatch):
+    monkeypatch.setenv("QQBOT_STEAM_API_KEY", "test-steam-key")
+    configure_builtin_lua_dir(tmp_path, monkeypatch)
+    store = get_store()
+    original_card = render_help_card(get_settings(), store, is_admin=True)
+    store.set_feature_enabled("lua.command.今日菜单", False)
+    store.set_feature_enabled("flows.restaurant_pick", False)
+    store.set_feature_enabled("cards.bilibili", False)
+    store.set_feature_enabled("downloads.ingest", False)
+    store.set_feature_enabled("steam.master", True)
+    store.set_feature_enabled("steam.price", False)
+
+    sections = build_help_sections(get_settings(), store, is_admin=True)
+    help_text = "\n".join(item for section in sections for item in section.items)
+
+    assert "~今日菜单" not in help_text
+    assert "~今日饭店" not in help_text
+    assert "B站分享" not in help_text
+    assert "/download  " not in help_text
+    assert "/steam list" in help_text
+    assert "/steam price" not in help_text
+    updated_card = render_help_card(get_settings(), store, is_admin=True)
+    assert updated_card != original_card
+    assert updated_card.is_file()
