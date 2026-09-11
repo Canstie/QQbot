@@ -37,8 +37,9 @@ local function wife_reply(member)
   return quote_reply("你今天亲爱的群老婆是\n" .. avatar_message(member.user_id) .. "\n" .. display_name(member))
 end
 
-local function state_key(event)
-  return tostring(event.date) .. ":" .. tostring(event.group_id) .. ":" .. tostring(event.user_id)
+local function state_key(event, user_id)
+  local target_id = user_id or event.user_id
+  return tostring(event.date) .. ":" .. tostring(event.group_id) .. ":" .. tostring(target_id)
 end
 
 local function claim_key(event)
@@ -69,14 +70,35 @@ local function claim_owner(claims, user_id)
   return claims[tostring(user_id)]
 end
 
-local function release_claim(claims, wife_id, owner_id)
-  if wife_id ~= nil and wife_id ~= "" and tostring(claims[tostring(wife_id)] or "") == tostring(owner_id) then
-    claims[tostring(wife_id)] = nil
+local function dissolve_pair(event, api, claims, user_id, partner_id)
+  local left_id = tostring(user_id)
+  local right_id = partner_id and tostring(partner_id) or nil
+  api.delete_state(state_key(event, left_id), NAMESPACE)
+  if right_id == nil or right_id == "" then
+    return
+  end
+
+  local reverse_id = api.get_state(state_key(event, right_id), NAMESPACE)
+  if reverse_id ~= nil and tostring(reverse_id) == left_id then
+    api.delete_state(state_key(event, right_id), NAMESPACE)
+  end
+  if tostring(claims[right_id] or "") == left_id then
+    claims[right_id] = nil
+  end
+  if tostring(claims[left_id] or "") == right_id then
+    claims[left_id] = nil
   end
 end
 
-local function assign_claim(claims, wife_id, owner_id)
-  claims[tostring(wife_id)] = tostring(owner_id)
+local function assign_pair(event, api, claims, left_id, right_id, bot_id)
+  local left = tostring(left_id)
+  local right = tostring(right_id)
+  api.set_state(state_key(event, left), right, NAMESPACE)
+  if right ~= tostring(bot_id or "") then
+    api.set_state(state_key(event, right), left, NAMESPACE)
+  end
+  claims[right] = left
+  claims[left] = right
 end
 
 local function candidate_members(event, api, claims, exclude_user_id)
@@ -94,10 +116,12 @@ local function candidate_members(event, api, claims, exclude_user_id)
   for i = 1, #members do
     local member_id = tostring(members[i].user_id)
     local owner_id = claim_owner(claims, member_id)
+    local partner_id = api.get_state(state_key(event, member_id), NAMESPACE)
     if member_id ~= self_id and
         member_id ~= caller_id and
         member_id ~= exclude_id and
-        (owner_id == nil or tostring(owner_id) == caller_id) then
+        (owner_id == nil or tostring(owner_id) == caller_id) and
+        (partner_id == nil or tostring(partner_id) == caller_id) then
       table.insert(candidates, members[i])
     end
   end
@@ -110,26 +134,26 @@ function on_command(event, api)
     return quote_reply("这个功能只能在群聊里使用。")
   end
 
-  local key = state_key(event)
+  local key = state_key(event, event.user_id)
   local old_user_id = api.get_state(key, NAMESPACE)
   local claims = load_claims(event, api)
   local caller_id = tostring(event.user_id)
-  release_claim(claims, old_user_id, caller_id)
+  if old_user_id == nil or old_user_id == "" then
+    old_user_id = claim_owner(claims, caller_id)
+  end
+  dissolve_pair(event, api, claims, caller_id, old_user_id)
 
   local candidates = candidate_members(event, api, claims, old_user_id)
 
   if #candidates == 0 then
-    if old_user_id ~= nil and old_user_id ~= "" then
-      assign_claim(claims, old_user_id, caller_id)
-      save_claims(event, api, claims)
-    end
+    save_claims(event, api, claims)
     return quote_reply("没有可重新抽取的群老婆。")
   end
 
   math.randomseed(seed_from_event(event))
   local picked = candidates[math.random(#candidates)]
-  api.set_state(key, tostring(picked.user_id), NAMESPACE)
-  assign_claim(claims, picked.user_id, caller_id)
+  local login = api.get_login_info()
+  assign_pair(event, api, claims, caller_id, picked.user_id, login and login.user_id or nil)
   save_claims(event, api, claims)
   return wife_reply(picked)
 end

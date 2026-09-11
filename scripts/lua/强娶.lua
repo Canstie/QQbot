@@ -30,8 +30,9 @@ local function wife_reply(member, extra_line)
   return quote_reply(message)
 end
 
-local function state_key(event)
-  return tostring(event.date) .. ":" .. tostring(event.group_id) .. ":" .. tostring(event.user_id)
+local function state_key(event, user_id)
+  local target_id = user_id or event.user_id
+  return tostring(event.date) .. ":" .. tostring(event.group_id) .. ":" .. tostring(target_id)
 end
 
 local function claim_key(event)
@@ -58,10 +59,35 @@ local function save_claims(event, api, claims)
   api.set_state(claim_key(event), api.json_encode(claims), NAMESPACE)
 end
 
-local function release_claim(claims, wife_id, owner_id)
-  if wife_id ~= nil and wife_id ~= "" and tostring(claims[tostring(wife_id)] or "") == tostring(owner_id) then
-    claims[tostring(wife_id)] = nil
+local function dissolve_pair(event, api, claims, user_id, partner_id)
+  local left_id = tostring(user_id)
+  local right_id = partner_id and tostring(partner_id) or nil
+  api.delete_state(state_key(event, left_id), NAMESPACE)
+  if right_id == nil or right_id == "" then
+    return
   end
+
+  local reverse_id = api.get_state(state_key(event, right_id), NAMESPACE)
+  if reverse_id ~= nil and tostring(reverse_id) == left_id then
+    api.delete_state(state_key(event, right_id), NAMESPACE)
+  end
+  if tostring(claims[right_id] or "") == left_id then
+    claims[right_id] = nil
+  end
+  if tostring(claims[left_id] or "") == right_id then
+    claims[left_id] = nil
+  end
+end
+
+local function assign_pair(event, api, claims, left_id, right_id, bot_id)
+  local left = tostring(left_id)
+  local right = tostring(right_id)
+  api.set_state(state_key(event, left), right, NAMESPACE)
+  if right ~= tostring(bot_id or "") then
+    api.set_state(state_key(event, right), left, NAMESPACE)
+  end
+  claims[right] = left
+  claims[left] = right
 end
 
 local function find_member(members, user_id)
@@ -171,12 +197,19 @@ function on_command(event, api)
     return quote_reply("ta已经是别人的群老婆")
   end
 
-  local key = state_key(event)
-  local old_user_id = api.get_state(key, NAMESPACE)
-  release_claim(claims, old_user_id, caller_id)
+  local target_partner = api.get_state(state_key(event, target_id), NAMESPACE)
+  if target_partner ~= nil and tostring(target_partner) ~= caller_id then
+    return quote_reply("ta已经是别人的群老婆")
+  end
 
-  api.set_state(key, tostring(target_id), NAMESPACE)
-  claims[tostring(target_id)] = caller_id
+  local key = state_key(event, event.user_id)
+  local old_user_id = api.get_state(key, NAMESPACE)
+  if old_user_id == nil or old_user_id == "" then
+    old_user_id = claims[caller_id]
+  end
+  dissolve_pair(event, api, claims, caller_id, old_user_id)
+
+  assign_pair(event, api, claims, caller_id, target_id, login and login.user_id or nil)
   save_claims(event, api, claims)
 
   if tostring(target_id) == tostring(login.user_id) then

@@ -838,6 +838,9 @@ end
 def default_lua_command_script(command: str) -> str:
     command = validate_lua_command(command)
     if command == "抽群老婆":
+        built_in = Path(__file__).resolve().parents[2] / "scripts" / "lua" / "抽群老婆.lua"
+        if built_in.is_file():
+            return built_in.read_text(encoding="utf-8")
         return """-- Command: 抽群老婆
 -- Trigger: ~抽群老婆
 

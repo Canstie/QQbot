@@ -13,7 +13,11 @@ from PIL import Image
 
 from qq_personal_bot import lua_runner
 from qq_personal_bot.core.models import MessageEvent, PolicyDecision
-from qq_personal_bot.lua_runner import pending_lua_command, run_lua_message
+from qq_personal_bot.lua_runner import (
+    default_lua_command_script,
+    pending_lua_command,
+    run_lua_message,
+)
 from qq_personal_bot.runtime import get_store, reset_runtime
 
 
@@ -73,6 +77,18 @@ class BotOnlyCandidateFakeBot(RichFakeBot):
         if action == "get_login_info":
             return {"user_id": 99999, "nickname": "bot"}
         raise AssertionError(f"Unexpected action: {action}")
+
+
+class TwoPersonFakeBot(RichFakeBot):
+    async def call_api(self, action: str, **params):
+        if action == "get_group_member_list":
+            assert params["group_id"] == 123
+            return [
+                {"user_id": 1, "nickname": "Alpha", "card": ""},
+                {"user_id": 2, "nickname": "Beta", "card": "BetaCard"},
+                {"user_id": 99999, "nickname": "Bot", "card": ""},
+            ]
+        return await super().call_api(action, **params)
 
 
 class ReplyImageFakeBot(RichFakeBot):
@@ -186,6 +202,13 @@ def configure_builtin_lua_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("QQBOT_LUA_ENABLED", "true")
     reset_runtime()
     return lua_dir
+
+
+def test_default_pick_wife_script_uses_mutual_pairing_logic():
+    script = default_lua_command_script("抽群老婆")
+
+    assert "local function assign_pair" in script
+    assert "claims[left] = right" in script
 
 
 def write_test_image(path: Path) -> dict[tuple[int, int], tuple[int, int, int, int]]:
@@ -1286,6 +1309,9 @@ async def test_builtin_force_marry_bot_succeeds_with_warning(tmp_path, monkeypat
     assert result.reply.startswith("强娶成功!\n你今天亲爱的群老婆是\n")
     assert "和我是没有好结果的哟" in result.reply
     assert "不能强娶 bot 自己" not in result.reply
+    store = get_store()
+    assert store.get_lua_state("群老婆", "1970-01-01:123:456") == "99999"
+    assert store.get_lua_state("群老婆", "1970-01-01:123:99999") is None
 
 
 @pytest.mark.asyncio
@@ -1345,6 +1371,81 @@ async def test_builtin_pick_wife_excludes_bot(tmp_path, monkeypatch):
 
     assert result.quote is True
     assert result.reply == "没有可抽取的群老婆。"
+
+
+@pytest.mark.asyncio
+async def test_builtin_pick_wife_creates_mutual_pair(tmp_path, monkeypatch):
+    configure_builtin_lua_dir(tmp_path, monkeypatch)
+    first = await run_lua_message(
+        TwoPersonFakeBot(),
+        make_event(user_id=1, raw_message="~抽群老婆"),
+        PolicyDecision(True, "ok", handler="default", normalized_message="抽群老婆"),
+    )
+    reverse = await run_lua_message(
+        TwoPersonFakeBot(),
+        make_event(user_id=2, message_id=2, raw_message="~抽群老婆"),
+        PolicyDecision(True, "ok", handler="default", normalized_message="抽群老婆"),
+    )
+
+    assert first.reply is not None and "BetaCard" in first.reply
+    assert reverse.reply is not None and "Alpha" in reverse.reply
+    store = get_store()
+    assert store.get_lua_state("群老婆", "1970-01-01:123:1") == "2"
+    assert store.get_lua_state("群老婆", "1970-01-01:123:2") == "1"
+    assert json.loads(store.get_lua_state("群老婆", "1970-01-01:123:claims")) == {
+        "1": "2",
+        "2": "1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_builtin_change_wife_dissolves_both_sides_before_rematching(tmp_path, monkeypatch):
+    configure_builtin_lua_dir(tmp_path, monkeypatch)
+    target_at = ({"type": "at", "data": {"qq": "2"}},)
+    await run_lua_message(
+        RichFakeBot(),
+        make_event(user_id=1, raw_message="~强娶 [CQ:at,qq=2]", segments=target_at),
+        PolicyDecision(True, "ok", handler="default", normalized_message="强娶"),
+    )
+    changed = await run_lua_message(
+        RichFakeBot(),
+        make_event(user_id=1, message_id=2, raw_message="~换个老婆"),
+        PolicyDecision(True, "ok", handler="default", normalized_message="换个老婆"),
+    )
+
+    assert changed.reply is not None and "Gamma" in changed.reply
+    store = get_store()
+    assert store.get_lua_state("群老婆", "1970-01-01:123:1") == "3"
+    assert store.get_lua_state("群老婆", "1970-01-01:123:3") == "1"
+    assert store.get_lua_state("群老婆", "1970-01-01:123:2") is None
+
+
+@pytest.mark.asyncio
+async def test_builtin_force_marry_releases_callers_previous_partner(tmp_path, monkeypatch):
+    configure_builtin_lua_dir(tmp_path, monkeypatch)
+    target_two = ({"type": "at", "data": {"qq": "2"}},)
+    target_three = ({"type": "at", "data": {"qq": "3"}},)
+    await run_lua_message(
+        RichFakeBot(),
+        make_event(user_id=1, raw_message="~强娶 [CQ:at,qq=2]", segments=target_two),
+        PolicyDecision(True, "ok", handler="default", normalized_message="强娶"),
+    )
+    remarried = await run_lua_message(
+        RichFakeBot(),
+        make_event(
+            user_id=1,
+            message_id=2,
+            raw_message="~强娶 [CQ:at,qq=3]",
+            segments=target_three,
+        ),
+        PolicyDecision(True, "ok", handler="default", normalized_message="强娶"),
+    )
+
+    assert remarried.reply is not None and "Gamma" in remarried.reply
+    store = get_store()
+    assert store.get_lua_state("群老婆", "1970-01-01:123:1") == "3"
+    assert store.get_lua_state("群老婆", "1970-01-01:123:3") == "1"
+    assert store.get_lua_state("群老婆", "1970-01-01:123:2") is None
 
 
 @pytest.mark.asyncio
