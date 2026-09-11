@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { BookOpen, BrainCircuit, CheckCircle2, Eraser, ImagePlus, Plus, Save, Sparkles, Trash2, Upload, X } from "lucide-react";
+import { BookOpen, BrainCircuit, CheckCircle2, Eraser, ImagePlus, Plus, RefreshCw, Save, Sparkles, Trash2, Upload, X } from "lucide-react";
 
 import { fileToDataUrl, formatBytes, formatIds, get, parseIds, post, put, remove } from "../api";
 import { Button, Empty, Field, IconButton, Metric, PageHeader, Panel, Status, Switch } from "../components/Ui";
@@ -24,9 +24,10 @@ const modelOptionsWithCurrent = (options, currentModel) => {
 function ModelSelect({ value, options, onChange }) {
   return (
     <select value={value} onChange={(event) => onChange(event.target.value)}>
-      {modelOptionsWithCurrent(options, value).map((item) => (
-        <option key={item.id} value={item.id}>{item.label}（{item.key}）</option>
-      ))}
+      {modelOptionsWithCurrent(options, value).map((item) => {
+        const detail = item.key && item.key !== item.id ? item.key : item.owned_by;
+        return <option key={item.id} value={item.id}>{item.label || item.id}{detail ? `（${detail}）` : ""}</option>;
+      })}
     </select>
   );
 }
@@ -60,7 +61,9 @@ export default function AiPage({ refreshVersion, onChanged }) {
   const [notice, setNotice] = useState("正在读取 AI 配置");
   const [stickers, setStickers] = useState([]);
   const [stickerFile, setStickerFile] = useState(null);
-  const modelOptions = data?.model_options || DEFAULT_MODEL_OPTIONS;
+  const [liveModelOptions, setLiveModelOptions] = useState(null);
+  const [refreshingModels, setRefreshingModels] = useState(false);
+  const modelOptions = liveModelOptions || data?.model_options || DEFAULT_MODEL_OPTIONS;
   const visionEnabled = Boolean(modelOptions.find((item) => item.id === data?.model)?.vision);
 
   const applyConfig = (result, preferredId = null) => {
@@ -79,6 +82,20 @@ export default function AiPage({ refreshVersion, onChanged }) {
   const loadStickers = () => get("/stickers").then((result) => {
     setStickers(result.stickers || []);
   }).catch((error) => setNotice(error.message));
+
+  const refreshModels = async () => {
+    setRefreshingModels(true);
+    setNotice("正在从 DSAPI 获取最新模型");
+    try {
+      const result = await post("/dsapi/models/refresh", {});
+      setLiveModelOptions(result.models || []);
+      setNotice(`已获取 ${result.count} 个可用模型，可在模型下拉框中选择`);
+    } catch (error) {
+      setNotice(error.message);
+    } finally {
+      setRefreshingModels(false);
+    }
+  };
 
   useEffect(() => {
     void load();
@@ -230,7 +247,7 @@ export default function AiPage({ refreshVersion, onChanged }) {
       </div>
 
       <div className="content-grid">
-        <Panel title="角色知识库" eyebrow="Knowledge library" className="span-8" actions={<Button tone="secondary" icon={Plus} onClick={openCreateKnowledge}>新建</Button>}>
+        <Panel title="角色知识库" eyebrow="Knowledge library" className="span-8" actions={<div className="button-cluster"><Button tone="ghost" icon={RefreshCw} disabled={refreshingModels || !data?.api_configured} aria-busy={refreshingModels} onClick={() => void refreshModels()}>{refreshingModels ? "获取中" : "获取最新模型"}</Button><Button tone="secondary" icon={Plus} onClick={openCreateKnowledge}>新建</Button></div>}>
           <div className="knowledge-toolbar"><Switch checked={form.knowledgeEnabled} onChange={(value) => update("knowledgeEnabled", value)} label="挂载角色知识" description="关闭后只使用基础系统提示词" /><span><Sparkles size={15} /> {(data?.knowledge_bases?.length || 0)} 个知识库</span></div>
           <div className="knowledge-workspace">
             <aside className="knowledge-library">

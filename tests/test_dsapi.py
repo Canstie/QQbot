@@ -10,10 +10,12 @@ from qq_personal_bot.dsapi import (
     _brief_reply,
     _chat_completions_url,
     _format_reply,
+    _models_url,
     _pick_random_sticker,
     _random_reply_selected,
     _request_chat_completion,
     build_mention_prompt,
+    fetch_dsapi_models,
     generate_mention_reply,
     generate_random_group_reply,
 )
@@ -648,11 +650,77 @@ def test_chat_completion_request_uses_compatible_endpoint(tmp_path, monkeypatch)
     assert captured["payload"]["temperature"] == 0.3
 
 
+def test_fetch_models_uses_configured_dsapi_endpoint(tmp_path, monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self):
+            return json.dumps(
+                {
+                    "object": "list",
+                    "data": [
+                        {
+                            "id": "deepseek-v4-flash",
+                            "object": "model",
+                            "owned_by": "deepseek",
+                        },
+                        {
+                            "id": "deepseek-next-vision",
+                            "object": "model",
+                            "owned_by": "deepseek",
+                        },
+                        {"id": "deepseek-v4-flash", "owned_by": "duplicate"},
+                    ],
+                }
+            ).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["authorization"] = request.headers["Authorization"]
+        captured["method"] = request.method
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr("qq_personal_bot.dsapi.urlopen", fake_urlopen)
+    settings = make_settings(tmp_path, dsapi_base_url="https://dsapi.example/v1/")
+
+    models = fetch_dsapi_models(settings)
+
+    assert captured == {
+        "url": "https://dsapi.example/v1/models",
+        "authorization": "Bearer secret",
+        "method": "GET",
+        "timeout": 30.0,
+    }
+    assert [item["id"] for item in models] == [
+        "deepseek-v4-flash",
+        "deepseek-next-vision",
+    ]
+    assert models[0]["key"] == "flash"
+    assert models[1]["vision"] is True
+    assert all(item["source"] == "live" for item in models)
+
+
 def test_full_chat_completion_url_is_not_duplicated():
     assert (
         _chat_completions_url("https://dsapi.example/v1/chat/completions")
         == "https://dsapi.example/v1/chat/completions"
     )
+
+
+def test_models_url_accepts_base_and_chat_completion_urls():
+    assert _models_url("https://dsapi.example/v1/") == "https://dsapi.example/v1/models"
+    assert (
+        _models_url("https://dsapi.example/v1/chat/completions")
+        == "https://dsapi.example/v1/models"
+    )
+    assert _models_url("https://dsapi.example/v1/models") == "https://dsapi.example/v1/models"
 
 
 @pytest.mark.parametrize(

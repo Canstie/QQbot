@@ -11,12 +11,11 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from qq_personal_bot.ai_models import is_vision_dsapi_model
+from qq_personal_bot.ai_models import dsapi_model_option, is_vision_dsapi_model
 from qq_personal_bot.core.models import MessageEvent
 from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.menu_recipes import is_supported_image_file
 from qq_personal_bot.settings import AppSettings
-
 
 _MULTIMODAL_SEGMENT_TYPES = {
     "file",
@@ -57,6 +56,57 @@ _MAX_INLINE_IMAGE_URL_CHARS = 44 * 1024 * 1024
 
 class DSAPIError(RuntimeError):
     pass
+
+
+def fetch_dsapi_models(settings: AppSettings) -> list[dict[str, Any]]:
+    if not settings.dsapi_api_key:
+        raise DSAPIError("DSAPI key is not configured")
+    request = Request(
+        _models_url(settings.dsapi_base_url),
+        headers={
+            "Authorization": f"Bearer {settings.dsapi_api_key}",
+            "Accept": "application/json",
+        },
+        method="GET",
+    )
+    try:
+        with urlopen(request, timeout=settings.dsapi_timeout_seconds) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        raise DSAPIError(f"HTTP {exc.code}") from exc
+    except URLError as exc:
+        raise DSAPIError(f"network error: {exc.reason}") from exc
+    except TimeoutError as exc:
+        raise DSAPIError("request timed out") from exc
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise DSAPIError("invalid JSON response") from exc
+
+    entries = result.get("data") if isinstance(result, Mapping) else None
+    if not isinstance(entries, list):
+        raise DSAPIError("response does not contain a model list")
+
+    models: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            continue
+        model_id = str(entry.get("id") or "").strip()
+        if not model_id or model_id in seen:
+            continue
+        seen.add(model_id)
+        known = dsapi_model_option(model_id)
+        option = known or {
+            "key": model_id,
+            "id": model_id,
+            "label": model_id,
+            "vision": "vision" in model_id.casefold(),
+        }
+        option["owned_by"] = str(entry.get("owned_by") or "").strip()
+        option["source"] = "live"
+        models.append(option)
+    if not models:
+        raise DSAPIError("model list is empty")
+    return models
 
 
 async def generate_mention_reply(
@@ -463,6 +513,15 @@ def _chat_completions_url(base_url: str) -> str:
     if normalized.endswith("/chat/completions"):
         return normalized
     return f"{normalized}/chat/completions"
+
+
+def _models_url(base_url: str) -> str:
+    normalized = base_url.rstrip("/")
+    if normalized.endswith("/models"):
+        return normalized
+    if normalized.endswith("/chat/completions"):
+        normalized = normalized.removesuffix("/chat/completions")
+    return f"{normalized}/models"
 
 
 def _contains_multimodal_segments(

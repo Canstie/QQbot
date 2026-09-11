@@ -27,6 +27,7 @@ from starlette.background import BackgroundTask
 from qq_personal_bot.ai_models import public_dsapi_model_options
 from qq_personal_bot.classic_storage import ClassicStorageError, get_classic_storage
 from qq_personal_bot.download_storage import DownloadStorageError, get_download_storage
+from qq_personal_bot.dsapi import DSAPIError, fetch_dsapi_models
 from qq_personal_bot.features import feature_catalog
 from qq_personal_bot.lua_runner import (
     default_lua_command_script,
@@ -311,6 +312,23 @@ def create_app():
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return await get_dsapi_config()
+
+    @app.post("/api/dsapi/models/refresh")
+    async def refresh_dsapi_models(request: Request) -> dict:
+        require_token(request)
+        settings = get_settings()
+        if not settings.dsapi_api_key:
+            raise HTTPException(status_code=400, detail="DSAPI API Key 未配置")
+        try:
+            models = await asyncio.to_thread(fetch_dsapi_models, settings)
+        except DSAPIError as exc:
+            raise HTTPException(status_code=502, detail=f"获取 DSAPI 模型失败：{exc}") from exc
+        return {
+            "models": models,
+            "count": len(models),
+            "fetched_at": datetime.now(UTC).isoformat(),
+            "base_url": settings.dsapi_base_url,
+        }
 
     @app.post("/api/dsapi/knowledge")
     async def create_knowledge_base(payload: KnowledgeBasePayload, request: Request) -> dict:

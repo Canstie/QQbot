@@ -242,6 +242,54 @@ def test_dsapi_config_api_roundtrip_and_clear_history(tmp_path, monkeypatch):
     assert response.json()["deleted"] == 0
 
 
+def test_dsapi_model_refresh_returns_live_provider_models(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("QQBOT_WEB_TOKEN", raising=False)
+    monkeypatch.setenv("QQBOT_DB_PATH", str(tmp_path / "policy.sqlite3"))
+    monkeypatch.setenv("QQBOT_DSAPI_API_KEY", "secret")
+    monkeypatch.setenv("QQBOT_DSAPI_BASE_URL", "https://dsapi.example/v1")
+    monkeypatch.setattr(
+        web_module,
+        "fetch_dsapi_models",
+        lambda settings: [
+            {
+                "key": "deepseek-latest",
+                "id": "deepseek-latest",
+                "label": "deepseek-latest",
+                "vision": False,
+                "owned_by": "deepseek",
+                "source": "live",
+            }
+        ],
+    )
+    reset_runtime()
+    client = TestClient(create_app())
+
+    response = client.post("/api/dsapi/models/refresh", json={})
+
+    assert response.status_code == 200
+    assert response.json()["count"] == 1
+    assert response.json()["models"][0]["id"] == "deepseek-latest"
+    assert response.json()["base_url"] == "https://dsapi.example/v1"
+    assert "fetched_at" in response.json()
+
+
+def test_dsapi_model_refresh_requires_api_key(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("QQBOT_WEB_TOKEN", raising=False)
+    monkeypatch.delenv("QQBOT_DSAPI_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.delenv("DS_API_KEY", raising=False)
+    monkeypatch.setenv("QQBOT_DB_PATH", str(tmp_path / "policy.sqlite3"))
+    reset_runtime()
+    client = TestClient(create_app())
+
+    response = client.post("/api/dsapi/models/refresh", json={})
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "DSAPI API Key 未配置"
+
+
 def test_dsapi_knowledge_base_api_crud_and_switch(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("QQBOT_WEB_TOKEN", raising=False)
