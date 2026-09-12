@@ -5,9 +5,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from qq_personal_bot.core.models import PolicyDecision
 from qq_personal_bot.miniapp import CachedMiniAppImages, MiniAppImageSource
 from qq_personal_bot.plugins import chat
-from qq_personal_bot.core.models import PolicyDecision
 
 
 def make_event(*, group_id: int = 123, raw_message: str = "~抽群老婆"):
@@ -157,6 +157,32 @@ def test_quoted_response_replies_to_original_message():
     assert response[0].type == "reply"
     assert response[0].data["id"] == "42"
     assert response.extract_plain_text() == "确实。"
+
+
+def test_unquoted_lua_cq_response_is_parsed_as_image_message(tmp_path):
+    image_path = (tmp_path / "help.png").resolve()
+    event = SimpleNamespace(message_id=42)
+
+    response = chat._build_lua_response(
+        f"[CQ:image,file={image_path.as_uri()}]",
+        event,
+        quote=False,
+    )
+
+    assert not isinstance(response, str)
+    assert len(response) == 1
+    assert response[0].type == "image"
+    assert response[0].data["file"] == image_path.as_uri()
+
+
+def test_unquoted_lua_plain_text_remains_plain_text():
+    response = chat._build_lua_response(
+        "普通文字回复",
+        SimpleNamespace(message_id=42),
+        quote=False,
+    )
+
+    assert response == "普通文字回复"
 
 
 def test_random_sticker_response_uses_onebot_image_segment(tmp_path):

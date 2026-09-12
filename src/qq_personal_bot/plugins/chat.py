@@ -25,10 +25,10 @@ from qq_personal_bot.miniapp import (
     extract_miniapp_image_source,
 )
 from qq_personal_bot.plugins.custom_flows import handle_custom_flow
+from qq_personal_bot.random_gallery import send_random_gallery
 from qq_personal_bot.replies import build_reply
 from qq_personal_bot.runtime import get_policy_engine, get_settings, get_store
 from qq_personal_bot.teachers import parse_teacher_command, query_teachers
-from qq_personal_bot.random_gallery import send_random_gallery
 
 chat = on_message(priority=50, block=False)
 self_sent = on("message_sent", priority=50, block=False)
@@ -42,6 +42,8 @@ def _build_default_response(content: str, *, direct: bool = False) -> str:
 
 def _build_lua_response(content: str, event: Any, *, quote: bool) -> str | Message:
     if not quote:
+        if "[CQ:" in content:
+            return Message(content)
         return content
     return _build_quoted_response(content, event)
 
