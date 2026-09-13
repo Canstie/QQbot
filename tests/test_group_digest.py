@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from PIL import Image
 
+import qq_personal_bot.group_digest_card as digest_card
 from qq_personal_bot.core.models import MessageEvent
 from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.group_digest import _backfill_today_history, generate_group_digest_report
@@ -61,6 +62,27 @@ def _timestamp(hour: int, minute: int = 0) -> float:
 
 def test_report_title_uses_group_name_and_chinese_date():
     assert _report_title("aaa", "2026-09-13") == "aaa9月13日总结"
+
+
+def test_font_runs_keep_emoji_sequences_together(monkeypatch):
+    primary = object()
+    fallback = object()
+
+    monkeypatch.setattr(digest_card, "_font_size", lambda font: 21)
+    monkeypatch.setattr(digest_card, "_fallback_fonts", lambda size: (fallback,))
+    monkeypatch.setattr(
+        digest_card,
+        "_font_supports",
+        lambda font, text: font is fallback if any(ord(char) > 0xFFFF for char in text) else font is primary,
+    )
+
+    runs = digest_card._font_runs("金花🌸👩‍💻🇨🇳粉丝", primary)
+
+    assert [(text, font is fallback) for text, font in runs] == [
+        ("金花", False),
+        ("🌸👩‍💻🇨🇳", True),
+        ("粉丝", False),
+    ]
 
 
 @pytest.mark.asyncio

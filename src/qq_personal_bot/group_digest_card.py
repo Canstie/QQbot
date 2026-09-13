@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import math
+import unicodedata
 from collections.abc import Mapping, Sequence
 from datetime import date as calendar_date
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -108,7 +111,8 @@ def _draw_header(
         fonts["hero"],
         CONTENT_RIGHT - CONTENT_LEFT - 108,
     )
-    draw.text(
+    _draw_text(
+        draw,
         (CONTENT_LEFT + 108, y + 17),
         title,
         font=fonts["hero"],
@@ -136,11 +140,12 @@ def _draw_metrics(
         right = left + card_width
         fill = SOFT_ORANGE if index == 0 else "#f7f9fc"
         draw.rounded_rectangle((left, y, right, y + 102), radius=14, fill=fill, outline=LINE)
-        draw.text((left + 18, y + 17), label, font=fonts["small"], fill=MUTED)
+        _draw_text(draw, (left + 18, y + 17), label, font=fonts["small"], fill=MUTED)
         value_text = f"{int(value or 0):,}"
-        draw.text((left + 18, y + 45), value_text, font=fonts["metric"], fill=INK)
+        _draw_text(draw, (left + 18, y + 45), value_text, font=fonts["metric"], fill=INK)
         value_width = _text_width(draw, value_text, fonts["metric"])
-        draw.text(
+        _draw_text(
+            draw,
             (left + 22 + value_width, y + 58), unit, font=fonts["small"], fill=MUTED
         )
     return y + 128
@@ -162,13 +167,15 @@ def _draw_peak_ribbon(
     draw.rounded_rectangle(
         (CONTENT_LEFT, y, CONTENT_RIGHT, y + 108), radius=18, outline="#4f89b8", width=2
     )
-    draw.text(
+    _draw_text(
+        draw,
         (CONTENT_LEFT + 28, y + 18),
         "HIGHLIGHT TIME · 最活跃时段",
         font=fonts["small"],
         fill="#cae7fa",
     )
-    draw.text(
+    _draw_text(
+        draw,
         (CONTENT_LEFT + 28, y + 49),
         f"{hour:02d}:00—{(hour + 1) % 24:02d}:00",
         font=fonts["title"],
@@ -176,7 +183,13 @@ def _draw_peak_ribbon(
     )
     note = f"这一小时贡献了 {count} 条消息"
     note_width = _text_width(draw, note, fonts["body"])
-    draw.text((CONTENT_RIGHT - note_width - 28, y + 58), note, font=fonts["body"], fill="#ecf7ff")
+    _draw_text(
+        draw,
+        (CONTENT_RIGHT - note_width - 28, y + 58),
+        note,
+        font=fonts["body"],
+        fill="#ecf7ff",
+    )
     return y + 138
 
 
@@ -237,7 +250,7 @@ def _draw_atmosphere(
     draw.arc(ring, start=-90, end=269, fill="#dfe6ed", width=12)
     draw.arc(ring, start=-90, end=-90 + int(359 * score / 100), fill=TEAL, width=12)
     _center_text(draw, str(score), (CONTENT_LEFT + 68, y + 78), fonts["small_bold"], INK)
-    draw.text((CONTENT_LEFT + 142, y + 34), label, font=fonts["title"], fill=INK)
+    _draw_text(draw, (CONTENT_LEFT + 142, y + 34), label, font=fonts["title"], fill=INK)
     lines = _wrap_text(draw, comment, fonts["body"], CONTENT_RIGHT - CONTENT_LEFT - 190, max_lines=2)
     _draw_lines(draw, lines, CONTENT_LEFT + 143, y + 79, fonts["body"], MUTED, 31)
     return y + height + 28
@@ -267,10 +280,17 @@ def _draw_topics(
         draw.rounded_rectangle((CONTENT_LEFT, top, CONTENT_RIGHT, top + height), radius=16, fill="#fbfcfe", outline=LINE)
         draw.rounded_rectangle((CONTENT_LEFT + 18, top + 18, CONTENT_LEFT + 54, top + 54), radius=10, fill=SOFT_BLUE)
         _center_text(draw, str(index), (CONTENT_LEFT + 36, top + 36), fonts["small_bold"], BLUE)
-        draw.text((CONTENT_LEFT + 72, top + 18), title, font=fonts["body_bold"], fill=INK)
+        _draw_text(
+            draw,
+            (CONTENT_LEFT + 72, top + 18),
+            title,
+            font=fonts["body_bold"],
+            fill=INK,
+        )
         _draw_lines(draw, lines, CONTENT_LEFT + 72, top + 56, fonts["body"], "#506177", 30)
         if people_text:
-            draw.text(
+            _draw_text(
+                draw,
                 (CONTENT_LEFT + 72, top + height - 34),
                 "在场：" + _clip(people_text, 48),
                 font=fonts["small"],
@@ -310,13 +330,26 @@ def _draw_portraits(
             color = _identity_color(user_id or row_start + column)
             draw.ellipse((left + 20, top + 20, left + 72, top + 72), fill=color)
             _center_text(draw, _initial(name), (left + 46, top + 46), fonts["body_bold"], "#ffffff")
-            draw.text((left + 88, top + 17), _clip(name, 14), font=fonts["body_bold"], fill=INK)
+            _draw_text(
+                draw,
+                (left + 88, top + 17),
+                _clip(name, 14),
+                font=fonts["body_bold"],
+                fill=INK,
+            )
             title = str(portrait.get("title") or "今日群友")
-            draw.text((left + 88, top + 50), _clip(title, 18), font=fonts["small"], fill=BLUE)
+            _draw_text(
+                draw,
+                (left + 88, top + 50),
+                _clip(title, 18),
+                font=fonts["small"],
+                fill=BLUE,
+            )
             tags = portrait.get("tags") or []
             tags_text = " · ".join(str(tag) for tag in tags[:3]) if not isinstance(tags, str) else tags
             if tags_text:
-                draw.text(
+                _draw_text(
+                    draw,
                     (left + 22, top + 86),
                     _clip(tags_text, 30),
                     font=fonts["small"],
@@ -348,7 +381,13 @@ def _draw_quotes(
         draw.rounded_rectangle((CONTENT_LEFT, top, CONTENT_RIGHT, top + height), radius=16, fill="#fffdf9", outline="#eee5d8")
         draw.ellipse((CONTENT_LEFT + 20, top + 20, CONTENT_LEFT + 68, top + 68), fill="#b96f4d")
         _center_text(draw, "言", (CONTENT_LEFT + 44, top + 44), fonts["small_bold"], "#ffffff")
-        draw.text((CONTENT_LEFT + 84, top + 20), name, font=fonts["small_bold"], fill="#8f563c")
+        _draw_text(
+            draw,
+            (CONTENT_LEFT + 84, top + 20),
+            name,
+            font=fonts["small_bold"],
+            fill="#8f563c",
+        )
         _draw_lines(draw, quote_lines, CONTENT_LEFT + 84, top + 52, fonts["quote"], INK, 33)
         if comment_lines:
             divider_y = top + 62 + len(quote_lines) * 33
@@ -373,7 +412,13 @@ def _draw_closing(
     draw.rounded_rectangle((CONTENT_LEFT, y, CONTENT_RIGHT, y + height), radius=18, outline="#4f89b8", width=2)
     draw.rounded_rectangle((CONTENT_LEFT + 22, y + 24, CONTENT_LEFT + 92, y + 94), radius=20, fill="#ddecf7")
     _center_text(draw, "结", (CONTENT_LEFT + 57, y + 59), fonts["title"], DEEP_BLUE)
-    draw.text((CONTENT_LEFT + 116, y + 22), "今日收束", font=fonts["small_bold"], fill="#cce8fa")
+    _draw_text(
+        draw,
+        (CONTENT_LEFT + 116, y + 22),
+        "今日收束",
+        font=fonts["small_bold"],
+        fill="#cce8fa",
+    )
     _draw_lines(draw, lines, CONTENT_LEFT + 116, y + 54, fonts["body"], "#ffffff", 31)
     return y + height + 28
 
@@ -409,37 +454,47 @@ def _section_heading(
     fonts: Mapping[str, ImageFont.ImageFont],
 ) -> int:
     draw.rounded_rectangle((CONTENT_LEFT, y + 5, CONTENT_LEFT + 6, y + 35), radius=3, fill=ORANGE)
-    draw.text((CONTENT_LEFT + 18, y), title, font=fonts["section"], fill=INK)
+    _draw_text(draw, (CONTENT_LEFT + 18, y), title, font=fonts["section"], fill=INK)
     chip_width = _text_width(draw, chip, fonts["utility"]) + 24
     draw.rounded_rectangle((CONTENT_RIGHT - chip_width, y + 4, CONTENT_RIGHT, y + 32), radius=14, fill=DEEP_BLUE)
-    draw.text((CONTENT_RIGHT - chip_width + 12, y + 8), chip, font=fonts["utility"], fill="#ffffff")
+    _draw_text(
+        draw,
+        (CONTENT_RIGHT - chip_width + 12, y + 8),
+        chip,
+        font=fonts["utility"],
+        fill="#ffffff",
+    )
     draw.line((CONTENT_LEFT, y + 48, CONTENT_RIGHT, y + 48), fill=LINE)
     return y + 55
 
 
 def _font(settings: AppSettings, size: int, *, bold: bool = False) -> ImageFont.ImageFont:
     candidates = (
-        settings.steam_font_path,
-        Path(
-            "/usr/local/share/fonts/sarasa-gothic/SarasaGothicSC-Bold.ttf"
-            if bold
-            else "/usr/local/share/fonts/sarasa-gothic/SarasaGothicSC-Regular.ttf"
+        (settings.steam_font_path, 0),
+        (
+            Path(
+                "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"
+                if bold
+                else "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+            ),
+            2,
         ),
-        Path("C:/Windows/Fonts/msyhbd.ttc" if bold else "C:/Windows/Fonts/msyh.ttc"),
-        Path(
-            "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"
-            if bold
-            else "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+        (
+            Path("C:/Windows/Fonts/msyhbd.ttc" if bold else "C:/Windows/Fonts/msyh.ttc"),
+            0,
         ),
-        Path(
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-            if bold
-            else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+        (
+            Path(
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+                if bold
+                else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+            ),
+            0,
         ),
     )
-    for candidate in candidates:
+    for candidate, index in candidates:
         if candidate and candidate.is_file():
-            return ImageFont.truetype(str(candidate), size=size)
+            return ImageFont.truetype(str(candidate), size=size, index=index)
     return ImageFont.load_default()
 
 
@@ -456,6 +511,150 @@ def _utility_font(settings: AppSettings, size: int) -> ImageFont.ImageFont:
         if candidate.is_file():
             return ImageFont.truetype(str(candidate), size=size)
     return _font(settings, size)
+
+
+@lru_cache(maxsize=64)
+def _fallback_fonts(size: int) -> tuple[ImageFont.ImageFont, ...]:
+    candidates = (
+        Path("/usr/local/share/fonts/noto-emoji/NotoEmoji-wght.ttf"),
+        Path("C:/Windows/Fonts/seguiemj.ttf"),
+        Path("/usr/share/fonts/truetype/noto/NotoEmoji-Regular.ttf"),
+        Path("/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf"),
+    )
+    fonts: list[ImageFont.ImageFont] = []
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        try:
+            fonts.append(ImageFont.truetype(str(candidate), size=size))
+        except OSError:
+            continue
+    return tuple(fonts)
+
+
+def _font_runs(
+    text: str, primary: ImageFont.ImageFont
+) -> list[tuple[str, ImageFont.ImageFont]]:
+    fonts = (primary, *_fallback_fonts(_font_size(primary)))
+    runs: list[tuple[str, ImageFont.ImageFont]] = []
+    for cluster in _grapheme_clusters(str(text)):
+        selected = next(
+            (candidate for candidate in fonts if _font_supports(candidate, cluster)),
+            primary,
+        )
+        if runs and runs[-1][1] is selected:
+            previous, _ = runs[-1]
+            runs[-1] = (previous + cluster, selected)
+        else:
+            runs.append((cluster, selected))
+    return runs
+
+
+def _grapheme_clusters(text: str) -> list[str]:
+    clusters: list[str] = []
+    current = ""
+    regional_count = 0
+    for char in text:
+        extend = bool(current) and (
+            _is_cluster_extender(char)
+            or current.endswith("\u200d")
+            or (_is_regional_indicator(char) and regional_count % 2 == 1)
+        )
+        if current and not extend:
+            clusters.append(current)
+            current = ""
+            regional_count = 0
+        current += char
+        if _is_regional_indicator(char):
+            regional_count += 1
+        elif not _is_cluster_extender(char):
+            regional_count = 0
+    if current:
+        clusters.append(current)
+    return clusters
+
+
+def _is_cluster_extender(char: str) -> bool:
+    codepoint = ord(char)
+    return (
+        char == "\u200d"
+        or unicodedata.category(char).startswith("M")
+        or 0xFE00 <= codepoint <= 0xFE0F
+        or 0x1F3FB <= codepoint <= 0x1F3FF
+        or 0xE0020 <= codepoint <= 0xE007F
+        or 0xE0100 <= codepoint <= 0xE01EF
+    )
+
+
+def _is_regional_indicator(char: str) -> bool:
+    return 0x1F1E6 <= ord(char) <= 0x1F1FF
+
+
+def _font_supports(font: ImageFont.ImageFont, text: str) -> bool:
+    return all(
+        _is_ignorable_for_glyph_check(char) or _font_has_glyph(font, char)
+        for char in text
+    )
+
+
+def _is_ignorable_for_glyph_check(char: str) -> bool:
+    codepoint = ord(char)
+    return (
+        char == "\u200d"
+        or 0xFE00 <= codepoint <= 0xFE0F
+        or 0xE0020 <= codepoint <= 0xE007F
+        or 0xE0100 <= codepoint <= 0xE01EF
+    )
+
+
+@lru_cache(maxsize=8192)
+def _font_has_glyph(font: ImageFont.ImageFont, char: str) -> bool:
+    if char.isspace():
+        return True
+    try:
+        glyph = font.getmask(char, mode="L")
+        missing = font.getmask("\U0010ffff", mode="L")
+    except (OSError, ValueError):
+        return True
+    return glyph.size != missing.size or bytes(glyph) != bytes(missing)
+
+
+def _font_size(font: ImageFont.ImageFont) -> int:
+    return max(1, int(getattr(font, "size", 16)))
+
+
+def _draw_text(
+    draw: ImageDraw.ImageDraw,
+    position: tuple[float, float],
+    text: str,
+    *,
+    font: ImageFont.ImageFont,
+    fill: str,
+) -> None:
+    x, y = position
+    cursor = float(x)
+    for run, run_font in _font_runs(str(text), font):
+        draw.text((cursor, y), run, font=run_font, fill=fill)
+        cursor += float(draw.textlength(run, font=run_font))
+
+
+def _text_bounds(
+    draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont
+) -> tuple[int, int, int, int]:
+    cursor = 0.0
+    bounds: list[tuple[float, float, float, float]] = []
+    for run, run_font in _font_runs(str(text), font):
+        run_bounds = draw.textbbox((cursor, 0), run, font=run_font)
+        bounds.append(tuple(float(value) for value in run_bounds))
+        cursor += float(draw.textlength(run, font=run_font))
+    if not bounds:
+        return (0, 0, 0, 0)
+    return (
+        math.floor(min(bound[0] for bound in bounds)),
+        math.floor(min(bound[1] for bound in bounds)),
+        math.ceil(max(cursor, *(bound[2] for bound in bounds))),
+        math.ceil(max(bound[3] for bound in bounds)),
+    )
 
 
 def _wrap_text(
@@ -501,12 +700,22 @@ def _draw_lines(
     line_height: int,
 ) -> None:
     for index, line in enumerate(lines):
-        draw.text((x, y + index * line_height), line, font=font, fill=fill)
+        _draw_text(
+            draw,
+            (x, y + index * line_height),
+            line,
+            font=font,
+            fill=fill,
+        )
 
 
 def _text_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont) -> int:
-    bounds = draw.textbbox((0, 0), str(text), font=font)
-    return int(bounds[2] - bounds[0])
+    return math.ceil(
+        sum(
+            float(draw.textlength(run, font=run_font))
+            for run, run_font in _font_runs(str(text), font)
+        )
+    )
 
 
 def _center_text(
@@ -516,10 +725,16 @@ def _center_text(
     font: ImageFont.ImageFont,
     fill: str,
 ) -> None:
-    bounds = draw.textbbox((0, 0), str(text), font=font)
+    bounds = _text_bounds(draw, str(text), font)
     width = bounds[2] - bounds[0]
     height = bounds[3] - bounds[1]
-    draw.text((center[0] - width / 2, center[1] - height / 2 - bounds[1]), str(text), font=font, fill=fill)
+    _draw_text(
+        draw,
+        (center[0] - width / 2, center[1] - height / 2 - bounds[1]),
+        str(text),
+        font=font,
+        fill=fill,
+    )
 
 
 def _identity_color(value: int) -> str:
