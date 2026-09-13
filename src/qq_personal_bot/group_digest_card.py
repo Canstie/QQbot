@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping, Sequence
+from datetime import date as calendar_date
 from pathlib import Path
 from typing import Any
 
@@ -57,7 +58,7 @@ def render_group_digest_card(
     )
 
     y = 66
-    y = _draw_header(draw, y, group_name, date, digest, fonts)
+    y = _draw_header(draw, y, group_name, date, fonts)
     y = _draw_metrics(draw, y, summary, fonts)
     y = _draw_peak_ribbon(draw, y, summary, fonts)
     y = _draw_hourly_chart(draw, y, summary, fonts)
@@ -95,35 +96,25 @@ def _draw_header(
     y: int,
     group_name: str,
     date: str,
-    digest: Mapping[str, Any],
     fonts: Mapping[str, ImageFont.ImageFont],
 ) -> int:
     avatar_box = (CONTENT_LEFT, y, CONTENT_LEFT + 86, y + 86)
     draw.rounded_rectangle(avatar_box, radius=24, fill=DEEP_BLUE)
     draw.ellipse((CONTENT_LEFT + 18, y + 18, CONTENT_LEFT + 68, y + 68), fill="#dcecf7")
     _center_text(draw, "群", (CONTENT_LEFT + 43, y + 43), fonts["title"], DEEP_BLUE)
-    draw.text((CONTENT_LEFT + 108, y + 2), _clip(group_name, 26), font=fonts["hero"], fill=INK)
-    overview = str(digest.get("overview") or "这一天，群聊留下了一份热闹的共同记忆。")
-    draw.text(
-        (CONTENT_LEFT + 110, y + 56),
-        _clip(overview, 44),
-        font=fonts["small"],
-        fill=MUTED,
-    )
-    badge = f"{date} · 今日群聊速报"
-    badge_width = _text_width(draw, badge, fonts["small_bold"]) + 34
-    draw.rounded_rectangle(
-        (CONTENT_RIGHT - badge_width, y + 4, CONTENT_RIGHT, y + 39),
-        radius=17,
-        fill=SOFT_BLUE,
+    title = _fit_line(
+        draw,
+        _report_title(group_name, date),
+        fonts["hero"],
+        CONTENT_RIGHT - CONTENT_LEFT - 108,
     )
     draw.text(
-        (CONTENT_RIGHT - badge_width + 17, y + 10),
-        badge,
-        font=fonts["small_bold"],
-        fill=BLUE,
+        (CONTENT_LEFT + 108, y + 17),
+        title,
+        font=fonts["hero"],
+        fill=INK,
     )
-    return y + 118
+    return y + 106
 
 
 def _draw_metrics(
@@ -536,6 +527,29 @@ def _initial(name: str) -> str:
 def _clip(value: str, length: int) -> str:
     normalized = " ".join(str(value or "").split())
     return normalized if len(normalized) <= length else normalized[: max(1, length - 1)] + "…"
+
+
+def _fit_line(
+    draw: ImageDraw.ImageDraw,
+    value: str,
+    font: ImageFont.ImageFont,
+    max_width: int,
+) -> str:
+    text = " ".join(str(value or "").split())
+    if _text_width(draw, text, font) <= max_width:
+        return text
+    while text and _text_width(draw, text + "…", font) > max_width:
+        text = text[:-1]
+    return text.rstrip() + "…"
+
+
+def _report_title(group_name: str, date: str) -> str:
+    try:
+        parsed = calendar_date.fromisoformat(str(date))
+        date_label = f"{parsed.month}月{parsed.day}日"
+    except ValueError:
+        date_label = str(date)
+    return f"{str(group_name).strip()}{date_label}总结"
 
 
 def _safe_int(value: Any) -> int:

@@ -8,6 +8,7 @@ from PIL import Image
 from qq_personal_bot.core.models import MessageEvent
 from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.group_digest import _backfill_today_history, generate_group_digest_report
+from qq_personal_bot.group_digest_card import _report_title
 from qq_personal_bot.settings import AppSettings
 
 CHINA_TZ = timezone(timedelta(hours=8))
@@ -56,6 +57,10 @@ class HistoryBot:
 
 def _timestamp(hour: int, minute: int = 0) -> float:
     return datetime(2026, 9, 13, hour, minute, tzinfo=CHINA_TZ).timestamp()
+
+
+def test_report_title_uses_group_name_and_chinese_date():
+    assert _report_title("aaa", "2026-09-13") == "aaa9月13日总结"
 
 
 @pytest.mark.asyncio
