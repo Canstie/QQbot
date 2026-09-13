@@ -1516,11 +1516,13 @@ async def test_builtin_help_lists_public_features_only_for_regular_user(tmp_path
     sections = build_help_sections(get_settings(), get_store(), is_admin=False)
     help_text = "\n".join(item for section in sections for item in section.items)
     for script_path in (PROJECT_ROOT / "scripts" / "lua").glob("*.lua"):
+        if script_path.stem == "总结":
+            continue
         assert f"~{script_path.stem}" in help_text
     assert "~help  查看动态功能菜单" in help_text
     assert "~今日菜单  随机推荐今日吃什么" in help_text
     assert "~抽群老婆  抽取今日双向绑定对象" in help_text
-    assert "~总结  生成今天的群聊速报长图" in help_text
+    assert "~总结  生成今天的群聊速报长图" not in help_text
     assert "~今日饭店  随机抽一家本群饭店" in help_text
     assert "/bot" not in help_text
     assert "/download" not in help_text
@@ -1548,6 +1550,7 @@ async def test_builtin_help_appends_admin_features_for_admin(tmp_path, monkeypat
     assert sections[-1].title == "管理员命令"
     help_text = "\n".join(item for section in sections for item in section.items)
     assert "~help  查看动态功能菜单" in help_text
+    assert "~总结  生成今天的群聊速报长图" in help_text
     assert "/check  查看服务器 CPU、内存和磁盘" in help_text
     assert "/download  下载引用聊天记录中的图片" in help_text
     assert "/bot status  查看当前群策略" in help_text

@@ -282,6 +282,15 @@ async def _handle_onebot_message(
 
     if decision.handler == "default" and decision.normalized_message.strip() == "总结":
         store = get_store()
+        if not store.is_admin(int(internal_event.user_id)):
+            await _send_response(
+                matcher,
+                bot,
+                event,
+                MessageSegment.text("该命令仅限管理员使用。"),
+                explicit_group_send=explicit_group_send,
+            )
+            return
         if not all(
             store.is_feature_enabled(feature_id)
             for feature_id in ("activity.record", "lua.master", "lua.command.总结")
