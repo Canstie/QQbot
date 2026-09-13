@@ -420,6 +420,11 @@ def _section_heading(
 def _font(settings: AppSettings, size: int, *, bold: bool = False) -> ImageFont.ImageFont:
     candidates = (
         settings.steam_font_path,
+        Path(
+            "/usr/local/share/fonts/sarasa-gothic/SarasaGothicSC-Bold.ttf"
+            if bold
+            else "/usr/local/share/fonts/sarasa-gothic/SarasaGothicSC-Regular.ttf"
+        ),
         Path("C:/Windows/Fonts/msyhbd.ttc" if bold else "C:/Windows/Fonts/msyh.ttc"),
         Path(
             "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"
