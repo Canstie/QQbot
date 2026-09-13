@@ -445,6 +445,10 @@ def _font(settings: AppSettings, size: int, *, bold: bool = False) -> ImageFont.
 
 def _utility_font(settings: AppSettings, size: int) -> ImageFont.ImageFont:
     candidates = (
+        Path(
+            "/usr/local/share/fonts/jetbrains-mono-nerd/"
+            "JetBrainsMonoNerdFontMono-SemiBold.ttf"
+        ),
         Path("C:/Windows/Fonts/consola.ttf"),
         Path("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"),
     )
