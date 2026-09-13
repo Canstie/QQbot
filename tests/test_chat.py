@@ -140,7 +140,7 @@ async def test_digest_command_sends_progress_and_generated_image(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("explicit_send", [False, True])
-async def test_digest_command_rejects_non_admin_without_generation(
+async def test_digest_command_silently_ignores_non_admin_without_generation(
     monkeypatch, explicit_send
 ):
     from unittest.mock import AsyncMock
@@ -171,14 +171,9 @@ async def test_digest_command_rejects_non_admin_without_generation(
     await chat._handle_onebot_message(matcher, bot, event, explicit_group_send=explicit_send)
 
     generate.assert_not_awaited()
-    responses = (
-        [call.kwargs["message"] for call in bot.send_group_msg.call_args_list]
-        if explicit_send
-        else [call.args[0] for call in matcher.send.call_args_list]
-    )
-    assert len(responses) == 1
-    assert responses[0].type == "text"
-    assert responses[0].data["text"] == "该命令仅限管理员使用。"
+    matcher.send.assert_not_awaited()
+    matcher.finish.assert_not_awaited()
+    bot.send_group_msg.assert_not_awaited()
     lua.assert_not_awaited()
 
 
