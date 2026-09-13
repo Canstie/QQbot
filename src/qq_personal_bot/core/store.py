@@ -26,6 +26,7 @@ from qq_personal_bot.menu_recipes import (
 from qq_personal_bot.settings import AppSettings
 
 CHINA_TZ = timezone(timedelta(hours=8))
+_GROUP_MESSAGE_RETENTION_DAYS = 7
 
 
 def _strip_cq_segments(message: str) -> str:
@@ -148,6 +149,23 @@ class PolicyStore:
 
             CREATE INDEX IF NOT EXISTS idx_group_daily_stats_group_date
             ON group_daily_stats(group_id, date);
+
+            CREATE TABLE IF NOT EXISTS group_daily_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                group_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                message_id TEXT NOT NULL DEFAULT '',
+                content TEXT NOT NULL,
+                created_at REAL NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_group_daily_messages_group_date_time
+            ON group_daily_messages(group_id, date, created_at, id);
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_group_daily_messages_message_id
+            ON group_daily_messages(group_id, message_id)
+            WHERE message_id <> '';
 
             CREATE TABLE IF NOT EXISTS dsapi_chat_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2572,6 +2590,7 @@ class PolicyStore:
         timestamp: float,
         raw_message: str,
         segments: Any,
+        message_id: int | str = "",
     ) -> None:
         group_id = int(group_id)
         user_id = int(user_id)
@@ -2583,9 +2602,33 @@ class PolicyStore:
         image_count = self._count_segments(segments, "image")
         at_count = self._count_segments(segments, "at")
         reply_count = self._count_segments(segments, "reply")
+        transcript_content = self._message_transcript_content(raw_message, segments)
         now = time.time()
 
         with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO group_daily_messages(
+                    date, group_id, user_id, message_id, content, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event_date,
+                    group_id,
+                    user_id,
+                    str(message_id or ""),
+                    transcript_content,
+                    event_time,
+                ),
+            )
+            retention_cutoff = (
+                event_datetime.date() - timedelta(days=_GROUP_MESSAGE_RETENTION_DAYS - 1)
+            ).isoformat()
+            conn.execute(
+                "DELETE FROM group_daily_messages WHERE date < ?",
+                (retention_cutoff,),
+            )
             row = conn.execute(
                 """
                 SELECT hourly_json, first_timestamp, last_timestamp
@@ -2663,6 +2706,46 @@ class PolicyStore:
                 ),
             )
 
+    def record_group_message_transcript(
+        self,
+        *,
+        group_id: int,
+        user_id: int,
+        timestamp: float,
+        raw_message: str,
+        segments: Any,
+        message_id: int | str = "",
+    ) -> bool:
+        event_time = float(timestamp or time.time())
+        event_datetime = datetime.fromtimestamp(event_time, CHINA_TZ)
+        event_date = event_datetime.date().isoformat()
+        content = self._message_transcript_content(raw_message, segments)
+        retention_cutoff = (
+            event_datetime.date() - timedelta(days=_GROUP_MESSAGE_RETENTION_DAYS - 1)
+        ).isoformat()
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT OR IGNORE INTO group_daily_messages(
+                    date, group_id, user_id, message_id, content, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event_date,
+                    int(group_id),
+                    int(user_id),
+                    str(message_id or ""),
+                    content,
+                    event_time,
+                ),
+            )
+            conn.execute(
+                "DELETE FROM group_daily_messages WHERE date < ?",
+                (retention_cutoff,),
+            )
+            return cursor.rowcount > 0
+
     def get_group_daily_summary(
         self,
         group_id: int,
@@ -2717,6 +2800,10 @@ class PolicyStore:
             "group_id": group_id,
             "total_messages": total_messages,
             "active_users": len(stats),
+            "total_text_chars": sum(item["text_chars"] for item in stats),
+            "total_images": sum(item["image_count"] for item in stats),
+            "total_mentions": sum(item["at_count"] for item in stats),
+            "hourly_counts": hourly_counts,
             "peak_hour": peak_hour,
             "active_hours": active_hours[:limit],
             "early_bird": self._public_group_stat(early_bird) if early_bird else None,
@@ -2726,6 +2813,34 @@ class PolicyStore:
             "top_images": self._top_group_stats(stats, "image_count", limit, positive_only=True),
             "top_mentions": self._top_group_stats(stats, "at_count", limit, positive_only=True),
         }
+
+    def get_group_daily_messages(
+        self,
+        group_id: int,
+        date: str,
+    ) -> list[dict[str, Any]]:
+        target_date = str(date or "").strip() or datetime.now(CHINA_TZ).date().isoformat()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, date, group_id, user_id, content, created_at
+                FROM group_daily_messages
+                WHERE date = ? AND group_id = ?
+                ORDER BY created_at, id
+                """,
+                (target_date, int(group_id)),
+            ).fetchall()
+        return [
+            {
+                "id": int(row["id"]),
+                "date": str(row["date"]),
+                "group_id": int(row["group_id"]),
+                "user_id": int(row["user_id"]),
+                "content": str(row["content"]),
+                "created_at": float(row["created_at"]),
+            }
+            for row in rows
+        ]
 
     def menu_recipe_count(self) -> int:
         with self._connect() as conn:
@@ -3489,6 +3604,50 @@ class PolicyStore:
                     parts.append(str(data.get("text", "")))
             return len("".join(parts).strip())
         return len(_strip_cq_segments(str(raw_message or "")).strip())
+
+    def _message_transcript_content(self, raw_message: str, segments: Any) -> str:
+        iterated = self._iter_segments(segments)
+        if not iterated:
+            content = re.sub(
+                r"\[CQ:([a-zA-Z0-9_-]+)(?:,[^\]]*)?\]",
+                lambda match: f"[{self._segment_label(match.group(1))}]",
+                str(raw_message or ""),
+            )
+            return " ".join(content.split())[:4000] or "[空消息]"
+
+        parts: list[str] = []
+        for segment in iterated:
+            segment_type = str(segment.get("type") or "").casefold()
+            data = segment.get("data")
+            if segment_type == "text" and isinstance(data, Mapping):
+                parts.append(str(data.get("text", "")))
+                continue
+            if segment_type == "at" and isinstance(data, Mapping):
+                target = str(data.get("qq") or "").strip()
+                parts.append(f"[@{target}]" if target else "[@群友]")
+                continue
+            if segment_type:
+                parts.append(f"[{self._segment_label(segment_type)}]")
+        return " ".join("".join(parts).split())[:4000] or "[空消息]"
+
+    def _segment_label(self, segment_type: str) -> str:
+        labels = {
+            "image": "图片",
+            "record": "语音",
+            "video": "视频",
+            "file": "文件",
+            "reply": "回复",
+            "face": "表情",
+            "mface": "表情包",
+            "marketface": "表情包",
+            "forward": "合并转发",
+            "json": "卡片",
+            "xml": "卡片",
+            "lightapp": "卡片",
+            "markdown": "卡片",
+        }
+        normalized = str(segment_type or "").casefold()
+        return labels.get(normalized, normalized or "消息")
 
     def _text_from_segments(self, segments: Any) -> str | None:
         iterated = self._iter_segments(segments)

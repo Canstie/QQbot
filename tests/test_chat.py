@@ -93,6 +93,49 @@ async def test_gallery_command_policy_and_image_send(monkeypatch, tmp_path, reas
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("explicit_send", [False, True])
+async def test_digest_command_sends_progress_and_generated_image(
+    monkeypatch, tmp_path, explicit_send
+):
+    from unittest.mock import AsyncMock
+
+    event = SimpleNamespace(segments=(), group_id=123, is_at_bot=False)
+    decision = PolicyDecision(True, "ok", handler="default", normalized_message="总结")
+    store = SimpleNamespace(is_feature_enabled=lambda feature_id: True)
+    image_path = tmp_path / "digest.png"
+    report = SimpleNamespace(image_path=image_path)
+    monkeypatch.setattr(chat, "onebot_to_internal", lambda event, self_id: event)
+    monkeypatch.setattr(chat, "_record_group_activity", lambda *a, **kw: None)
+    monkeypatch.setattr(chat, "pending_lua_command", lambda event: None)
+    monkeypatch.setattr(chat, "handle_custom_flow", lambda event: None)
+    monkeypatch.setattr(
+        chat,
+        "get_policy_engine",
+        lambda: SimpleNamespace(evaluate=lambda *a, **kw: decision),
+    )
+    monkeypatch.setattr(chat, "get_store", lambda: store)
+    generate = AsyncMock(return_value=report)
+    monkeypatch.setattr(chat, "generate_group_digest_report", generate)
+    lua = AsyncMock(side_effect=AssertionError("digest must finish before Lua"))
+    monkeypatch.setattr(chat, "run_lua_message", lua)
+    matcher = SimpleNamespace(send=AsyncMock(), finish=AsyncMock())
+    bot = SimpleNamespace(self_id=456, send_group_msg=AsyncMock())
+
+    await chat._handle_onebot_message(matcher, bot, event, explicit_group_send=explicit_send)
+
+    generate.assert_awaited_once()
+    responses = (
+        [call.kwargs["message"] for call in bot.send_group_msg.call_args_list]
+        if explicit_send
+        else [call.args[0] for call in matcher.send.call_args_list]
+    )
+    assert [response.type for response in responses] == ["text", "image"]
+    assert "正在整理今天" in responses[0].data["text"]
+    assert responses[1].data["file"] == image_path.as_uri()
+    lua.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("reason", ["ok", "group_not_enabled", "group_rate_limited", "user_rate_limited"])
 @pytest.mark.parametrize("explicit_send", [False, True])
 async def test_all_classics_policy_and_current_group_forward(monkeypatch, reason, explicit_send):

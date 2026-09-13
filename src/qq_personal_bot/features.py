@@ -26,7 +26,12 @@ STATIC_FEATURES: tuple[FeatureDefinition, ...] = (
     FeatureDefinition("replies.fixed", "消息回复", "固定回复", "使用 replies.json 中的回复规则。"),
     FeatureDefinition("teacher.lookup", "消息回复", "查老师", "查询教师评分和评价。"),
     FeatureDefinition("gallery.random", "图片功能", "随机图库", "响应涩图命令并发送轮换图片。"),
-    FeatureDefinition("activity.record", "群数据", "群消息统计", "记录群总结所需的消息统计。"),
+    FeatureDefinition(
+        "activity.record",
+        "群数据",
+        "群聊速报",
+        "记录当天群消息，并为 ~总结 生成聊天文件、AI 摘要和长图。",
+    ),
     FeatureDefinition("classics.forward_all", "图片功能", "典图合并转发", "发送本群全部典图。"),
     FeatureDefinition("downloads.ingest", "图片功能", "下载聊天图片", "下载引用聊天记录中的图片。"),
     FeatureDefinition("downloads.overview", "图片功能", "下载图库概览", "查询已下载图片统计。"),

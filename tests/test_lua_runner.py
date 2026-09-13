@@ -1479,71 +1479,17 @@ async def test_builtin_pick_and_change_wife_skip_claimed_members(tmp_path, monke
 
 
 @pytest.mark.asyncio
-async def test_builtin_group_summary_reports_daily_activity(tmp_path, monkeypatch):
-    configure_builtin_lua_dir(tmp_path, monkeypatch)
-    store = get_store()
-    event_time = china_timestamp(2026, 6, 20, 22, 0)
-    store.record_group_message_activity(
-        group_id=123,
-        user_id=1,
-        timestamp=china_timestamp(2026, 6, 19, 8, 5),
-        raw_message="早上好",
-        segments=(),
-    )
-    store.record_group_message_activity(
-        group_id=123,
-        user_id=2,
-        timestamp=china_timestamp(2026, 6, 19, 22, 0),
-        raw_message="hello world",
-        segments=(
-            {"type": "text", "data": {"text": "hello world"}},
-            {"type": "image", "data": {"file": "a.jpg"}},
-            {"type": "at", "data": {"qq": "1"}},
-        ),
-    )
-    store.record_group_message_activity(
-        group_id=123,
-        user_id=2,
-        timestamp=china_timestamp(2026, 6, 19, 23, 30),
-        raw_message="晚安",
-        segments=(
-            {"type": "text", "data": {"text": "晚安"}},
-            {"type": "image", "data": {"file": "b.jpg"}},
-        ),
-    )
-
-    result = await run_lua_message(
-        RichFakeBot(),
-        make_event(raw_message="~群总结", timestamp=event_time),
-        PolicyDecision(True, "ok", handler="default", normalized_message="群总结"),
-    )
-
-    assert result.quote is True
-    assert result.reply is not None
-    assert "昨日群总结" in result.reply
-    assert "总消息：3 条" in result.reply
-    assert "参与人数：2 人" in result.reply
-    assert "最活跃时段：08:00-09:00（1 条）" in result.reply
-    assert "早鸟：Alpha（08:05）" in result.reply
-    assert "夜猫子：BetaCard（23:30）" in result.reply
-    assert "水群榜\n1. BetaCard：2 条" in result.reply
-    assert "字数榜\n1. BetaCard：13 字" in result.reply
-    assert "发图榜\n1. BetaCard：2 张" in result.reply
-    assert "@人榜\n1. BetaCard：1 次" in result.reply
-
-
-@pytest.mark.asyncio
-async def test_builtin_group_summary_handles_empty_day(tmp_path, monkeypatch):
+async def test_builtin_group_summary_is_reserved_for_async_python_handler(tmp_path, monkeypatch):
     configure_builtin_lua_dir(tmp_path, monkeypatch)
 
     result = await run_lua_message(
         RichFakeBot(),
-        make_event(raw_message="~群总结", timestamp=china_timestamp(2026, 6, 19, 12, 0)),
-        PolicyDecision(True, "ok", handler="default", normalized_message="群总结"),
+        make_event(raw_message="~总结", timestamp=china_timestamp(2026, 6, 20, 22, 0)),
+        PolicyDecision(True, "ok", handler="default", normalized_message="总结"),
     )
 
-    assert result.quote is True
-    assert result.reply == "昨天还没有统计到群消息。"
+    assert result.reply is None
+    assert result.stop is False
 
 
 @pytest.mark.asyncio
@@ -1574,7 +1520,7 @@ async def test_builtin_help_lists_public_features_only_for_regular_user(tmp_path
     assert "~help  查看动态功能菜单" in help_text
     assert "~今日菜单  随机推荐今日吃什么" in help_text
     assert "~抽群老婆  抽取今日双向绑定对象" in help_text
-    assert "~群总结  查看昨天的群消息总结" in help_text
+    assert "~总结  生成今天的群聊速报长图" in help_text
     assert "~今日饭店  随机抽一家本群饭店" in help_text
     assert "/bot" not in help_text
     assert "/download" not in help_text

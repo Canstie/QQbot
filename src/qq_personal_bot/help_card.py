@@ -35,7 +35,7 @@ _KNOWN_LUA_COMMANDS = frozenset(
         "右对称",
         "上对称",
         "下对称",
-        "群总结",
+        "总结",
     }
 )
 
@@ -97,7 +97,7 @@ def build_help_sections(
     add(
         "群数据与菜单",
         (
-            (lua("群总结", "activity.record"), "~群总结  查看昨天的群消息总结"),
+            (lua("总结", "activity.record"), "~总结  生成今天的群聊速报长图"),
             (enabled("flows.menu_add"), "~添加菜单  按提示添加菜名和图片"),
             (enabled("flows.restaurant_add"), "~添加饭店  添加店名和招牌菜"),
             (enabled("flows.restaurant_pick"), "~今日饭店  随机抽一家本群饭店"),

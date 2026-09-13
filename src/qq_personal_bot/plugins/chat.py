@@ -18,6 +18,7 @@ from qq_personal_bot.dsapi import (
     generate_random_group_reply,
 )
 from qq_personal_bot.features import feature_id_for_platform
+from qq_personal_bot.group_digest import GroupDigestEmptyError, generate_group_digest_report
 from qq_personal_bot.lua_runner import pending_lua_command, run_lua_message
 from qq_personal_bot.miniapp import (
     CachedMiniAppImages,
@@ -279,6 +280,65 @@ async def _handle_onebot_message(
                                  explicit_group_send=explicit_group_send)
         return
 
+    if decision.handler == "default" and decision.normalized_message.strip() == "总结":
+        store = get_store()
+        if not all(
+            store.is_feature_enabled(feature_id)
+            for feature_id in ("activity.record", "lua.master", "lua.command.总结")
+        ):
+            return
+        await _send_response(
+            matcher,
+            bot,
+            event,
+            MessageSegment.text("⏳ 正在整理今天的聊天记录并生成群聊速报……"),
+            explicit_group_send=explicit_group_send,
+        )
+        try:
+            report = await generate_group_digest_report(
+                bot,
+                internal_event,
+                get_settings(),
+                store,
+            )
+        except GroupDigestEmptyError as exc:
+            await _send_response(
+                matcher,
+                bot,
+                event,
+                MessageSegment.text(str(exc)),
+                explicit_group_send=explicit_group_send,
+            )
+            return
+        except DSAPIError as exc:
+            logger.warning(f"Daily group digest generation failed: {exc}")
+            await _send_response(
+                matcher,
+                bot,
+                event,
+                MessageSegment.text("群聊速报生成失败，请检查 DeepSeek 配置后再试。"),
+                explicit_group_send=explicit_group_send,
+            )
+            return
+        except Exception as exc:  # noqa: BLE001 - keep the bot handler alive on render failures
+            logger.exception(f"Daily group digest rendering failed: {exc}")
+            await _send_response(
+                matcher,
+                bot,
+                event,
+                MessageSegment.text("群聊速报生成时出了点问题，请稍后再试。"),
+                explicit_group_send=explicit_group_send,
+            )
+            return
+        await _send_response(
+            matcher,
+            bot,
+            event,
+            MessageSegment.image(report.image_path.as_uri()),
+            explicit_group_send=explicit_group_send,
+        )
+        return
+
     teacher_args = (
         parse_teacher_command(decision.normalized_message)
         if decision.handler == "default" else None
@@ -390,6 +450,7 @@ def _record_group_activity(event: Any, *, self_id: int | str) -> None:
             timestamp=event.timestamp,
             raw_message=event.raw_message,
             segments=event.segments,
+            message_id=event.message_id,
         )
     except Exception as exc:
         logger.warning(f"Failed to record group activity: {exc}")

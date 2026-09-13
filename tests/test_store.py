@@ -1278,6 +1278,10 @@ def test_group_daily_summary_counts_activity_by_day(tmp_path):
 
     assert summary["total_messages"] == 5
     assert summary["active_users"] == 3
+    assert summary["total_text_chars"] == 20
+    assert summary["total_images"] == 3
+    assert summary["total_mentions"] == 1
+    assert summary["hourly_counts"][13] == 2
     assert summary["top_messages"][0]["user_id"] == 1
     assert summary["top_messages"][0]["message_count"] == 2
     assert summary["top_text_chars"][0]["user_id"] == 2
@@ -1317,6 +1321,15 @@ def test_group_daily_summary_counts_activity_by_day(tmp_path):
     assert summary["early_bird"]["first_time"] == "08:10"
     assert summary["night_owl"]["user_id"] == 1
     assert summary["night_owl"]["last_time"] == "23:58"
+
+    messages = store.get_group_daily_messages(123, "2026-06-19")
+    assert len(messages) == 5
+    assert messages[0]["content"] == "早上好"
+    assert messages[1]["content"] == "hello world[@1][回复]"
+    assert messages[2]["content"] == "[图片]"
+    assert messages[3]["content"] == "[图片]看看"
+    assert messages[4]["content"] == "最后一条[图片]"
+    assert "base64" not in "".join(message["content"] for message in messages)
 
     next_day = store.get_group_daily_summary(123, "2026-06-20", limit=5)
     assert next_day["total_messages"] == 1
