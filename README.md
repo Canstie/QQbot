@@ -110,6 +110,10 @@ http://127.0.0.1:8080/qqbot/
 HttpOnly 会话 Cookie。脚本或调试请求仍可通过 `?token=...` 或 API 请求头
 `X-Admin-Token` 传入同一个 token。
 
+如需在小黑盒触发验证码时私聊管理员完成验证，请把 `QQBOT_PUBLIC_BASE_URL` 配置为
+外部可访问的 `/qqbot` 地址（例如 `https://bot.example.com/qqbot`）。验证链接为一次性链接，
+有效期 10 分钟；验证成功后机器人会自动把解析出的图片发回原群。
+
 Web 管理页可以直接用表单维护触发前缀、前缀触发回复、免前缀关键词回复。
 
 “功能中心”提供 Python 模块和每个 Lua 指令的即时开关；关闭后下一次触发会静默跳过，

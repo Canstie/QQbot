@@ -7,6 +7,8 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 
 from qq_personal_bot.miniapp import (
+    XiaoheiheCaptchaRequired,
+    _fetch_xiaoheihe_image_urls,
     cache_miniapp_images,
     extract_miniapp_image_source,
 )
@@ -330,6 +332,64 @@ async def test_caches_all_xiaoheihe_images_from_signed_detail_api(monkeypatch):
 
     cached.cleanup()
     assert not directory.exists()
+
+
+def test_xiaoheihe_detail_reports_captcha_requirement(monkeypatch):
+    class FakeResponse:
+        headers = Message()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self, size):
+            return json.dumps({"status": "show_captcha", "result": {}}).encode()
+
+        def geturl(self):
+            return "https://api.xiaoheihe.cn/bbs/app/link/tree"
+
+    monkeypatch.setattr("qq_personal_bot.miniapp.urlopen", lambda request, timeout: FakeResponse())
+
+    with pytest.raises(XiaoheiheCaptchaRequired) as exc_info:
+        _fetch_xiaoheihe_image_urls("c0687248f6da")
+
+    assert exc_info.value.appid == "199251710"
+
+
+def test_xiaoheihe_detail_submits_captcha_fields(monkeypatch):
+    captured_query = {}
+
+    class FakeResponse:
+        headers = Message()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self, size):
+            return json.dumps({"status": "ok", "result": {"link": {}}}).encode()
+
+        def geturl(self):
+            return "https://api.xiaoheihe.cn/bbs/app/link/tree"
+
+    def fake_urlopen(request, timeout):
+        captured_query.update(parse_qs(urlparse(request.full_url).query))
+        return FakeResponse()
+
+    monkeypatch.setattr("qq_personal_bot.miniapp.urlopen", fake_urlopen)
+
+    assert _fetch_xiaoheihe_image_urls(
+        "c0687248f6da",
+        ticket="captcha-ticket",
+        randstr="@captcha-randstr",
+    ) == []
+    assert captured_query["ticket"] == ["captcha-ticket"]
+    assert captured_query["randstr"] == ["@captcha-randstr"]
+    assert captured_query["captcha_type"] == ["confirm"]
 
 
 def test_ignores_regular_json_card_and_invalid_scheme():

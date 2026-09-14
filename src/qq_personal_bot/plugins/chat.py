@@ -27,6 +27,7 @@ from qq_personal_bot.group_digest import GroupDigestEmptyError, generate_group_d
 from qq_personal_bot.lua_runner import pending_lua_command, run_lua_message
 from qq_personal_bot.miniapp import (
     CachedMiniAppImages,
+    XiaoheiheCaptchaRequired,
     cache_miniapp_images,
     extract_miniapp_image_source,
 )
@@ -42,6 +43,11 @@ from qq_personal_bot.random_gallery import send_random_gallery
 from qq_personal_bot.replies import build_reply
 from qq_personal_bot.runtime import get_policy_engine, get_settings, get_store
 from qq_personal_bot.teachers import parse_teacher_command, query_teachers
+from qq_personal_bot.xiaoheihe_captcha import (
+    XIAOHEIHE_CAPTCHA_TTL_SECONDS,
+    build_xiaoheihe_captcha_url,
+    get_xiaoheihe_captcha_store,
+)
 
 chat = on_message(priority=50, block=False)
 self_sent = on("message_sent", priority=50, block=False)
@@ -76,6 +82,60 @@ def _build_miniapp_image_response(cached: CachedMiniAppImages) -> Message:
     for path in cached.paths:
         response += MessageSegment.image(path.resolve().as_uri())
     return response
+
+
+async def _notify_xiaoheihe_captcha_admins(
+    bot: Bot,
+    event: Any,
+    source_url: str,
+    appid: str,
+) -> None:
+    group_id = getattr(event, "group_id", None)
+    if group_id is None:
+        return
+
+    settings = get_settings()
+    admins = get_store().admins()
+    if not admins:
+        logger.warning("Xiaoheihe CAPTCHA required, but no administrator is configured")
+        return
+
+    challenge, created = get_xiaoheihe_captcha_store().create(
+        source_url=source_url,
+        group_id=int(group_id),
+        bot_id=str(bot.self_id),
+        appid=appid,
+    )
+    if not created:
+        return
+
+    try:
+        verification_url = build_xiaoheihe_captcha_url(
+            settings.public_base_url,
+            challenge.token,
+        )
+    except ValueError as exc:
+        get_xiaoheihe_captcha_store().consume(challenge.token)
+        logger.error(f"Cannot notify Xiaoheihe CAPTCHA administrators: {exc}")
+        return
+
+    minutes = XIAOHEIHE_CAPTCHA_TTL_SECONDS // 60
+    message = (
+        f"群 {int(group_id)} 的小黑盒图片解析需要验证码。\n"
+        f"请在 {minutes} 分钟内打开：\n{verification_url}\n"
+        "验证通过后，机器人会自动把图片发回原群。"
+    )
+    notified = False
+    for admin_id in admins:
+        try:
+            await bot.send_private_msg(user_id=int(admin_id), message=message)
+            notified = True
+        except Exception as exc:  # noqa: BLE001 - notify remaining administrators
+            logger.warning(
+                f"Failed to notify administrator {admin_id} about Xiaoheihe CAPTCHA: {exc}"
+            )
+    if not notified:
+        get_xiaoheihe_captcha_store().consume(challenge.token)
 
 
 def _normalize_message_text(value: Any) -> str:
@@ -203,6 +263,14 @@ async def _dispatch_onebot_message(
         try:
             with latency_phase("miniapp_fetch"):
                 cached_images = await cache_miniapp_images(miniapp_image_source)
+        except XiaoheiheCaptchaRequired as exc:
+            await _notify_xiaoheihe_captcha_admins(
+                bot,
+                event,
+                miniapp_image_source.source_url,
+                exc.appid,
+            )
+            cached_images = CachedMiniAppImages(directory=None, paths=())
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             logger.warning(f"Failed to cache mini app images: {exc}")
             cached_images = CachedMiniAppImages(directory=None, paths=())

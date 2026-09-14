@@ -90,6 +90,7 @@ class AppSettings:
     steam_proxy_url: str = ""
     steam_font_path: Path | None = None
     web_token: str | None = None
+    public_base_url: str = ""
     nonebot_driver: str = "~fastapi"
     host: str = "127.0.0.1"
     port: int = 8080
@@ -168,6 +169,7 @@ class AppSettings:
                 else None
             ),
             web_token=web_token,
+            public_base_url=env.get("QQBOT_PUBLIC_BASE_URL", "").strip().rstrip("/"),
             nonebot_driver=env.get("DRIVER", "~fastapi"),
             host=env.get("HOST", "127.0.0.1"),
             port=_env_int(env.get("PORT"), 8080),

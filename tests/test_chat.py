@@ -6,8 +6,13 @@ from types import SimpleNamespace
 import pytest
 
 from qq_personal_bot.core.models import PolicyDecision
-from qq_personal_bot.miniapp import CachedMiniAppImages, MiniAppImageSource
+from qq_personal_bot.miniapp import (
+    CachedMiniAppImages,
+    MiniAppImageSource,
+    XiaoheiheCaptchaRequired,
+)
 from qq_personal_bot.plugins import chat
+from qq_personal_bot.xiaoheihe_captcha import get_xiaoheihe_captcha_store
 
 
 def make_event(*, group_id: int = 123, raw_message: str = "~抽群老婆"):
@@ -357,3 +362,60 @@ async def test_miniapp_sends_only_image_collection(monkeypatch, tmp_path):
     assert matcher.calls[0][0] == "finish"
     assert [segment.type for segment in matcher.calls[0][1]] == ["image", "image"]
     assert not directory.exists()
+
+
+@pytest.mark.asyncio
+async def test_xiaoheihe_captcha_privately_notifies_admin_once(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    captcha_store = get_xiaoheihe_captcha_store()
+    captcha_store.clear()
+    source = MiniAppImageSource(
+        source_url="https://api.xiaoheihe.cn/v3/bbs/app/api/web/share?link_id=c0687248f6da",
+        platform="xiaoheihe",
+    )
+    internal_event = SimpleNamespace(segments=(), group_id=123, is_at_bot=False)
+    store = SimpleNamespace(
+        admins=lambda: [10001, 10002],
+        is_feature_enabled=lambda feature_id: True,
+    )
+    monkeypatch.setattr(chat, "onebot_to_internal", lambda event, self_id: internal_event)
+    monkeypatch.setattr(chat, "_record_group_activity", lambda event, self_id: None)
+    monkeypatch.setattr(chat, "extract_miniapp_image_source", lambda segments: source)
+    monkeypatch.setattr(chat, "_automatic_reply_allowed", lambda event: True)
+    monkeypatch.setattr(chat, "get_store", lambda: store)
+    monkeypatch.setattr(
+        chat,
+        "get_settings",
+        lambda: SimpleNamespace(public_base_url="https://bot.example.com/qqbot"),
+    )
+    monkeypatch.setattr(chat, "pending_lua_command", lambda event: None)
+    monkeypatch.setattr(chat, "handle_custom_flow", lambda event: None)
+    monkeypatch.setattr(
+        chat,
+        "get_policy_engine",
+        lambda: SimpleNamespace(
+            evaluate=lambda event, self_id: PolicyDecision(False, "group_not_enabled")
+        ),
+    )
+
+    async def captcha_required(_source):
+        raise XiaoheiheCaptchaRequired()
+
+    monkeypatch.setattr(chat, "cache_miniapp_images", captcha_required)
+    matcher = SimpleNamespace(send=AsyncMock(), finish=AsyncMock())
+    bot = SimpleNamespace(self_id=456, send_private_msg=AsyncMock())
+    event = SimpleNamespace(group_id=123)
+
+    await chat._handle_onebot_message(matcher, bot, event)
+    await chat._handle_onebot_message(matcher, bot, event)
+
+    assert bot.send_private_msg.await_count == 2
+    assert [call.kwargs["user_id"] for call in bot.send_private_msg.call_args_list] == [
+        10001,
+        10002,
+    ]
+    notification = bot.send_private_msg.call_args.kwargs["message"]
+    assert "群 123" in notification
+    assert "https://bot.example.com/qqbot/xiaoheihe-captcha/" in notification
+    captcha_store.clear()

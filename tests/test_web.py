@@ -4,12 +4,16 @@ import base64
 import hashlib
 import io
 import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
 
 from qq_personal_bot import web as web_module
+from qq_personal_bot.miniapp import CachedMiniAppImages
 from qq_personal_bot.runtime import get_store, reset_runtime
 from qq_personal_bot.web import create_app
+from qq_personal_bot.xiaoheihe_captcha import get_xiaoheihe_captcha_store
 
 GIF_DATA_URL = (
     "data:image/gif;base64,"
@@ -111,6 +115,58 @@ def test_index_serves_static_frontend(tmp_path, monkeypatch):
     assert "/qqbot/static/assets/index-" in response.text
     assert ".js" in response.text
     assert ".css" in response.text
+
+
+def test_xiaoheihe_captcha_page_is_public_and_sends_images_back(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("QQBOT_WEB_TOKEN", "admin-secret")
+    monkeypatch.setenv("QQBOT_DB_PATH", str(tmp_path / "policy.sqlite3"))
+    reset_runtime()
+    captcha_store = get_xiaoheihe_captcha_store()
+    captcha_store.clear()
+    challenge, _ = captcha_store.create(
+        source_url="https://api.xiaoheihe.cn/share?link_id=example",
+        group_id=123,
+        bot_id="456",
+        appid="199251710",
+    )
+    image_dir = tmp_path / "captcha-images"
+    image_dir.mkdir()
+    image_path = image_dir / "01.jpg"
+    image_path.write_bytes(b"image")
+    cache = AsyncMock(
+        return_value=CachedMiniAppImages(directory=image_dir, paths=(image_path,))
+    )
+    bot = SimpleNamespace(send_group_msg=AsyncMock())
+    monkeypatch.setattr(web_module, "cache_xiaoheihe_images_with_captcha", cache)
+    monkeypatch.setattr(web_module, "get_bot", lambda self_id: bot)
+    client = TestClient(create_app())
+
+    page = client.get(f"/xiaoheihe-captcha/{challenge.token}")
+    response = client.post(
+        f"/xiaoheihe-captcha/{challenge.token}/verify",
+        json={"ticket": "captcha-ticket", "randstr": "@captcha-randstr"},
+    )
+
+    assert page.status_code == 200
+    assert "TencentCaptcha" in page.text
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    cache.assert_awaited_once_with(
+        challenge.source_url,
+        ticket="captcha-ticket",
+        randstr="@captcha-randstr",
+    )
+    bot.send_group_msg.assert_awaited_once()
+    assert bot.send_group_msg.call_args.kwargs["group_id"] == 123
+    assert bot.send_group_msg.call_args.kwargs["message"][0].type == "image"
+    assert not image_dir.exists()
+    assert client.get(f"/xiaoheihe-captcha/{challenge.token}").status_code == 410
+    captcha_store.clear()
+    reset_runtime()
 
 
 def test_replies_api_still_accepts_raw_json(tmp_path, monkeypatch):

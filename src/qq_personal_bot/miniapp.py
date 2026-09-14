@@ -42,6 +42,7 @@ _INITIAL_STATE_MARKER = "window.__INITIAL_STATE__="
 _XIAOHEIHE_DETAIL_PATH = "/bbs/app/link/tree"
 _XIAOHEIHE_SHARE_PATH = "/v3/bbs/app/api/web/share"
 _XIAOHEIHE_LINK_ID_RE = re.compile(r"^[A-Za-z0-9_-]{6,64}$")
+_XIAOHEIHE_CAPTCHA_APP_ID = "199251710"
 _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36"
@@ -83,6 +84,13 @@ class CachedMiniAppImages:
             shutil.rmtree(self.directory, ignore_errors=True)
 
 
+class XiaoheiheCaptchaRequired(ValueError):
+    def __init__(self, appid: str = _XIAOHEIHE_CAPTCHA_APP_ID) -> None:
+        normalized_appid = str(appid).strip()
+        self.appid = normalized_appid if normalized_appid.isdigit() else _XIAOHEIHE_CAPTCHA_APP_ID
+        super().__init__("Xiaoheihe CAPTCHA required")
+
+
 def extract_miniapp_image_source(
     segments: Sequence[Mapping[str, Any]],
 ) -> MiniAppImageSource | None:
@@ -118,6 +126,20 @@ async def cache_miniapp_images(source: MiniAppImageSource) -> CachedMiniAppImage
     if _is_xiaoheihe_share_url(source.source_url):
         return await asyncio.to_thread(_cache_xiaoheihe_images, source.source_url)
     return CachedMiniAppImages(directory=None, paths=())
+
+
+async def cache_xiaoheihe_images_with_captcha(
+    source_url: str,
+    *,
+    ticket: str,
+    randstr: str,
+) -> CachedMiniAppImages:
+    return await asyncio.to_thread(
+        _cache_xiaoheihe_images,
+        source_url,
+        ticket=ticket,
+        randstr=randstr,
+    )
 
 
 def _decode_json_payload(data: Any) -> Mapping[str, Any] | None:
@@ -241,15 +263,25 @@ def _cache_xiaohongshu_images(source_url: str) -> CachedMiniAppImages:
     return _cache_image_urls(image_urls, final_url, prefix="qqbot-xhs-")
 
 
-def _cache_xiaoheihe_images(source_url: str) -> CachedMiniAppImages:
+def _cache_xiaoheihe_images(
+    source_url: str,
+    *,
+    ticket: str | None = None,
+    randstr: str | None = None,
+) -> CachedMiniAppImages:
     link_id = _xiaoheihe_link_id(source_url)
     if link_id is None:
         raise ValueError("invalid Xiaoheihe share URL")
-    image_urls = _fetch_xiaoheihe_image_urls(link_id)
+    image_urls = _fetch_xiaoheihe_image_urls(link_id, ticket=ticket, randstr=randstr)
     return _cache_image_urls(image_urls, source_url, prefix="qqbot-heybox-")
 
 
-def _fetch_xiaoheihe_image_urls(link_id: str) -> list[str]:
+def _fetch_xiaoheihe_image_urls(
+    link_id: str,
+    *,
+    ticket: str | None = None,
+    randstr: str | None = None,
+) -> list[str]:
     if not _XIAOHEIHE_LINK_ID_RE.fullmatch(link_id):
         raise ValueError("invalid Xiaoheihe link id")
     params = {
@@ -270,6 +302,16 @@ def _fetch_xiaoheihe_image_urls(link_id: str) -> list[str]:
         "limit": "20",
         "owner_only": "0",
     }
+    if ticket is not None or randstr is not None:
+        if not ticket or not randstr:
+            raise ValueError("both Xiaoheihe CAPTCHA fields are required")
+        params.update(
+            {
+                "ticket": ticket,
+                "randstr": randstr,
+                "captcha_type": "confirm",
+            }
+        )
     query = urlencode(params).replace("&link_id=", "&h_src&link_id=")
     request = Request(
         f"https://api.xiaoheihe.cn{_XIAOHEIHE_DETAIL_PATH}?{query}",
@@ -282,6 +324,8 @@ def _fetch_xiaoheihe_image_urls(link_id: str) -> list[str]:
     if len(body) > _MAX_PAGE_BYTES:
         raise ValueError("Xiaoheihe response is too large")
     payload = json.loads(body.decode("utf-8"))
+    if isinstance(payload, Mapping) and payload.get("status") == "show_captcha":
+        raise XiaoheiheCaptchaRequired(str(payload.get("appid", "")))
     if not isinstance(payload, Mapping) or payload.get("status") != "ok":
         raise ValueError("Xiaoheihe detail request failed")
     result = payload.get("result")
