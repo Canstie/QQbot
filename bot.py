@@ -3,8 +3,8 @@ from __future__ import annotations
 import nonebot
 from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
 
+from qq_personal_bot.activity import close_group_activity
 from qq_personal_bot.runtime import get_settings, get_store
-
 
 settings = get_settings()
 
@@ -18,6 +18,11 @@ nonebot.init(
 
 driver = nonebot.get_driver()
 driver.register_adapter(OneBotV11Adapter)
+
+
+@driver.on_shutdown
+async def _flush_activity_on_shutdown() -> None:
+    await close_group_activity()
 
 get_store()
 

@@ -9,6 +9,11 @@ from typing import Any
 from nonebot import logger, on, on_message
 from nonebot.adapters.onebot.v11 import Bot, Event, GroupMessageEvent, Message, MessageSegment
 
+from qq_personal_bot.activity import (
+    GroupActivityRecord,
+    flush_group_activity,
+    get_activity_recorder,
+)
 from qq_personal_bot.adapters.onebot import onebot_to_internal
 from qq_personal_bot.classic_forward import send_all_classics
 from qq_personal_bot.core.models import PolicyDecision
@@ -24,6 +29,13 @@ from qq_personal_bot.miniapp import (
     CachedMiniAppImages,
     cache_miniapp_images,
     extract_miniapp_image_source,
+)
+from qq_personal_bot.performance import (
+    LatencyTrace,
+    annotate_latency,
+    bind_latency_trace,
+    latency_phase,
+    reset_latency_trace,
 )
 from qq_personal_bot.plugins.custom_flows import handle_custom_flow
 from qq_personal_bot.random_gallery import send_random_gallery
@@ -115,13 +127,14 @@ async def _finish_with_response(
     explicit_group_send: bool,
 ) -> None:
     _remember_recent_bot_output(event, response)
-    if explicit_group_send:
-        group_id = getattr(event, "group_id", None)
-        if group_id is not None:
-            await bot.send_group_msg(group_id=int(group_id), message=response)
-        await matcher.finish()
+    with latency_phase("send"):
+        if explicit_group_send:
+            group_id = getattr(event, "group_id", None)
+            if group_id is not None:
+                await bot.send_group_msg(group_id=int(group_id), message=response)
+            await matcher.finish()
 
-    await matcher.finish(response)
+        await matcher.finish(response)
 
 
 async def _send_response(
@@ -133,12 +146,13 @@ async def _send_response(
     explicit_group_send: bool,
 ) -> None:
     _remember_recent_bot_output(event, response)
-    if explicit_group_send:
-        group_id = getattr(event, "group_id", None)
-        if group_id is not None:
-            await bot.send_group_msg(group_id=int(group_id), message=response)
-        return
-    await matcher.send(response)
+    with latency_phase("send"):
+        if explicit_group_send:
+            group_id = getattr(event, "group_id", None)
+            if group_id is not None:
+                await bot.send_group_msg(group_id=int(group_id), message=response)
+            return
+        await matcher.send(response)
 
 
 async def _handle_onebot_message(
@@ -148,8 +162,32 @@ async def _handle_onebot_message(
     *,
     explicit_group_send: bool = False,
 ) -> None:
-    internal_event = onebot_to_internal(event, self_id=bot.self_id)
-    _record_group_activity(internal_event, self_id=bot.self_id)
+    trace = LatencyTrace("onebot_message")
+    trace.annotate(event_kind="self_sent" if explicit_group_send else "group_message")
+    token = bind_latency_trace(trace)
+    try:
+        await _dispatch_onebot_message(
+            matcher,
+            bot,
+            event,
+            explicit_group_send=explicit_group_send,
+        )
+    finally:
+        reset_latency_trace(token)
+        trace.emit()
+
+
+async def _dispatch_onebot_message(
+    matcher: Any,
+    bot: Bot,
+    event: Any,
+    *,
+    explicit_group_send: bool = False,
+) -> None:
+    with latency_phase("parse"):
+        internal_event = onebot_to_internal(event, self_id=bot.self_id)
+    with latency_phase("activity_enqueue"):
+        _record_group_activity(internal_event, self_id=bot.self_id)
     miniapp_image_source = extract_miniapp_image_source(internal_event.segments)
     miniapp_feature = (
         feature_id_for_platform(miniapp_image_source.platform)
@@ -163,7 +201,8 @@ async def _handle_onebot_message(
         and _miniapp_image_source_allowed(miniapp_image_source, internal_event)
     ):
         try:
-            cached_images = await cache_miniapp_images(miniapp_image_source)
+            with latency_phase("miniapp_fetch"):
+                cached_images = await cache_miniapp_images(miniapp_image_source)
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             logger.warning(f"Failed to cache mini app images: {exc}")
             cached_images = CachedMiniAppImages(directory=None, paths=())
@@ -181,16 +220,18 @@ async def _handle_onebot_message(
 
     pending_command = pending_lua_command(internal_event)
     if pending_command is not None:
-        lua_result = await run_lua_message(
-            bot,
-            internal_event,
-            PolicyDecision(
-                True,
-                "ok",
-                handler="lua",
-                normalized_message=pending_command,
-            ),
-        )
+        annotate_latency(handler="lua_pending")
+        with latency_phase("lua"):
+            lua_result = await run_lua_message(
+                bot,
+                internal_event,
+                PolicyDecision(
+                    True,
+                    "ok",
+                    handler="lua",
+                    normalized_message=pending_command,
+                ),
+            )
         if lua_result.reply:
             await _finish_with_response(
                 matcher,
@@ -212,7 +253,9 @@ async def _handle_onebot_message(
             explicit_group_send=explicit_group_send,
         )
 
-    decision = get_policy_engine().evaluate(internal_event, self_id=bot.self_id)
+    with latency_phase("policy"):
+        decision = get_policy_engine().evaluate(internal_event, self_id=bot.self_id)
+    annotate_latency(handler=decision.handler or "none", outcome=decision.reason)
     if not decision.allowed:
         if internal_event.is_at_bot and decision.reason in {
             "group_rate_limited",
@@ -232,11 +275,12 @@ async def _handle_onebot_message(
             ):
                 return
             try:
-                response = await generate_random_group_reply(
-                    internal_event,
-                    get_settings(),
-                    get_store(),
-                )
+                with latency_phase("deepseek"):
+                    response = await generate_random_group_reply(
+                        internal_event,
+                        get_settings(),
+                        get_store(),
+                    )
             except DSAPIError as exc:
                 logger.warning(f"DSAPI random group reply failed: {exc}")
                 return
@@ -261,8 +305,9 @@ async def _handle_onebot_message(
             await _send_response(matcher, bot, event, MessageSegment.text(text),
                                  explicit_group_send=explicit_group_send)
 
-        await send_all_classics(internal_event.group_id, str(bot.self_id),
-                                send_classic_forward, send_classic_notice)
+        with latency_phase("classics"):
+            await send_all_classics(internal_event.group_id, str(bot.self_id),
+                                    send_classic_forward, send_classic_notice)
         return
 
     if decision.handler == "default" and decision.normalized_message.strip() == "涩图":
@@ -274,7 +319,8 @@ async def _handle_onebot_message(
                 explicit_group_send=explicit_group_send,
             )
 
-        notice = await send_random_gallery(send_gallery_image)
+        with latency_phase("gallery"):
+            notice = await send_random_gallery(send_gallery_image)
         if notice:
             await _send_response(matcher, bot, event, MessageSegment.text(notice),
                                  explicit_group_send=explicit_group_send)
@@ -296,13 +342,16 @@ async def _handle_onebot_message(
             MessageSegment.text("⏳ 正在整理今天的聊天记录并生成群聊速报……"),
             explicit_group_send=explicit_group_send,
         )
+        with latency_phase("activity_flush"):
+            await flush_group_activity()
         try:
-            report = await generate_group_digest_report(
-                bot,
-                internal_event,
-                get_settings(),
-                store,
-            )
+            with latency_phase("digest"):
+                report = await generate_group_digest_report(
+                    bot,
+                    internal_event,
+                    get_settings(),
+                    store,
+                )
         except GroupDigestEmptyError as exc:
             await _send_response(
                 matcher,
@@ -348,14 +397,17 @@ async def _handle_onebot_message(
     if teacher_args is not None:
         if not get_store().is_feature_enabled("teacher.lookup"):
             return
-        for text in await query_teachers(*teacher_args):
+        with latency_phase("teacher"):
+            teacher_results = await query_teachers(*teacher_args)
+        for text in teacher_results:
             await _send_response(
                 matcher, bot, event, MessageSegment.text(text),
                 explicit_group_send=explicit_group_send,
             )
         return
 
-    lua_result = await run_lua_message(bot, internal_event, decision)
+    with latency_phase("lua"):
+        lua_result = await run_lua_message(bot, internal_event, decision)
     if lua_result.reply:
         await _finish_with_response(
             matcher,
@@ -374,12 +426,13 @@ async def _handle_onebot_message(
         ):
             return
         try:
-            response = await generate_mention_reply(
-                bot,
-                internal_event,
-                get_settings(),
-                get_store(),
-            )
+            with latency_phase("deepseek"):
+                response = await generate_mention_reply(
+                    bot,
+                    internal_event,
+                    get_settings(),
+                    get_store(),
+                )
         except DSAPIError as exc:
             logger.warning(f"DSAPI mention reply failed: {exc}")
             await _finish_with_response(
@@ -445,17 +498,16 @@ def _record_group_activity(event: Any, *, self_id: int | str) -> None:
     if mode == "blocklist" and store.is_group_blocked(event.group_id):
         return
 
-    try:
-        store.record_group_message_activity(
+    get_activity_recorder(store).enqueue(
+        GroupActivityRecord(
             group_id=event.group_id,
             user_id=event.user_id,
             timestamp=event.timestamp,
             raw_message=event.raw_message,
-            segments=event.segments,
+            segments=tuple(event.segments),
             message_id=event.message_id,
         )
-    except Exception as exc:
-        logger.warning(f"Failed to record group activity: {exc}")
+    )
 
 
 def _automatic_reply_allowed(event: Any) -> bool:

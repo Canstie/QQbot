@@ -4,8 +4,10 @@ import hashlib
 import json
 import re
 import sqlite3
+import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -27,6 +29,7 @@ from qq_personal_bot.settings import AppSettings
 
 CHINA_TZ = timezone(timedelta(hours=8))
 _GROUP_MESSAGE_RETENTION_DAYS = 7
+_RUNTIME_CACHE_TTL_SECONDS = 5.0
 
 
 def _strip_cq_segments(message: str) -> str:
@@ -36,11 +39,16 @@ def _strip_cq_segments(message: str) -> str:
 class PolicyStore:
     def __init__(self, path: str | Path):
         self.path = Path(path)
+        self._runtime_cache: dict[tuple[Any, ...], tuple[float, Any]] = {}
+        self._runtime_cache_lock = threading.RLock()
+        self._last_group_message_cleanup_date: str | None = None
+        self._group_message_cleanup_lock = threading.Lock()
 
     def initialize(self, settings: AppSettings) -> None:
         first_run = not self.path.exists()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
+            conn.execute("PRAGMA journal_mode = WAL")
             self._create_schema(conn)
             has_settings = conn.execute("SELECT 1 FROM settings LIMIT 1").fetchone() is not None
             should_seed = first_run or not has_settings
@@ -53,13 +61,39 @@ class PolicyStore:
             self._initialize_feature_flags(conn, settings)
             self._initialize_steam_settings(conn)
             self.purge_legacy_menu_caches(conn=conn)
+        self._invalidate_runtime_cache()
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(self.path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA journal_mode = WAL")
-        return conn
+        conn.execute("PRAGMA busy_timeout = 5000")
+        conn.execute("PRAGMA synchronous = NORMAL")
+        try:
+            yield conn
+        except BaseException:
+            conn.rollback()
+            raise
+        else:
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _cached_runtime_value(self, key: tuple[Any, ...], loader: Any) -> Any:
+        now = time.monotonic()
+        with self._runtime_cache_lock:
+            cached = self._runtime_cache.get(key)
+            if cached is not None and cached[0] > now:
+                return cached[1]
+        value = loader()
+        with self._runtime_cache_lock:
+            self._runtime_cache[key] = (now + _RUNTIME_CACHE_TTL_SECONDS, value)
+        return value
+
+    def _invalidate_runtime_cache(self) -> None:
+        with self._runtime_cache_lock:
+            self._runtime_cache.clear()
 
     def _create_schema(self, conn: sqlite3.Connection) -> None:
         conn.executescript(
@@ -162,6 +196,9 @@ class PolicyStore:
 
             CREATE INDEX IF NOT EXISTS idx_group_daily_messages_group_date_time
             ON group_daily_messages(group_id, date, created_at, id);
+
+            CREATE INDEX IF NOT EXISTS idx_group_daily_messages_date
+            ON group_daily_messages(date);
 
             CREATE UNIQUE INDEX IF NOT EXISTS idx_group_daily_messages_message_id
             ON group_daily_messages(group_id, message_id)
@@ -903,6 +940,7 @@ class PolicyStore:
         with self._connect() as conn:
             self.set_setting("policy_mode", mode, conn=conn)
             self.audit(actor_id, "set_mode", "policy", {"mode": mode}, conn=conn)
+        self._invalidate_runtime_cache()
 
     def set_core_config(
         self,
@@ -1002,11 +1040,17 @@ class PolicyStore:
                 },
                 conn=conn,
             )
+        self._invalidate_runtime_cache()
 
     def get_setting(self, key: str, default: str) -> str:
-        with self._connect() as conn:
-            row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
-            return str(row["value"]) if row else default
+        def load() -> str:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT value FROM settings WHERE key = ?", (key,)
+                ).fetchone()
+                return str(row["value"]) if row else default
+
+        return str(self._cached_runtime_value(("setting", key, default), load))
 
     def set_setting(self, key: str, value: str, conn: sqlite3.Connection | None = None) -> None:
         if conn is None:
@@ -1021,14 +1065,22 @@ class PolicyStore:
             """,
             (key, value),
         )
+        self._invalidate_runtime_cache()
 
     def is_feature_enabled(self, feature_id: str, default: bool = True) -> bool:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT enabled FROM feature_flags WHERE feature_id = ?",
-                (str(feature_id),),
-            ).fetchone()
-        return bool(row["enabled"]) if row is not None else bool(default)
+        normalized = str(feature_id)
+
+        def load() -> bool:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT enabled FROM feature_flags WHERE feature_id = ?",
+                    (normalized,),
+                ).fetchone()
+            return bool(row["enabled"]) if row is not None else bool(default)
+
+        return bool(
+            self._cached_runtime_value(("feature", normalized, bool(default)), load)
+        )
 
     def list_feature_flags(self, settings: AppSettings) -> list[dict[str, Any]]:
         definitions = feature_catalog(settings.lua_dir)
@@ -1077,6 +1129,7 @@ class PolicyStore:
                 {"enabled": bool(enabled)},
                 conn=conn,
             )
+        self._invalidate_runtime_cache()
 
     def get_steam_settings(self) -> dict[str, Any]:
         def integer(key: str, default: int) -> int:
@@ -2359,6 +2412,7 @@ class PolicyStore:
         with self._connect() as conn:
             self.set_setting("trigger_mention", value, conn=conn)
             self.audit(actor_id, "set_trigger_mention", "policy", {"enabled": enabled}, conn=conn)
+        self._invalidate_runtime_cache()
 
     def get_direct_trigger_percent(self) -> float:
         try:
@@ -2380,6 +2434,7 @@ class PolicyStore:
                 {"percent": percent},
                 conn=conn,
             )
+        self._invalidate_runtime_cache()
 
     def get_per_group_seconds(self) -> float:
         return float(self.get_setting("per_group_seconds", "5"))
@@ -2403,22 +2458,33 @@ class PolicyStore:
                 },
                 conn=conn,
             )
+        self._invalidate_runtime_cache()
 
     def is_group_enabled(self, group_id: int) -> bool:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT enabled FROM groups WHERE group_id = ?",
-                (group_id,),
-            ).fetchone()
-            return bool(row and row["enabled"])
+        normalized = int(group_id)
+
+        def load() -> bool:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT enabled FROM groups WHERE group_id = ?",
+                    (normalized,),
+                ).fetchone()
+                return bool(row and row["enabled"])
+
+        return bool(self._cached_runtime_value(("group_enabled", normalized), load))
 
     def is_group_blocked(self, group_id: int) -> bool:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT blocked FROM groups WHERE group_id = ?",
-                (group_id,),
-            ).fetchone()
-            return bool(row and row["blocked"])
+        normalized = int(group_id)
+
+        def load() -> bool:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT blocked FROM groups WHERE group_id = ?",
+                    (normalized,),
+                ).fetchone()
+                return bool(row and row["blocked"])
+
+        return bool(self._cached_runtime_value(("group_blocked", normalized), load))
 
     def set_group_enabled(self, group_id: int, enabled: bool, actor_id: int) -> None:
         with self._connect() as conn:
@@ -2430,6 +2496,7 @@ class PolicyStore:
                 {"enabled": enabled},
                 conn=conn,
             )
+        self._invalidate_runtime_cache()
 
     def set_group_blocked(self, group_id: int, blocked: bool, actor_id: int) -> None:
         with self._connect() as conn:
@@ -2441,6 +2508,7 @@ class PolicyStore:
                 {"blocked": blocked},
                 conn=conn,
             )
+        self._invalidate_runtime_cache()
 
     def _upsert_group_flag(
         self,
@@ -2470,11 +2538,14 @@ class PolicyStore:
     def _list_group_ids(self, column: str) -> list[int]:
         if column not in {"enabled", "blocked"}:
             raise ValueError("invalid group flag")
-        with self._connect() as conn:
-            rows = conn.execute(
-                f"SELECT group_id FROM groups WHERE {column} = 1 ORDER BY group_id"
-            ).fetchall()
-            return [int(row["group_id"]) for row in rows]
+        def load() -> tuple[int, ...]:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    f"SELECT group_id FROM groups WHERE {column} = 1 ORDER BY group_id"
+                ).fetchall()
+                return tuple(int(row["group_id"]) for row in rows)
+
+        return list(self._cached_runtime_value(("group_ids", column), load))
 
     def add_admin(
         self,
@@ -2491,27 +2562,44 @@ class PolicyStore:
             (user_id, time.time()),
         )
         self.audit(actor_id, "add_admin", str(user_id), {}, conn=conn)
+        self._invalidate_runtime_cache()
 
     def remove_admin(self, user_id: int, actor_id: int) -> None:
         with self._connect() as conn:
             conn.execute("DELETE FROM admins WHERE user_id = ?", (user_id,))
             self.audit(actor_id, "remove_admin", str(user_id), {}, conn=conn)
+        self._invalidate_runtime_cache()
 
     def is_admin(self, user_id: int) -> bool:
-        with self._connect() as conn:
-            row = conn.execute("SELECT 1 FROM admins WHERE user_id = ?", (user_id,)).fetchone()
-            return row is not None
+        normalized = int(user_id)
+
+        def load() -> bool:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT 1 FROM admins WHERE user_id = ?", (normalized,)
+                ).fetchone()
+                return row is not None
+
+        return bool(self._cached_runtime_value(("admin", normalized), load))
 
     def admins(self) -> list[int]:
-        with self._connect() as conn:
-            rows = conn.execute("SELECT user_id FROM admins ORDER BY user_id").fetchall()
-            return [int(row["user_id"]) for row in rows]
+        def load() -> tuple[int, ...]:
+            with self._connect() as conn:
+                rows = conn.execute("SELECT user_id FROM admins ORDER BY user_id").fetchall()
+                return tuple(int(row["user_id"]) for row in rows)
+
+        return list(self._cached_runtime_value(("admins",), load))
 
     def prefixes(self) -> list[str]:
-        with self._connect() as conn:
-            rows = conn.execute("SELECT prefix FROM trigger_prefixes ORDER BY prefix").fetchall()
-            prefixes = [str(row["prefix"]) for row in rows]
-            return prefixes or ["~"]
+        def load() -> tuple[str, ...]:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT prefix FROM trigger_prefixes ORDER BY prefix"
+                ).fetchall()
+                prefixes = tuple(str(row["prefix"]) for row in rows)
+                return prefixes or ("~",)
+
+        return list(self._cached_runtime_value(("prefixes",), load))
 
     def set_prefixes(self, prefixes: list[str], actor_id: int) -> None:
         normalized = self._normalize_prefixes(prefixes)
@@ -2521,6 +2609,7 @@ class PolicyStore:
             for prefix in normalized:
                 conn.execute("INSERT INTO trigger_prefixes(prefix) VALUES (?)", (prefix,))
             self.audit(actor_id, "set_prefixes", "policy", {"prefixes": normalized}, conn=conn)
+        self._invalidate_runtime_cache()
 
     def add_prefix(self, prefix: str, actor_id: int) -> None:
         prefix = prefix.strip()
@@ -2529,11 +2618,13 @@ class PolicyStore:
         with self._connect() as conn:
             conn.execute("INSERT OR IGNORE INTO trigger_prefixes(prefix) VALUES (?)", (prefix,))
             self.audit(actor_id, "add_prefix", prefix, {}, conn=conn)
+        self._invalidate_runtime_cache()
 
     def remove_prefix(self, prefix: str, actor_id: int) -> None:
         with self._connect() as conn:
             conn.execute("DELETE FROM trigger_prefixes WHERE prefix = ?", (prefix,))
             self.audit(actor_id, "remove_prefix", prefix, {}, conn=conn)
+        self._invalidate_runtime_cache()
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -2592,36 +2683,161 @@ class PolicyStore:
         segments: Any,
         message_id: int | str = "",
     ) -> None:
-        group_id = int(group_id)
-        user_id = int(user_id)
-        event_time = float(timestamp or time.time())
-        event_datetime = datetime.fromtimestamp(event_time, CHINA_TZ)
-        event_date = event_datetime.date().isoformat()
-        hour = event_datetime.hour
-        text_chars = self._message_text_length(raw_message, segments)
-        image_count = self._count_segments(segments, "image")
-        at_count = self._count_segments(segments, "at")
-        reply_count = self._count_segments(segments, "reply")
-        transcript_content = self._message_transcript_content(raw_message, segments)
+        self.record_group_message_activities(
+            (
+                {
+                    "group_id": group_id,
+                    "user_id": user_id,
+                    "timestamp": timestamp,
+                    "raw_message": raw_message,
+                    "segments": segments,
+                    "message_id": message_id,
+                },
+            )
+        )
+
+    def record_group_message_activities(
+        self,
+        activities: Sequence[Mapping[str, Any]],
+    ) -> int:
+        """Persist a small activity batch in one transaction and one database connection."""
+        if not activities:
+            return 0
+
+        aggregates: dict[tuple[str, int, int], dict[str, Any]] = {}
+        newest_datetime: datetime | None = None
+        inserted = 0
         now = time.time()
 
         with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO group_daily_messages(
-                    date, group_id, user_id, message_id, content, created_at
+            for activity in activities:
+                group_id = int(activity["group_id"])
+                user_id = int(activity["user_id"])
+                event_time = float(activity.get("timestamp") or now)
+                event_datetime = datetime.fromtimestamp(event_time, CHINA_TZ)
+                event_date = event_datetime.date().isoformat()
+                segments = activity.get("segments") or ()
+                raw_message = str(activity.get("raw_message") or "")
+                cursor = conn.execute(
+                    """
+                    INSERT OR IGNORE INTO group_daily_messages(
+                        date, group_id, user_id, message_id, content, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        event_date,
+                        group_id,
+                        user_id,
+                        str(activity.get("message_id") or ""),
+                        self._message_transcript_content(raw_message, segments),
+                        event_time,
+                    ),
                 )
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    event_date,
-                    group_id,
-                    user_id,
-                    str(message_id or ""),
-                    transcript_content,
-                    event_time,
-                ),
-            )
+                if cursor.rowcount <= 0:
+                    continue
+
+                inserted += 1
+                if newest_datetime is None or event_datetime > newest_datetime:
+                    newest_datetime = event_datetime
+                key = (event_date, group_id, user_id)
+                aggregate = aggregates.setdefault(
+                    key,
+                    {
+                        "message_count": 0,
+                        "text_chars": 0,
+                        "image_count": 0,
+                        "at_count": 0,
+                        "reply_count": 0,
+                        "first_timestamp": event_time,
+                        "last_timestamp": event_time,
+                        "hourly_counts": [0] * 24,
+                    },
+                )
+                aggregate["message_count"] += 1
+                aggregate["text_chars"] += self._message_text_length(raw_message, segments)
+                aggregate["image_count"] += self._count_segments(segments, "image")
+                aggregate["at_count"] += self._count_segments(segments, "at")
+                aggregate["reply_count"] += self._count_segments(segments, "reply")
+                aggregate["first_timestamp"] = min(
+                    float(aggregate["first_timestamp"]), event_time
+                )
+                aggregate["last_timestamp"] = max(
+                    float(aggregate["last_timestamp"]), event_time
+                )
+                aggregate["hourly_counts"][event_datetime.hour] += 1
+
+            for (event_date, group_id, user_id), aggregate in aggregates.items():
+                row = conn.execute(
+                    """
+                    SELECT hourly_json
+                    FROM group_daily_stats
+                    WHERE date = ? AND group_id = ? AND user_id = ?
+                    """,
+                    (event_date, group_id, user_id),
+                ).fetchone()
+                hourly_counts = (
+                    self._decode_hourly_counts(str(row["hourly_json"]))
+                    if row is not None
+                    else [0] * 24
+                )
+                hourly_counts = [
+                    current + delta
+                    for current, delta in zip(
+                        hourly_counts, aggregate["hourly_counts"], strict=True
+                    )
+                ]
+                conn.execute(
+                    """
+                    INSERT INTO group_daily_stats(
+                        date, group_id, user_id, message_count, text_chars,
+                        image_count, at_count, reply_count, first_timestamp,
+                        last_timestamp, hourly_json, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(date, group_id, user_id) DO UPDATE SET
+                        message_count = message_count + excluded.message_count,
+                        text_chars = text_chars + excluded.text_chars,
+                        image_count = image_count + excluded.image_count,
+                        at_count = at_count + excluded.at_count,
+                        reply_count = reply_count + excluded.reply_count,
+                        first_timestamp = MIN(first_timestamp, excluded.first_timestamp),
+                        last_timestamp = MAX(last_timestamp, excluded.last_timestamp),
+                        hourly_json = excluded.hourly_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        event_date,
+                        group_id,
+                        user_id,
+                        aggregate["message_count"],
+                        aggregate["text_chars"],
+                        aggregate["image_count"],
+                        aggregate["at_count"],
+                        aggregate["reply_count"],
+                        aggregate["first_timestamp"],
+                        aggregate["last_timestamp"],
+                        json.dumps(hourly_counts, separators=(",", ":")),
+                        now,
+                    ),
+                )
+
+            if newest_datetime is not None:
+                self._purge_group_messages_if_due(conn, newest_datetime)
+        return inserted
+
+    def _purge_group_messages_if_due(
+        self,
+        conn: sqlite3.Connection,
+        event_datetime: datetime,
+    ) -> None:
+        cleanup_date = event_datetime.date().isoformat()
+        with self._group_message_cleanup_lock:
+            if (
+                self._last_group_message_cleanup_date is not None
+                and self._last_group_message_cleanup_date >= cleanup_date
+            ):
+                return
             retention_cutoff = (
                 event_datetime.date() - timedelta(days=_GROUP_MESSAGE_RETENTION_DAYS - 1)
             ).isoformat()
@@ -2629,82 +2845,7 @@ class PolicyStore:
                 "DELETE FROM group_daily_messages WHERE date < ?",
                 (retention_cutoff,),
             )
-            row = conn.execute(
-                """
-                SELECT hourly_json, first_timestamp, last_timestamp
-                FROM group_daily_stats
-                WHERE date = ? AND group_id = ? AND user_id = ?
-                """,
-                (event_date, group_id, user_id),
-            ).fetchone()
-            if row is None:
-                hourly_counts = [0] * 24
-                hourly_counts[hour] = 1
-                conn.execute(
-                    """
-                    INSERT INTO group_daily_stats(
-                        date,
-                        group_id,
-                        user_id,
-                        message_count,
-                        text_chars,
-                        image_count,
-                        at_count,
-                        reply_count,
-                        first_timestamp,
-                        last_timestamp,
-                        hourly_json,
-                        updated_at
-                    )
-                    VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        event_date,
-                        group_id,
-                        user_id,
-                        text_chars,
-                        image_count,
-                        at_count,
-                        reply_count,
-                        event_time,
-                        event_time,
-                        json.dumps(hourly_counts, separators=(",", ":")),
-                        now,
-                    ),
-                )
-                return
-
-            hourly_counts = self._decode_hourly_counts(str(row["hourly_json"]))
-            hourly_counts[hour] += 1
-            conn.execute(
-                """
-                UPDATE group_daily_stats
-                SET
-                    message_count = message_count + 1,
-                    text_chars = text_chars + ?,
-                    image_count = image_count + ?,
-                    at_count = at_count + ?,
-                    reply_count = reply_count + ?,
-                    first_timestamp = MIN(first_timestamp, ?),
-                    last_timestamp = MAX(last_timestamp, ?),
-                    hourly_json = ?,
-                    updated_at = ?
-                WHERE date = ? AND group_id = ? AND user_id = ?
-                """,
-                (
-                    text_chars,
-                    image_count,
-                    at_count,
-                    reply_count,
-                    event_time,
-                    event_time,
-                    json.dumps(hourly_counts, separators=(",", ":")),
-                    now,
-                    event_date,
-                    group_id,
-                    user_id,
-                ),
-            )
+            self._last_group_message_cleanup_date = cleanup_date
 
     def record_group_message_transcript(
         self,
@@ -2720,9 +2861,6 @@ class PolicyStore:
         event_datetime = datetime.fromtimestamp(event_time, CHINA_TZ)
         event_date = event_datetime.date().isoformat()
         content = self._message_transcript_content(raw_message, segments)
-        retention_cutoff = (
-            event_datetime.date() - timedelta(days=_GROUP_MESSAGE_RETENTION_DAYS - 1)
-        ).isoformat()
         with self._connect() as conn:
             cursor = conn.execute(
                 """
@@ -2740,10 +2878,7 @@ class PolicyStore:
                     event_time,
                 ),
             )
-            conn.execute(
-                "DELETE FROM group_daily_messages WHERE date < ?",
-                (retention_cutoff,),
-            )
+            self._purge_group_messages_if_due(conn, event_datetime)
             return cursor.rowcount > 0
 
     def get_group_daily_summary(

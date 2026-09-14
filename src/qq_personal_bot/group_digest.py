@@ -15,6 +15,7 @@ from qq_personal_bot.core.models import MessageEvent
 from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.dsapi import DSAPIError, _request_chat_completion_with_fallback
 from qq_personal_bot.group_digest_card import render_group_digest_card
+from qq_personal_bot.performance import latency_phase
 from qq_personal_bot.settings import AppSettings
 
 CHINA_TZ = timezone(timedelta(hours=8))
@@ -48,49 +49,56 @@ async def generate_group_digest_report(
         raise DSAPIError("DSAPI key is not configured")
 
     target_date = _china_date(event.timestamp)
-    await _backfill_today_history(bot, event.group_id, target_date, store)
-    messages = store.get_group_daily_messages(event.group_id, target_date)
+    with latency_phase("digest_history"):
+        await _backfill_today_history(bot, event.group_id, target_date, store)
+    with latency_phase("digest_database"):
+        messages = store.get_group_daily_messages(event.group_id, target_date)
     if not messages:
         raise GroupDigestEmptyError("今天还没有记录到群消息。")
 
-    group_name, names = await _group_metadata(bot, event.group_id, messages)
-    summary = store.get_group_daily_summary(event.group_id, target_date, limit=8)
+    with latency_phase("digest_metadata"):
+        group_name, names = await _group_metadata(bot, event.group_id, messages)
+    with latency_phase("digest_database"):
+        summary = store.get_group_daily_summary(event.group_id, target_date, limit=8)
     report_dir = settings.db_path.parent / "daily_reports" / target_date
     report_dir.mkdir(parents=True, exist_ok=True)
     transcript_path = report_dir / f"group-{event.group_id}-chat.txt"
-    _write_transcript(
-        transcript_path,
-        group_id=event.group_id,
-        group_name=group_name,
-        date=target_date,
-        messages=messages,
-        names=names,
-    )
+    with latency_phase("digest_transcript"):
+        _write_transcript(
+            transcript_path,
+            group_id=event.group_id,
+            group_name=group_name,
+            date=target_date,
+            messages=messages,
+            names=names,
+        )
 
     config = store.get_dsapi_config()
     active = config.get("active_knowledge") or {}
     model = str(active.get("model") or settings.dsapi_model)
-    digest = await _summarize_transcript(
-        transcript_path,
-        settings=settings,
-        model=model,
-        group_name=group_name,
-        summary=_summary_for_model(summary, names),
-        names=names,
-    )
+    with latency_phase("digest_deepseek"):
+        digest = await _summarize_transcript(
+            transcript_path,
+            settings=settings,
+            model=model,
+            group_name=group_name,
+            summary=_summary_for_model(summary, names),
+            names=names,
+        )
     output_path = report_dir / f"group-{event.group_id}-digest.png"
-    await asyncio.to_thread(
-        render_group_digest_card,
-        settings,
-        output_path=output_path,
-        group_name=group_name,
-        date=target_date,
-        summary=summary,
-        digest=digest,
-        names=names,
-        transcript_size=transcript_path.stat().st_size,
-        model=model,
-    )
+    with latency_phase("digest_render"):
+        await asyncio.to_thread(
+            render_group_digest_card,
+            settings,
+            output_path=output_path,
+            group_name=group_name,
+            date=target_date,
+            summary=summary,
+            digest=digest,
+            names=names,
+            transcript_size=transcript_path.stat().st_size,
+            model=model,
+        )
     return GroupDigestResult(
         image_path=output_path.resolve(),
         transcript_path=transcript_path.resolve(),

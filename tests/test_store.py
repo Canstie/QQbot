@@ -1336,6 +1336,49 @@ def test_group_daily_summary_counts_activity_by_day(tmp_path):
     assert next_day["active_users"] == 1
 
 
+def test_group_activity_batch_uses_one_transaction_and_deduplicates(tmp_path):
+    db_path = tmp_path / "policy.sqlite3"
+    store = PolicyStore(db_path)
+    store.initialize(AppSettings(db_path=db_path, admins=()))
+    timestamp = _china_timestamp(2026, 6, 19, 10, 0)
+
+    inserted = store.record_group_message_activities(
+        [
+            {
+                "group_id": 123,
+                "user_id": 1,
+                "timestamp": timestamp,
+                "raw_message": "第一条",
+                "segments": (),
+                "message_id": 42,
+            },
+            {
+                "group_id": 123,
+                "user_id": 1,
+                "timestamp": timestamp + 60,
+                "raw_message": "重复事件",
+                "segments": (),
+                "message_id": 42,
+            },
+            {
+                "group_id": 123,
+                "user_id": 1,
+                "timestamp": timestamp + 120,
+                "raw_message": "第二条",
+                "segments": (),
+                "message_id": 43,
+            },
+        ]
+    )
+
+    summary = store.get_group_daily_summary(123, "2026-06-19")
+    messages = store.get_group_daily_messages(123, "2026-06-19")
+    assert inserted == 2
+    assert summary["total_messages"] == 2
+    assert summary["hourly_counts"][10] == 2
+    assert [message["content"] for message in messages] == ["第一条", "第二条"]
+
+
 def test_launcher_log_cleanup_keeps_recent_two_days(tmp_path):
     assert DEFAULT_LOG_RETENTION_DAYS == 2
 
