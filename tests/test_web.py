@@ -153,6 +153,9 @@ def test_xiaoheihe_captcha_page_is_public_and_sends_images_back(
 
     assert page.status_code == 200
     assert "TencentCaptcha" in page.text
+    assert "https://turing.captcha.qcloud.com/TJCaptcha.js" in page.text
+    assert "https://turing.captcha.qcloud.com/TCaptcha.js" in page.text
+    assert "正在加载验证组件" in page.text
     assert response.status_code == 200
     assert response.json()["ok"] is True
     cache.assert_awaited_once_with(

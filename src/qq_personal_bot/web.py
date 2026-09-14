@@ -1178,51 +1178,123 @@ def _xiaoheihe_captcha_page_html(appid: str) -> str:
   <main>
     <h1>小黑盒安全验证</h1>
     <p>完成验证后，机器人会自动重新解析卡片，并把图片发回原群。</p>
-    <button id="verify" type="button">开始验证</button>
-    <p id="status">链接 10 分钟内有效，且只能成功使用一次。</p>
+    <button id="verify" type="button" disabled>正在加载验证组件</button>
+    <p id="status">正在连接腾讯验证码服务……</p>
   </main>
-  <script src="https://turing.captcha.qcloud.com/TCaptcha.js"></script>
   <script>
     const appid = __APPID__;
     const button = document.getElementById("verify");
     const statusNode = document.getElementById("status");
+    const sdkUrls = [
+      "https://turing.captcha.qcloud.com/TJCaptcha.js",
+      "https://turing.captcha.qcloud.com/TCaptcha.js"
+    ];
+    let sdkPromise = null;
 
     function setStatus(message, failed = false) {
       statusNode.textContent = message;
       statusNode.style.color = failed ? "#dc2626" : "#334155";
     }
 
-    button.addEventListener("click", () => {
-      if (typeof window.TencentCaptcha !== "function") {
-        setStatus("验证码组件加载失败，请检查网络后刷新页面。", true);
+    function loadScript(url) {
+      return new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = url;
+        script.async = true;
+        script.referrerPolicy = "no-referrer";
+        script.onload = () => {
+          if (typeof window.TencentCaptcha === "function") {
+            resolve();
+          } else {
+            reject(new Error("SDK 未完成初始化"));
+          }
+        };
+        script.onerror = () => reject(new Error("SDK 下载失败"));
+        document.head.appendChild(script);
+      });
+    }
+
+    function loadCaptchaSdk() {
+      if (typeof window.TencentCaptcha === "function") {
+        return Promise.resolve();
+      }
+      if (sdkPromise) {
+        return sdkPromise;
+      }
+      sdkPromise = (async () => {
+        let lastError = null;
+        for (const url of sdkUrls) {
+          try {
+            await loadScript(url);
+            return;
+          } catch (error) {
+            lastError = error;
+          }
+        }
+        throw lastError || new Error("验证码 SDK 加载失败");
+      })().catch((error) => {
+        sdkPromise = null;
+        throw error;
+      });
+      return sdkPromise;
+    }
+
+    async function prepareCaptcha() {
+      button.disabled = true;
+      button.textContent = "正在加载验证组件";
+      setStatus("正在连接腾讯验证码服务……");
+      try {
+        await loadCaptchaSdk();
+        button.disabled = false;
+        button.textContent = "开始验证";
+        setStatus("链接 10 分钟内有效，且只能成功使用一次。");
+        return true;
+      } catch (error) {
+        button.disabled = false;
+        button.textContent = "重新加载";
+        setStatus("验证码组件加载失败，请用系统浏览器打开或点击重试。", true);
+        return false;
+      }
+    }
+
+    button.addEventListener("click", async () => {
+      if (typeof window.TencentCaptcha !== "function" && !(await prepareCaptcha())) {
         return;
       }
-      const captcha = new window.TencentCaptcha(appid, async (result) => {
-        if (!result || result.ret !== 0) {
-          setStatus("验证已取消，可以重新尝试。", true);
-          return;
-        }
-        button.disabled = true;
-        setStatus("验证通过，正在重新解析并发送图片……");
-        try {
-          const response = await fetch(`${location.pathname}/verify`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ ticket: result.ticket, randstr: result.randstr })
-          });
-          const data = await response.json();
-          if (!response.ok) {
-            throw new Error(typeof data.detail === "string" ? data.detail : "处理失败");
+      let captcha;
+      try {
+        captcha = new window.TencentCaptcha(appid, async (result) => {
+          if (!result || result.ret !== 0) {
+            setStatus("验证已取消，可以重新尝试。", true);
+            return;
           }
-          setStatus(data.message || "验证成功，图片已发送回原群。");
-          button.textContent = "已完成";
-        } catch (error) {
-          button.disabled = false;
-          setStatus(error.message || "处理失败，请重试。", true);
-        }
-      });
+          button.disabled = true;
+          setStatus("验证通过，正在重新解析并发送图片……");
+          try {
+            const response = await fetch(`${location.pathname}/verify`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ ticket: result.ticket, randstr: result.randstr })
+            });
+            const data = await response.json();
+            if (!response.ok) {
+              throw new Error(typeof data.detail === "string" ? data.detail : "处理失败");
+            }
+            setStatus(data.message || "验证成功，图片已发送回原群。");
+            button.textContent = "已完成";
+          } catch (error) {
+            button.disabled = false;
+            setStatus(error.message || "处理失败，请重试。", true);
+          }
+        });
+      } catch (error) {
+        setStatus("验证码初始化失败，请刷新页面后重试。", true);
+        return;
+      }
       captcha.show();
     });
+
+    prepareCaptcha();
   </script>
 </body>
 </html>""".replace("__APPID__", appid_json)
