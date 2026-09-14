@@ -76,6 +76,24 @@ class _FakeClassicStorage:
             self.objects.pop((int(group_id), object_key), None)
 
 
+class _FakeUrlResponse:
+    def __init__(self, body: bytes, url: str) -> None:
+        self.body = body
+        self.url = url
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def read(self, size: int) -> bytes:
+        return self.body[:size]
+
+    def geturl(self) -> str:
+        return self.url
+
+
 def test_replies_api_roundtrip(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("QQBOT_WEB_TOKEN", raising=False)
@@ -153,6 +171,7 @@ def test_xiaoheihe_captcha_page_is_public_and_sends_images_back(
 
     assert page.status_code == 200
     assert "TencentCaptcha" in page.text
+    assert "`${location.pathname}/sdk.js`" in page.text
     assert "https://turing.captcha.qcloud.com/TJCaptcha.js" in page.text
     assert "https://turing.captcha.qcloud.com/TCaptcha.js" in page.text
     assert "正在加载验证组件" in page.text
@@ -168,6 +187,39 @@ def test_xiaoheihe_captcha_page_is_public_and_sends_images_back(
     assert bot.send_group_msg.call_args.kwargs["message"][0].type == "image"
     assert not image_dir.exists()
     assert client.get(f"/xiaoheihe-captcha/{challenge.token}").status_code == 410
+    captcha_store.clear()
+    reset_runtime()
+
+
+def test_xiaoheihe_captcha_sdk_is_proxied_as_public_javascript(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("QQBOT_WEB_TOKEN", "admin-secret")
+    reset_runtime()
+    captcha_store = get_xiaoheihe_captcha_store()
+    captcha_store.clear()
+    challenge, _ = captcha_store.create(
+        source_url="https://api.xiaoheihe.cn/share?link_id=example",
+        group_id=123,
+        bot_id="456",
+        appid="199251710",
+    )
+    sdk = b"window.TencentCaptcha = function TencentCaptcha() {};"
+
+    def fake_urlopen(request, timeout):
+        assert request.full_url == "https://turing.captcha.qcloud.com/TCaptcha.js"
+        assert timeout == 15
+        return _FakeUrlResponse(sdk, request.full_url)
+
+    monkeypatch.setattr(web_module, "urlopen", fake_urlopen)
+
+    response = TestClient(create_app()).get(
+        f"/xiaoheihe-captcha/{challenge.token}/sdk.js"
+    )
+
+    assert response.status_code == 200
+    assert response.content == sdk
+    assert response.headers["content-type"].startswith("application/javascript")
+    assert response.headers["cache-control"] == "no-store"
     captcha_store.clear()
     reset_runtime()
 

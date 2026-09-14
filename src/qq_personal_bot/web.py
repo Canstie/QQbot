@@ -9,7 +9,9 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import parse_qs, quote
+from urllib.parse import parse_qs, quote, urlparse
+from urllib.request import Request as UrlRequest
+from urllib.request import urlopen
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import (
@@ -176,6 +178,8 @@ class SteamSettingsPayload(BaseModel):
 
 _SESSION_COOKIE_NAME = "qqbot_admin_session"
 _SESSION_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+_TENCENT_CAPTCHA_SDK_URL = "https://turing.captcha.qcloud.com/TCaptcha.js"
+_MAX_CAPTCHA_SDK_BYTES = 512_000
 
 
 def create_app():
@@ -235,6 +239,25 @@ def create_app():
         response = RedirectResponse("./login", status_code=303)
         response.delete_cookie(_SESSION_COOKIE_NAME, path=_cookie_path(request))
         return response
+
+    @app.get("/xiaoheihe-captcha/{token}/sdk.js")
+    async def xiaoheihe_captcha_sdk(token: str) -> Response:
+        if get_xiaoheihe_captcha_store().get(token) is None:
+            raise HTTPException(status_code=410, detail="验证链接已过期")
+        try:
+            content = await asyncio.to_thread(_fetch_tencent_captcha_sdk)
+        except (OSError, ValueError) as exc:
+            logger.warning(f"Failed to proxy Tencent CAPTCHA SDK: {exc}")
+            raise HTTPException(status_code=502, detail="验证码组件暂时不可用") from exc
+        return Response(
+            content=content,
+            media_type="application/javascript",
+            headers={
+                "Cache-Control": "no-store",
+                "Referrer-Policy": "no-referrer",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     @app.get("/xiaoheihe-captcha/{token}")
     async def xiaoheihe_captcha_page(token: str) -> Response:
@@ -1084,6 +1107,29 @@ def _replies_path() -> Path:
     return Path("replies.json")
 
 
+def _fetch_tencent_captcha_sdk() -> bytes:
+    request = UrlRequest(
+        _TENCENT_CAPTCHA_SDK_URL,
+        headers={
+            "Accept": "application/javascript,*/*;q=0.8",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 Chrome/131.0 Safari/537.36"
+            ),
+        },
+    )
+    with urlopen(request, timeout=15) as response:
+        final_url = urlparse(response.geturl())
+        if final_url.scheme != "https" or final_url.hostname != "turing.captcha.qcloud.com":
+            raise ValueError("Tencent CAPTCHA SDK redirected to an unsupported host")
+        content = response.read(_MAX_CAPTCHA_SDK_BYTES + 1)
+    if len(content) > _MAX_CAPTCHA_SDK_BYTES:
+        raise ValueError("Tencent CAPTCHA SDK is too large")
+    if b"TencentCaptcha" not in content:
+        raise ValueError("Tencent CAPTCHA SDK response is invalid")
+    return content
+
+
 def _is_public_admin_path(request: Request) -> bool:
     path = request.scope.get("path", "")
     normalized = path.rstrip("/") or "/"
@@ -1186,8 +1232,9 @@ def _xiaoheihe_captcha_page_html(appid: str) -> str:
     const button = document.getElementById("verify");
     const statusNode = document.getElementById("status");
     const sdkUrls = [
-      "https://turing.captcha.qcloud.com/TJCaptcha.js",
-      "https://turing.captcha.qcloud.com/TCaptcha.js"
+      `${location.pathname}/sdk.js`,
+      "https://turing.captcha.qcloud.com/TCaptcha.js",
+      "https://turing.captcha.qcloud.com/TJCaptcha.js"
     ];
     let sdkPromise = null;
 
