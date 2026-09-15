@@ -131,8 +131,18 @@ async def handle_steam(
                 user_id = int(rest[0])
             if user_id is None:
                 await matcher.finish("用法：/steam unbind @用户")
-            removed = store.unbind_steam_user(group_id, user_id, actor_id=actor_id)
-            await matcher.finish("已解除绑定，Steam 玩家仍会继续监控。" if removed else "没有找到绑定。")
+            removed_steam_id = store.remove_bound_steam_subscription(
+                group_id,
+                user_id,
+                actor_id=actor_id,
+            )
+            if removed_steam_id is not None:
+                get_steam_service().wake()
+            await matcher.finish(
+                f"已移除 Steam {removed_steam_id} 的监控及对应绑定。"
+                if removed_steam_id is not None
+                else "没有找到绑定。"
+            )
         if command == "list":
             if not store.is_feature_enabled("steam.player_lookup"):
                 return
@@ -325,7 +335,7 @@ def _help_text() -> str:
         "Steam 指令\n"
         "/steam list｜openbox <玩家>｜game <游戏>｜price <游戏>\n"
         "/steam addid <玩家> [@用户] [备注]｜delid <玩家>\n"
-        "/steam bind <玩家> @用户（自动加入监控）｜unbind @用户\n"
+        "/steam bind <玩家> @用户（自动加入监控）｜unbind @用户（同时移除监控）\n"
         "/steam on｜off｜achievement_on｜achievement_off\n"
         "addid、bind、unbind 所有群员可用，其余管理指令仅限管理员\n"
         "/steamwho @用户"

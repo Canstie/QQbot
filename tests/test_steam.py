@@ -4,6 +4,7 @@ import asyncio
 from pathlib import Path
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from qq_personal_bot.core.store import PolicyStore
@@ -67,6 +68,28 @@ def test_subscription_does_not_require_binding_and_unbind_keeps_monitor(tmp_path
 
     assert store.unbind_steam_user(123, 456, actor_id=10000)
     assert store.get_steam_subscription(123, STEAM_ID)["qq_user_id"] is None
+
+
+def test_remove_bound_subscription_deletes_monitor_and_current_group_bindings(tmp_path):
+    store = _store(tmp_path)
+    other_steam_id = "76561198000000002"
+    store.bind_steam_user(123, 456, STEAM_ID, actor_id=10000)
+    store.bind_steam_user(123, 789, STEAM_ID, actor_id=10000)
+    store.bind_steam_user(123, 999, other_steam_id, actor_id=10000)
+    store.bind_steam_user(321, 456, STEAM_ID, actor_id=10000)
+
+    removed = store.remove_bound_steam_subscription(123, 456, actor_id=10000)
+
+    assert removed == STEAM_ID
+    with pytest.raises(KeyError):
+        store.get_steam_subscription(123, STEAM_ID)
+    with pytest.raises(KeyError):
+        store.get_steam_binding(123, 456)
+    with pytest.raises(KeyError):
+        store.get_steam_binding(123, 789)
+    assert store.get_steam_binding(123, 999)["steam_id"] == other_steam_id
+    assert store.get_steam_binding(321, 456)["steam_id"] == STEAM_ID
+    assert store.remove_bound_steam_subscription(123, 456, actor_id=10000) is None
 
 
 def test_binding_automatically_adds_missing_subscription(tmp_path):

@@ -166,7 +166,7 @@ def build_help_sections(
                 (enabled("downloads.overview"), "/download_overview  查看下载图库统计"),
                 (steam_base, "/steam on|off  开关本群 Steam 监控"),
                 (steam_base, "/steam addid|delid  管理监控玩家"),
-                (steam_base, "/steam bind|unbind  管理 QQ 绑定"),
+                (steam_base, "/steam bind|unbind  添加或移除玩家与绑定"),
                 (steam_base, "/steam achievement_on|off  开关成就通知"),
             ),
         )

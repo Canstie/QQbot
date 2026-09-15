@@ -1548,6 +1548,38 @@ class PolicyStore:
                 )
             return bool(cursor.rowcount)
 
+    def remove_bound_steam_subscription(
+        self,
+        group_id: int,
+        qq_user_id: int,
+        *,
+        actor_id: int = 0,
+    ) -> str | None:
+        normalized_group = int(group_id)
+        normalized_user = int(qq_user_id)
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT steam_id FROM steam_bindings WHERE group_id = ? AND qq_user_id = ?",
+                (normalized_group, normalized_user),
+            ).fetchone()
+            if row is None:
+                return None
+            steam_id = str(row["steam_id"])
+            cursor = conn.execute(
+                "DELETE FROM steam_subscriptions WHERE group_id = ? AND steam_id = ?",
+                (normalized_group, steam_id),
+            )
+            if not cursor.rowcount:
+                return None
+            self.audit(
+                actor_id,
+                "remove_bound_steam_subscription",
+                f"{normalized_group}:{normalized_user}",
+                {"steam_id": steam_id},
+                conn=conn,
+            )
+            return steam_id
+
     @staticmethod
     def _normalize_steam_id(steam_id: str) -> str:
         normalized = str(steam_id).strip()
