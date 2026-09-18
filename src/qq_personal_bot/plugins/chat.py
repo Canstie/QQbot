@@ -84,7 +84,7 @@ def _build_miniapp_image_response(cached: CachedMiniAppImages) -> Message:
     return response
 
 
-async def _notify_xiaoheihe_captcha_admins(
+async def _send_xiaoheihe_captcha_to_group(
     bot: Bot,
     event: Any,
     source_url: str,
@@ -95,11 +95,6 @@ async def _notify_xiaoheihe_captcha_admins(
         return
 
     settings = get_settings()
-    admins = get_store().admins()
-    if not admins:
-        logger.warning("Xiaoheihe CAPTCHA required, but no administrator is configured")
-        return
-
     challenge, created = get_xiaoheihe_captcha_store().create(
         source_url=source_url,
         group_id=int(group_id),
@@ -116,26 +111,21 @@ async def _notify_xiaoheihe_captcha_admins(
         )
     except ValueError as exc:
         get_xiaoheihe_captcha_store().consume(challenge.token)
-        logger.error(f"Cannot notify Xiaoheihe CAPTCHA administrators: {exc}")
+        logger.error(f"Cannot send Xiaoheihe CAPTCHA link to group: {exc}")
         return
 
     minutes = XIAOHEIHE_CAPTCHA_TTL_SECONDS // 60
     message = (
-        f"群 {int(group_id)} 的小黑盒图片解析需要验证码。\n"
-        f"请在 {minutes} 分钟内打开：\n{verification_url}\n"
-        "验证通过后，机器人会自动把图片发回原群。"
+        "小黑盒图片解析需要验证码。\n"
+        f"请在 {minutes} 分钟内复制链接到手机系统浏览器打开：\n{verification_url}\n"
+        "验证通过后，机器人会自动把图片发回本群。"
     )
-    notified = False
-    for admin_id in admins:
-        try:
-            await bot.send_private_msg(user_id=int(admin_id), message=message)
-            notified = True
-        except Exception as exc:  # noqa: BLE001 - notify remaining administrators
-            logger.warning(
-                f"Failed to notify administrator {admin_id} about Xiaoheihe CAPTCHA: {exc}"
-            )
-    if not notified:
+    _remember_recent_bot_output(event, message)
+    try:
+        await bot.send_group_msg(group_id=int(group_id), message=message)
+    except Exception as exc:  # noqa: BLE001 - OneBot adapters expose varied errors
         get_xiaoheihe_captcha_store().consume(challenge.token)
+        logger.warning(f"Failed to send Xiaoheihe CAPTCHA link to group {group_id}: {exc}")
 
 
 def _normalize_message_text(value: Any) -> str:
@@ -264,7 +254,7 @@ async def _dispatch_onebot_message(
             with latency_phase("miniapp_fetch"):
                 cached_images = await cache_miniapp_images(miniapp_image_source)
         except XiaoheiheCaptchaRequired as exc:
-            await _notify_xiaoheihe_captcha_admins(
+            await _send_xiaoheihe_captcha_to_group(
                 bot,
                 event,
                 miniapp_image_source.source_url,
