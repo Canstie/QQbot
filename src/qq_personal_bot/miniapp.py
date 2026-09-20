@@ -16,6 +16,8 @@ from typing import Any, Mapping, Sequence
 from urllib.parse import parse_qs, unquote, urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
+from nonebot import logger
+
 from qq_personal_bot.bilibili_card import (
     BilibiliCardRequest,
     generate_bilibili_card,
@@ -46,6 +48,11 @@ _XIAOHEIHE_CAPTCHA_APP_ID = "199251710"
 _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36"
+)
+_XIAOHONGSHU_USER_AGENT = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) "
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 "
+    "Mobile/15E148 Safari/604.1"
 )
 _MAX_PAGE_BYTES = 3_000_000
 _MAX_IMAGE_BYTES = 12_000_000
@@ -122,7 +129,11 @@ async def cache_miniapp_images(source: MiniAppImageSource) -> CachedMiniAppImage
             return CachedMiniAppImages(directory=card.parent, paths=(card,))
         return CachedMiniAppImages(directory=None, paths=())
     if _is_xiaohongshu_page_url(source.source_url):
-        return await asyncio.to_thread(_cache_xiaohongshu_images, source.source_url)
+        return await asyncio.to_thread(
+            _cache_xiaohongshu_images,
+            source.source_url,
+            source.fallback_cover_url,
+        )
     if _is_xiaoheihe_share_url(source.source_url):
         return await asyncio.to_thread(_cache_xiaoheihe_images, source.source_url)
     return CachedMiniAppImages(directory=None, paths=())
@@ -188,6 +199,12 @@ def _find_supported_image_source(payload: Mapping[str, Any]) -> MiniAppImageSour
         return None
     candidates.sort(key=lambda item: item[0])
     _, platform, source_url = candidates[0]
+    if platform == "xiaohongshu":
+        return MiniAppImageSource(
+            source_url=source_url,
+            platform=platform,
+            fallback_cover_url=_find_xiaohongshu_fallback_cover(payload),
+        )
     if platform != "bilibili":
         return MiniAppImageSource(source_url=source_url, platform=platform)
     return MiniAppImageSource(
@@ -248,6 +265,22 @@ def _find_bilibili_fallback_cover(payload: Mapping[str, Any]) -> str | None:
     return candidates[0][1]
 
 
+def _find_xiaohongshu_fallback_cover(payload: Mapping[str, Any]) -> str | None:
+    cover_keys = ("preview", "cover", "image", "image_url", "imageurl")
+    candidates: list[tuple[int, str]] = []
+    for path, value in _walk(payload):
+        key = path[-1].lower() if path else ""
+        if key not in cover_keys or not isinstance(value, str):
+            continue
+        for match in _URL_RE.findall(html.unescape(value)):
+            if _is_allowed_image_url(match):
+                candidates.append((cover_keys.index(key), match))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0])
+    return candidates[0][1]
+
+
 def _clean_bilibili_title(value: str) -> str:
     title = value.strip()
     if title.startswith(_MINIAPP_PROMPT_PREFIX):
@@ -257,10 +290,23 @@ def _clean_bilibili_title(value: str) -> str:
     return " ".join(title.split())[:200]
 
 
-def _cache_xiaohongshu_images(source_url: str) -> CachedMiniAppImages:
-    page, final_url = _fetch_page(source_url)
-    image_urls = _extract_xiaohongshu_image_urls(page, final_url)
-    return _cache_image_urls(image_urls, final_url, prefix="qqbot-xhs-")
+def _cache_xiaohongshu_images(
+    source_url: str,
+    fallback_cover_url: str | None = None,
+) -> CachedMiniAppImages:
+    image_urls: list[str] = []
+    final_url = source_url
+    try:
+        page, final_url = _fetch_page(source_url)
+        image_urls = _extract_xiaohongshu_image_urls(page, final_url)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        logger.warning(f"Xiaohongshu page parsing failed; trying card preview: {exc}")
+
+    cached = _cache_image_urls(image_urls, final_url, prefix="qqbot-xhs-")
+    if cached.paths or not fallback_cover_url or not _is_allowed_image_url(fallback_cover_url):
+        return cached
+    logger.warning("Xiaohongshu page returned no downloadable images; using card preview")
+    return _cache_image_urls((fallback_cover_url,), source_url, prefix="qqbot-xhs-")
 
 
 def _cache_xiaoheihe_images(
@@ -466,7 +512,10 @@ def _fetch_page(url: str) -> tuple[str, str]:
         raise ValueError("unsupported mini app page host")
     request = Request(
         url,
-        headers={"User-Agent": _USER_AGENT, "Accept-Language": "zh-CN,zh;q=0.9"},
+        headers={
+            "User-Agent": _XIAOHONGSHU_USER_AGENT,
+            "Accept-Language": "zh-CN,zh;q=0.9",
+        },
     )
     with urlopen(request, timeout=20) as response:
         final_url = response.geturl()
@@ -492,13 +541,24 @@ def _extract_xiaohongshu_image_urls(page: str, page_url: str) -> list[str]:
     if not isinstance(state, Mapping):
         return []
     note_state = state.get("note")
-    if not isinstance(note_state, Mapping):
-        return []
-    detail_map = note_state.get("noteDetailMap", {})
-    if not isinstance(detail_map, Mapping):
-        return []
-    note_id = _xiaohongshu_note_id(page_url)
-    details = [detail_map[note_id]] if note_id in detail_map else list(detail_map.values())[:1]
+    details: list[Any] = []
+    if isinstance(note_state, Mapping):
+        detail_map = note_state.get("noteDetailMap", {})
+        if isinstance(detail_map, Mapping):
+            note_id = _xiaohongshu_note_id(page_url)
+            details.extend(
+                [detail_map[note_id]]
+                if note_id in detail_map
+                else list(detail_map.values())[:1]
+            )
+
+    mobile_state = state.get("noteData")
+    if isinstance(mobile_state, Mapping):
+        mobile_data = mobile_state.get("data")
+        if isinstance(mobile_data, Mapping):
+            mobile_note = mobile_data.get("noteData")
+            if isinstance(mobile_note, Mapping):
+                details.append(mobile_note)
 
     urls: list[str] = []
     for detail in details:

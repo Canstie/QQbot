@@ -79,6 +79,7 @@ def test_extracts_real_xiaohongshu_tuwen_share():
 
     assert source is not None
     assert source.source_url == "http://xhslink.com/m/8rpFU0xWGvV"
+    assert source.fallback_cover_url == "https://pic.ugcimg.cn/cover/jpg1"
 
 
 def test_extracts_bilibili_card_source_and_fallback_fields():
@@ -197,6 +198,7 @@ async def test_caches_all_xiaohongshu_images_and_cleans_up(monkeypatch):
     def fake_urlopen(request, timeout):
         url = request.full_url
         if "discovery/item" in url:
+            assert "iPhone" in request.get_header("User-agent")
             return FakeResponse(page, url, "text/html")
         if url.endswith("/first"):
             return FakeResponse(b"first-image", url, "image/jpeg")
@@ -332,6 +334,154 @@ async def test_caches_all_xiaoheihe_images_from_signed_detail_api(monkeypatch):
 
     cached.cleanup()
     assert not directory.exists()
+
+
+@pytest.mark.asyncio
+async def test_caches_xiaohongshu_images_from_mobile_page_state(monkeypatch):
+    source = extract_miniapp_image_source(
+        (
+            {
+                "type": "json",
+                "data": {
+                    "app": "com.tencent.tuwen.lua",
+                    "meta": {
+                        "news": {
+                            "jumpUrl": "http://xhslink.com/m/current-share",
+                            "preview": "https://pic.ugcimg.cn/fallback/jpg1",
+                        }
+                    },
+                },
+            },
+        )
+    )
+    assert source is not None
+
+    image_url = "http://sns-webpic-qc.xhscdn.com/current-note-image"
+    state = {
+        "noteData": {
+            "data": {
+                "noteData": {
+                    "imageList": [
+                        {
+                            "url": image_url,
+                            "infoList": [{"imageScene": "H5_DTL", "url": image_url}],
+                        }
+                    ]
+                }
+            }
+        }
+    }
+    page = (
+        "<script>window.__INITIAL_STATE__="
+        + json.dumps(state, ensure_ascii=False)
+        + ";</script>"
+    ).encode()
+
+    class FakeHeaders(Message):
+        pass
+
+    class FakeResponse:
+        def __init__(self, body: bytes, url: str, content_type: str):
+            self.body = body
+            self.url = url
+            self.headers = FakeHeaders()
+            self.headers["Content-Type"] = content_type
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self, size):
+            return self.body[:size]
+
+        def geturl(self):
+            return self.url
+
+    def fake_urlopen(request, timeout):
+        if request.full_url == source.source_url:
+            assert "iPhone" in request.get_header("User-agent")
+            return FakeResponse(
+                page,
+                "https://www.xiaohongshu.com/discovery/item/current-note",
+                "text/html",
+            )
+        if request.full_url == image_url.replace("http://", "https://"):
+            return FakeResponse(b"mobile-image", request.full_url, "image/jpeg")
+        raise AssertionError(f"unexpected URL: {request.full_url}")
+
+    monkeypatch.setattr("qq_personal_bot.miniapp.urlopen", fake_urlopen)
+
+    cached = await cache_miniapp_images(source)
+    try:
+        assert len(cached.paths) == 1
+        assert cached.paths[0].read_bytes() == b"mobile-image"
+    finally:
+        cached.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_xiaohongshu_uses_card_preview_when_page_has_no_images(monkeypatch):
+    source = extract_miniapp_image_source(
+        (
+            {
+                "type": "json",
+                "data": {
+                    "app": "com.tencent.tuwen.lua",
+                    "meta": {
+                        "news": {
+                            "jumpUrl": "http://xhslink.com/m/login-redirect",
+                            "preview": "https://pic.ugcimg.cn/card-cover/jpg1",
+                        }
+                    },
+                },
+            },
+        )
+    )
+    assert source is not None
+
+    class FakeHeaders(Message):
+        pass
+
+    class FakeResponse:
+        def __init__(self, body: bytes, url: str, content_type: str):
+            self.body = body
+            self.url = url
+            self.headers = FakeHeaders()
+            self.headers["Content-Type"] = content_type
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self, size):
+            return self.body[:size]
+
+        def geturl(self):
+            return self.url
+
+    def fake_urlopen(request, timeout):
+        if request.full_url == source.source_url:
+            return FakeResponse(
+                b"<script>window.__INITIAL_STATE__={};</script>",
+                "https://www.xiaohongshu.com/login",
+                "text/html",
+            )
+        if request.full_url == source.fallback_cover_url:
+            return FakeResponse(b"fallback-cover", request.full_url, "image/jpeg")
+        raise AssertionError(f"unexpected URL: {request.full_url}")
+
+    monkeypatch.setattr("qq_personal_bot.miniapp.urlopen", fake_urlopen)
+
+    cached = await cache_miniapp_images(source)
+    try:
+        assert len(cached.paths) == 1
+        assert cached.paths[0].read_bytes() == b"fallback-cover"
+    finally:
+        cached.cleanup()
 
 
 def test_xiaoheihe_detail_reports_captcha_requirement(monkeypatch):
