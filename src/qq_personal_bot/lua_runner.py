@@ -5,6 +5,7 @@ import base64
 import hashlib
 import io
 import json
+import math
 import re
 import tempfile
 import traceback
@@ -35,8 +36,10 @@ from qq_personal_bot.runtime import get_settings, get_store
 
 _PENDING_LUA_NAMESPACE = "lua_pending_command"
 _CHINA_TZ = timezone(timedelta(hours=8))
-_MIRROR_COMMANDS = frozenset({"上对称", "下对称", "左对称", "右对称"})
-_MIRROR_TIMEOUT_SECONDS = 60.0
+_IMAGE_TRANSFORM_COMMANDS = frozenset({"上对称", "下对称", "左对称", "右对称", "加速"})
+_IMAGE_TRANSFORM_TIMEOUT_SECONDS = 60.0
+_MIN_GIF_SPEED_FACTOR = 1.0
+_MAX_GIF_SPEED_FACTOR = 10.0
 
 
 @dataclass(frozen=True)
@@ -351,6 +354,41 @@ class LuaApi:
         return "[CQ:image,file=base64://" + base64.b64encode(body).decode("ascii") + "]"
 
     def mirror_referenced_image(self, direction: str) -> str | None:
+        image_source = self._referenced_image_source()
+        if image_source is None:
+            return None
+
+        return _mirror_image_source(image_source, str(direction), self._timeout_seconds)
+
+    def speed_up_referenced_gif(self, factor: float = 2.0) -> Any:
+        try:
+            normalized_factor = float(factor)
+        except (TypeError, ValueError):
+            return _to_lua(self._lua, {"status": "invalid_factor"})
+        if not (
+            math.isfinite(normalized_factor)
+            and _MIN_GIF_SPEED_FACTOR <= normalized_factor <= _MAX_GIF_SPEED_FACTOR
+        ):
+            return _to_lua(self._lua, {"status": "invalid_factor"})
+
+        image_source = self._referenced_image_source()
+        if image_source is None:
+            return _to_lua(self._lua, {"status": "missing"})
+
+        try:
+            output = _speed_up_gif_source(image_source, normalized_factor)
+        except _NotGifError:
+            return _to_lua(self._lua, {"status": "not_gif"})
+        except _StaticGifError:
+            return _to_lua(self._lua, {"status": "static_gif"})
+        except Exception as exc:  # noqa: BLE001 - Pillow/source errors vary by image
+            logger.warning(f"Lua: failed to speed up GIF: {exc}")
+            return _to_lua(self._lua, {"status": "failed"})
+
+        image = "[CQ:image,file=base64://" + base64.b64encode(output).decode("ascii") + "]"
+        return _to_lua(self._lua, {"status": "ok", "image": image})
+
+    def _referenced_image_source(self) -> str | None:
         image_source = _first_image_source_from_segments(self._event.segments)
         if image_source is None:
             image_source = _first_embedded_reply_image_source(self._event.segments)
@@ -359,10 +397,7 @@ class LuaApi:
             if reply_message_id is not None:
                 payload = self._call_api_raw("get_msg", message_id=reply_message_id)
                 image_source = _first_image_source_from_message(payload)
-        if image_source is None:
-            return None
-
-        return _mirror_image_source(image_source, str(direction), self._timeout_seconds)
+        return image_source
 
     def help_card(self, is_admin: bool = False) -> str:
         image_path = render_help_card(
@@ -442,7 +477,7 @@ async def run_lua_message(
             f"Lua: command {command!r} timed out after "
             f"{command_timeout_seconds + 0.5:.1f}s"
         )
-        if command in _MIRROR_COMMANDS:
+        if command in _IMAGE_TRANSFORM_COMMANDS:
             return LuaMessageResult(
                 reply="这张图片或 GIF 帧数太多，处理超时了。可以换一张小一点的再试。",
                 stop=True,
@@ -458,8 +493,8 @@ async def run_lua_message(
 
 
 def _command_timeout_seconds(command: str, default_timeout_seconds: float) -> float:
-    if command in _MIRROR_COMMANDS:
-        return max(float(default_timeout_seconds), _MIRROR_TIMEOUT_SECONDS)
+    if command in _IMAGE_TRANSFORM_COMMANDS:
+        return max(float(default_timeout_seconds), _IMAGE_TRANSFORM_TIMEOUT_SECONDS)
     return float(default_timeout_seconds)
 
 
@@ -808,6 +843,62 @@ def _mirror_image_frame(frame: Any, direction: str) -> Any:
         source = result.crop((0, height - strip_height, width, height))
         result.paste(ImageOps.flip(source), (0, 0))
     return result
+
+
+class _NotGifError(ValueError):
+    pass
+
+
+class _StaticGifError(ValueError):
+    pass
+
+
+def _speed_up_gif_source(image_source: str, factor: float) -> bytes:
+    with tempfile.TemporaryDirectory(prefix="qqbot-gif-speed-") as temp_dir:
+        relpath = cache_image(
+            image_source,
+            recipe_id="source",
+            image_dir=Path(temp_dir),
+        )
+        if not relpath:
+            raise ValueError("failed to cache GIF source")
+        return _speed_up_gif_file(Path(temp_dir) / relpath, factor)
+
+
+def _speed_up_gif_file(image_path: Path, factor: float) -> bytes:
+    from PIL import Image, ImageSequence
+
+    with Image.open(image_path) as image:
+        if image.format != "GIF":
+            raise _NotGifError("image is not a GIF")
+        if int(getattr(image, "n_frames", 1)) < 2:
+            raise _StaticGifError("GIF has only one frame")
+
+        frames = []
+        durations = []
+        default_duration = int(image.info.get("duration", 100) or 100)
+        for frame in ImageSequence.Iterator(image):
+            source_duration = int(frame.info.get("duration", default_duration) or default_duration)
+            frames.append(frame.convert("RGBA"))
+            durations.append(_scaled_gif_duration(source_duration, factor))
+
+        output = io.BytesIO()
+        frames[0].save(
+            output,
+            format="GIF",
+            save_all=True,
+            append_images=frames[1:],
+            duration=durations,
+            loop=int(image.info.get("loop", 0) or 0),
+            disposal=2,
+        )
+        return output.getvalue()
+
+
+def _scaled_gif_duration(duration_ms: int, factor: float) -> int:
+    # GIF stores frame delays in 10 ms units. Keep at least one unit so that
+    # clients do not reinterpret a zero delay as a long default pause.
+    return max(10, round((max(10, duration_ms) / factor) / 10.0) * 10)
 
 
 def _sandbox(lua: Any) -> None:

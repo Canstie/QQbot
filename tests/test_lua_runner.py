@@ -1148,6 +1148,111 @@ async def test_builtin_image_symmetry_command_preserves_animated_gif(tmp_path, m
 
 
 @pytest.mark.asyncio
+async def test_builtin_gif_speed_command_defaults_to_two_times(tmp_path, monkeypatch):
+    configure_builtin_lua_dir(tmp_path, monkeypatch)
+    image_path = tmp_path / "animated.gif"
+    first = Image.new("RGBA", (3, 2), (255, 0, 0, 255))
+    second = Image.new("RGBA", (3, 2), (0, 0, 255, 255))
+    first.save(
+        image_path,
+        format="GIF",
+        save_all=True,
+        append_images=[second],
+        duration=[80, 120],
+        loop=3,
+        disposal=2,
+    )
+
+    result = await run_lua_message(
+        ReplyImageFakeBot(image_path),
+        make_event(
+            raw_message="~加速",
+            segments=({"type": "reply", "data": {"id": "quoted-image"}},),
+        ),
+        PolicyDecision(True, "ok", handler="default", normalized_message="加速"),
+    )
+
+    assert result.quote is True
+    assert result.stop is True
+    assert result.reply is not None
+    with Image.open(io.BytesIO(decode_cq_base64_image_bytes(result.reply))) as sped_up:
+        assert sped_up.format == "GIF"
+        assert sped_up.n_frames == 2
+        assert sped_up.info["loop"] == 3
+        sped_up.seek(0)
+        assert sped_up.info["duration"] == 40
+        sped_up.seek(1)
+        assert sped_up.info["duration"] == 60
+
+
+@pytest.mark.asyncio
+async def test_builtin_gif_speed_command_accepts_custom_factor(tmp_path, monkeypatch):
+    configure_builtin_lua_dir(tmp_path, monkeypatch)
+    image_path = tmp_path / "animated.gif"
+    first = Image.new("RGB", (2, 2), "red")
+    second = Image.new("RGB", (2, 2), "blue")
+    first.save(
+        image_path,
+        format="GIF",
+        save_all=True,
+        append_images=[second],
+        duration=[90, 150],
+        loop=0,
+    )
+
+    result = await run_lua_message(
+        RichFakeBot(),
+        make_event(
+            raw_message="~加速 3",
+            segments=({"type": "image", "data": {"file": str(image_path)}},),
+        ),
+        PolicyDecision(True, "ok", handler="default", normalized_message="加速 3"),
+    )
+
+    assert result.reply is not None
+    with Image.open(io.BytesIO(decode_cq_base64_image_bytes(result.reply))) as sped_up:
+        sped_up.seek(0)
+        assert sped_up.info["duration"] == 30
+        sped_up.seek(1)
+        assert sped_up.info["duration"] == 50
+
+
+@pytest.mark.asyncio
+async def test_builtin_gif_speed_command_rejects_invalid_factor(tmp_path, monkeypatch):
+    configure_builtin_lua_dir(tmp_path, monkeypatch)
+
+    result = await run_lua_message(
+        RichFakeBot(),
+        make_event(raw_message="~加速 20"),
+        PolicyDecision(True, "ok", handler="default", normalized_message="加速 20"),
+    )
+
+    assert result.quote is True
+    assert result.reply is not None
+    assert "1 到 10" in result.reply
+
+
+@pytest.mark.asyncio
+async def test_builtin_gif_speed_command_rejects_non_gif(tmp_path, monkeypatch):
+    configure_builtin_lua_dir(tmp_path, monkeypatch)
+    image_path = tmp_path / "still.png"
+    Image.new("RGB", (2, 2), "red").save(image_path)
+
+    result = await run_lua_message(
+        RichFakeBot(),
+        make_event(
+            raw_message="~加速",
+            segments=({"type": "image", "data": {"file": str(image_path)}},),
+        ),
+        PolicyDecision(True, "ok", handler="default", normalized_message="加速"),
+    )
+
+    assert result.quote is True
+    assert result.reply is not None
+    assert "不是 GIF" in result.reply
+
+
+@pytest.mark.asyncio
 async def test_image_symmetry_timeout_stops_without_json_fallback(tmp_path, monkeypatch):
     lua_dir = configure_lua_dir(tmp_path, monkeypatch)
     (lua_dir / "左对称.lua").write_text(
