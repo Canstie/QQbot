@@ -1,5 +1,5 @@
 -- Command: 加速
--- Trigger: ~加速 [倍数]
+-- Trigger: ~加速 [倍数] / ~加速倍数
 
 local function quote_reply(message)
   return {quote = true, reply = message}
@@ -10,7 +10,7 @@ function on_command(event, api)
   if event.args ~= nil and event.args ~= "" then
     factor = tonumber(event.args)
     if factor == nil or factor < 1 or factor > 10 then
-      return quote_reply("倍数需要是 1 到 10 之间的数字，例如：~加速 2")
+      return quote_reply("倍数需要是 1 到 10 之间的数字，例如：~加速 2 或 ~加速2")
     end
   end
 
@@ -25,7 +25,7 @@ function on_command(event, api)
     return quote_reply("这个 GIF 只有一帧，无法加速。")
   end
   if result.status == "invalid_factor" then
-    return quote_reply("倍数需要是 1 到 10 之间的数字，例如：~加速 2")
+    return quote_reply("倍数需要是 1 到 10 之间的数字，例如：~加速 2 或 ~加速2")
   end
   if result.status ~= "ok" or result.image == nil then
     return quote_reply("GIF 加速失败，可以换一个小一点的 GIF 再试。")

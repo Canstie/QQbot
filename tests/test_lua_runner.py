@@ -1218,6 +1218,46 @@ async def test_builtin_gif_speed_command_accepts_custom_factor(tmp_path, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_builtin_gif_speed_command_drops_frames_below_qq_delay_floor(
+    tmp_path,
+    monkeypatch,
+):
+    configure_builtin_lua_dir(tmp_path, monkeypatch)
+    image_path = tmp_path / "fast-frames.gif"
+    frames = [
+        Image.new("RGB", (3, 2), (index * 11, index * 7, index * 3))
+        for index in range(20)
+    ]
+    frames[0].save(
+        image_path,
+        format="GIF",
+        save_all=True,
+        append_images=frames[1:],
+        duration=[20] * len(frames),
+        loop=0,
+    )
+
+    result = await run_lua_message(
+        RichFakeBot(),
+        make_event(
+            raw_message="~加速4",
+            segments=({"type": "image", "data": {"file": str(image_path)}},),
+        ),
+        PolicyDecision(True, "ok", handler="default", normalized_message="加速4"),
+    )
+
+    assert result.reply is not None
+    with Image.open(io.BytesIO(decode_cq_base64_image_bytes(result.reply))) as sped_up:
+        assert sped_up.n_frames == 5
+        durations = []
+        for index in range(sped_up.n_frames):
+            sped_up.seek(index)
+            durations.append(sped_up.info["duration"])
+        assert min(durations) >= 20
+        assert sum(durations) == 100
+
+
+@pytest.mark.asyncio
 async def test_builtin_gif_speed_command_rejects_invalid_factor(tmp_path, monkeypatch):
     configure_builtin_lua_dir(tmp_path, monkeypatch)
 

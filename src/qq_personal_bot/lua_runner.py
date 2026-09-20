@@ -582,6 +582,9 @@ def split_lua_command(message: str) -> tuple[str, str] | None:
     parts = message.strip().split(maxsplit=1)
     if not parts:
         return None
+    compact_gif_speed = re.fullmatch(r"加速(\d+(?:\.\d+)?)", parts[0])
+    if compact_gif_speed is not None and len(parts) == 1:
+        return "加速", compact_gif_speed.group(1)
     try:
         command = validate_lua_command(parts[0])
     except ValueError:
@@ -875,12 +878,17 @@ def _speed_up_gif_file(image_path: Path, factor: float) -> bytes:
             raise _StaticGifError("GIF has only one frame")
 
         frames = []
-        durations = []
+        source_durations = []
         default_duration = int(image.info.get("duration", 100) or 100)
         for frame in ImageSequence.Iterator(image):
             source_duration = int(frame.info.get("duration", default_duration) or default_duration)
             frames.append(frame.convert("RGBA"))
-            durations.append(_scaled_gif_duration(source_duration, factor))
+            source_durations.append(max(10, source_duration))
+
+        if any(duration / factor < 20 for duration in source_durations):
+            frames, durations = _resample_fast_gif(frames, source_durations, factor)
+        else:
+            durations = [_scaled_gif_duration(duration, factor) for duration in source_durations]
 
         output = io.BytesIO()
         frames[0].save(
@@ -896,9 +904,49 @@ def _speed_up_gif_file(image_path: Path, factor: float) -> bytes:
 
 
 def _scaled_gif_duration(duration_ms: int, factor: float) -> int:
-    # GIF stores frame delays in 10 ms units. Keep at least one unit so that
-    # clients do not reinterpret a zero delay as a long default pause.
-    return max(10, round((max(10, duration_ms) / factor) / 10.0) * 10)
+    # GIF stores frame delays in 10 ms units. QQ may reinterpret a 10 ms delay
+    # as a much longer pause, so keep every emitted frame at 20 ms or above.
+    return max(20, round((max(10, duration_ms) / factor) / 10.0) * 10)
+
+
+def _resample_fast_gif(
+    frames: list[Any],
+    source_durations: list[int],
+    factor: float,
+) -> tuple[list[Any], list[int]]:
+    source_total = sum(source_durations)
+    target_total = max(40, round((source_total / factor) / 10.0) * 10)
+    slot_count = max(2, target_total // 20)
+    slot_durations = [20] * slot_count
+    slot_durations[-1] += target_total - sum(slot_durations)
+
+    source_ends = []
+    elapsed = 0
+    for duration in source_durations:
+        elapsed += duration
+        source_ends.append(elapsed)
+
+    selected_frames = []
+    selected_durations = []
+    source_index = 0
+    output_elapsed = 0
+    for slot_duration in slot_durations:
+        source_time = output_elapsed * source_total / target_total
+        while source_index < len(frames) - 1 and source_time >= source_ends[source_index]:
+            source_index += 1
+        if selected_frames and selected_frames[-1] is frames[source_index]:
+            selected_durations[-1] += slot_duration
+        else:
+            selected_frames.append(frames[source_index])
+            selected_durations.append(slot_duration)
+        output_elapsed += slot_duration
+
+    if len(selected_frames) == 1 and len(frames) > 1:
+        first_duration = max(20, (target_total // 20 // 2) * 20)
+        first_duration = min(first_duration, target_total - 20)
+        selected_frames = [frames[0], frames[-1]]
+        selected_durations = [first_duration, target_total - first_duration]
+    return selected_frames, selected_durations
 
 
 def _sandbox(lua: Any) -> None:
