@@ -101,6 +101,9 @@ class XiaoheiheCaptchaRequired(ValueError):
 def extract_miniapp_image_source(
     segments: Sequence[Mapping[str, Any]],
 ) -> MiniAppImageSource | None:
+    # Prefer the structured QQ share card when both it and its text fallback are
+    # present, because the card can provide a title and cover if Bilibili's API
+    # is temporarily unavailable.
     for segment in segments:
         if str(segment.get("type", "")).lower() != "json":
             continue
@@ -112,6 +115,18 @@ def extract_miniapp_image_source(
         if source is None:
             continue
         return source
+
+    for segment in segments:
+        if str(segment.get("type", "")).lower() != "text":
+            continue
+        data = segment.get("data")
+        value = data.get("text") if isinstance(data, Mapping) else data
+        if not isinstance(value, str):
+            continue
+        for match in _URL_RE.findall(html.unescape(value)):
+            source_url = _source_url(match)
+            if is_bilibili_share_url(source_url):
+                return MiniAppImageSource(source_url=source_url, platform="bilibili")
     return None
 
 
@@ -216,7 +231,7 @@ def _find_supported_image_source(payload: Mapping[str, Any]) -> MiniAppImageSour
 
 
 def _source_url(value: str) -> str:
-    url = html.unescape(value).rstrip(".,;!?)，。；！？）]")
+    url = html.unescape(value).rstrip(".,;!?)，。；！？）]】》")
     parsed = urlparse(url)
     query = parse_qs(parsed.query)
     for key in ("url", "target", "redirect", "redirect_url"):

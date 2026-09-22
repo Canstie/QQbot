@@ -117,7 +117,7 @@ def build_help_sections(
         (
             (enabled("ai.master", "ai.mention"), "@机器人  与 AI 对话"),
             (enabled("ai.master", "ai.random"), "随机插话  AI 偶尔参与普通群聊"),
-            (enabled("cards.bilibili"), "B站分享  自动解析视频图片卡片"),
+            (enabled("cards.bilibili"), "B站分享/直链  自动解析视频图片卡片"),
             (enabled("cards.xiaohongshu"), "小红书分享  自动提取笔记图片"),
             (enabled("cards.xiaoheihe"), "小黑盒分享  自动提取帖子图片"),
             (enabled("replies.fixed"), "固定回复  响应已配置的关键词规则"),

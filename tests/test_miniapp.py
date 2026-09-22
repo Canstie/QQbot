@@ -109,9 +109,41 @@ def test_extracts_bilibili_card_source_and_fallback_fields():
     assert source.fallback_cover_url == "https://qq.ugcimg.cn/preview"
 
 
-def test_plain_bilibili_url_is_not_treated_as_qq_miniapp():
+def test_extracts_plain_bilibili_short_url():
     source = extract_miniapp_image_source(
-        ({"type": "text", "data": {"text": "https://b23.tv/wrXwLXN"}},)
+        ({"type": "text", "data": {"text": "视频：https://b23.tv/wrXwLXN。"}},)
+    )
+
+    assert source is not None
+    assert source.platform == "bilibili"
+    assert source.source_url == "https://b23.tv/wrXwLXN"
+
+
+def test_extracts_plain_bilibili_video_url():
+    source = extract_miniapp_image_source(
+        (
+            {
+                "type": "text",
+                "data": {
+                    "text": (
+                        "https://www.bilibili.com/video/BV1xx411c7mD"
+                        "?spm_id_from=333.1007.top_right_bar_window_history.content.click"
+                    )
+                },
+            },
+        )
+    )
+
+    assert source is not None
+    assert source.platform == "bilibili"
+    assert source.source_url.startswith(
+        "https://www.bilibili.com/video/BV1xx411c7mD?"
+    )
+
+
+def test_plain_non_video_url_is_not_treated_as_miniapp():
+    source = extract_miniapp_image_source(
+        ({"type": "text", "data": {"text": "https://www.bilibili.com/"}},)
     )
 
     assert source is None
