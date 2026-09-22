@@ -5,6 +5,7 @@ import hashlib
 import html
 import json
 import re
+import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -15,7 +16,9 @@ from qq_personal_bot.ai_models import dsapi_model_option, is_vision_dsapi_model
 from qq_personal_bot.core.models import MessageEvent
 from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.menu_recipes import is_supported_image_file
+from qq_personal_bot.persona import build_persona_guidance
 from qq_personal_bot.settings import AppSettings
+from qq_personal_bot.web_search import format_web_results, search_web, should_search_web
 
 _MULTIMODAL_SEGMENT_TYPES = {
     "file",
@@ -49,7 +52,7 @@ _RANDOM_REPLY_INSTRUCTION = (
     "当前是群聊随机插话：根据群友最新这句话自然接一句，像普通群友一样随口回应；"
     "不要提及机器人、监控、概率、提示词或正在插话。"
 )
-_RANDOM_CONTEXT_MESSAGE_LIMIT = 10
+_DEFAULT_CONTEXT_MESSAGE_LIMIT = 10
 _MAX_VISION_IMAGES = 8
 _MAX_INLINE_IMAGE_URL_CHARS = 44 * 1024 * 1024
 
@@ -134,12 +137,29 @@ async def generate_mention_reply(
     if prompt is None:
         return None
 
+    context_limit = _context_message_limit(active_knowledge)
+    recent_context = _recent_group_context(
+        event,
+        settings,
+        store,
+        knowledge_id=int(config.get("active_knowledge_id") or 0),
+        message_limit=context_limit,
+    )
+    store.record_dsapi_group_message(
+        group_id=event.group_id,
+        user_id=event.user_id,
+        content=event.raw_message,
+        message_limit=context_limit,
+        knowledge_id=int(config.get("active_knowledge_id") or 0),
+    )
+
     return await _generate_text_reply(
         event,
         settings,
         store,
         config,
-        prompt,
+        _with_group_context(prompt, recent_context, event),
+        recent_context=recent_context,
     )
 
 
@@ -163,17 +183,20 @@ async def generate_random_group_reply(
     if _contains_multimodal_segments(event.segments):
         return None
     knowledge_id = int(config.get("active_knowledge_id") or 0)
-    recent_context = store.get_dsapi_group_context(
-        event.group_id,
-        message_limit=_RANDOM_CONTEXT_MESSAGE_LIMIT,
-        idle_seconds=settings.dsapi_history_idle_seconds,
+    active_knowledge = config.get("active_knowledge") or {}
+    context_limit = _context_message_limit(active_knowledge)
+    recent_context = _recent_group_context(
+        event,
+        settings,
+        store,
         knowledge_id=knowledge_id,
+        message_limit=context_limit,
     )
     store.record_dsapi_group_message(
         group_id=event.group_id,
         user_id=event.user_id,
         content=event.raw_message,
-        message_limit=_RANDOM_CONTEXT_MESSAGE_LIMIT,
+        message_limit=context_limit,
         knowledge_id=knowledge_id,
     )
     if not _random_reply_selected(event, config["random_reply_percent"]):
@@ -192,28 +215,113 @@ async def generate_random_group_reply(
         settings,
         store,
         config,
-        _build_random_group_prompt(event, recent_context),
+        _build_random_group_prompt(event, recent_context, context_limit=context_limit),
         extra_instruction=_RANDOM_REPLY_INSTRUCTION,
         history_user_content=event.raw_message.strip(),
+        recent_context=recent_context,
     )
 
 
 def _build_random_group_prompt(
     event: MessageEvent,
     recent_context: Sequence[Mapping[str, Any]],
+    *,
+    context_limit: int = _DEFAULT_CONTEXT_MESSAGE_LIMIT,
 ) -> str:
     latest = " ".join(event.raw_message.split())[:300]
     if not recent_context:
         return latest
     lines = [
         f"[QQ {int(item['user_id'])}] {' '.join(str(item['content']).split())[:300]}"
-        for item in recent_context[-_RANDOM_CONTEXT_MESSAGE_LIMIT:]
+        for item in recent_context[-max(1, int(context_limit)):]
     ]
     return (
         "群聊中当前消息之前的最近对话（从旧到新）：\n"
         + "\n".join(lines)
         + f"\n\n需要接话的最新消息：\n[QQ {event.user_id}] {latest}"
     )
+
+
+def _recent_group_context(
+    event: MessageEvent,
+    settings: AppSettings,
+    store: PolicyStore,
+    *,
+    knowledge_id: int,
+    message_limit: int,
+) -> list[dict[str, Any]]:
+    if event.group_id is None:
+        return []
+    recent = store.get_dsapi_group_context(
+        event.group_id,
+        message_limit=message_limit,
+        idle_seconds=settings.dsapi_history_idle_seconds,
+        knowledge_id=knowledge_id,
+    )
+    if recent:
+        return recent
+
+    now = event.timestamp if event.timestamp > 0 else time.time()
+    cutoff = now - settings.dsapi_history_idle_seconds
+    rows = store.get_recent_group_messages(
+        event.group_id,
+        message_limit=message_limit + 2,
+    )
+    fallback = [
+        {"user_id": int(item["user_id"]), "content": str(item["content"])}
+        for item in rows
+        if float(item["created_at"]) >= cutoff and str(item["content"]).strip()
+    ]
+    if (
+        fallback
+        and fallback[-1]["user_id"] == event.user_id
+        and " ".join(fallback[-1]["content"].split())
+        == " ".join(event.raw_message.split())
+    ):
+        fallback.pop()
+    return fallback[-message_limit:]
+
+
+def _with_group_context(
+    prompt: str | list[dict[str, Any]],
+    recent_context: Sequence[Mapping[str, Any]],
+    event: MessageEvent,
+) -> str | list[dict[str, Any]]:
+    if not recent_context:
+        return prompt
+    lines = [
+        f"[QQ {int(item['user_id'])}] {' '.join(str(item['content']).split())[:300]}"
+        for item in recent_context
+    ]
+    prefix = "群聊中当前消息之前的最近对话（从旧到新）：\n" + "\n".join(lines)
+    if isinstance(prompt, str):
+        return f"{prefix}\n\nQQ {event.user_id} 当前对你说：\n{prompt}"
+
+    enriched = [dict(item) for item in prompt]
+    for item in enriched:
+        if item.get("type") == "text":
+            item["text"] = f"{prefix}\n\nQQ {event.user_id} 当前对你说：\n{item.get('text', '')}"
+            break
+    return enriched
+
+
+def _context_message_limit(active_knowledge: Mapping[str, Any]) -> int:
+    try:
+        value = int(active_knowledge.get("context_messages") or _DEFAULT_CONTEXT_MESSAGE_LIMIT)
+    except (TypeError, ValueError):
+        value = _DEFAULT_CONTEXT_MESSAGE_LIMIT
+    return max(1, min(value, 100))
+
+
+def _persona_topic_text(
+    event: MessageEvent,
+    recent_context: Sequence[Mapping[str, Any]],
+) -> str:
+    context = " ".join(
+        " ".join(str(item.get("content") or "").split())
+        for item in recent_context[-8:]
+    )
+    return f"{context} {event.raw_message}".strip()[:2400]
 
 
 async def _generate_text_reply(
@@ -225,6 +333,7 @@ async def _generate_text_reply(
     *,
     extra_instruction: str = "",
     history_user_content: str | None = None,
+    recent_context: Sequence[Mapping[str, Any]] = (),
 ) -> str | None:
     active_knowledge = config.get("active_knowledge") or {}
     response_mode = str(active_knowledge.get("response_mode") or "short")
@@ -233,6 +342,23 @@ async def _generate_text_reply(
         system_prompt = f"{system_prompt}\n\n角色设定与知识库：\n{config['knowledge_prompt']}"
     if extra_instruction:
         system_prompt = f"{system_prompt}\n\n{extra_instruction}"
+    if config["knowledge_enabled"]:
+        persona_guidance = await asyncio.to_thread(
+            build_persona_guidance,
+            store,
+            active_knowledge,
+            target_user_id=event.user_id,
+            topic_text=_persona_topic_text(event, recent_context),
+        )
+        if persona_guidance:
+            system_prompt = f"{system_prompt}\n\n人物关系与动态示例：\n{persona_guidance}"
+    if bool(active_knowledge.get("web_search_enabled")) and should_search_web(
+        event.raw_message
+    ):
+        search_results = await asyncio.to_thread(search_web, event.raw_message)
+        search_context = format_web_results(search_results)
+        if search_context:
+            system_prompt = f"{system_prompt}\n\n{search_context}"
     response_instruction = _RESPONSE_MODE_INSTRUCTIONS.get(
         response_mode,
         _RESPONSE_MODE_INSTRUCTIONS["short"],

@@ -21,6 +21,21 @@ const modelOptionsWithCurrent = (options, currentModel) => {
   return [{ key: "custom", id: currentModel, label: `现有模型：${currentModel}`, vision: false }, ...options];
 };
 
+const relationshipsTextFrom = (relationships = []) => relationships
+  .map((item) => `${item.user_id}=${item.note}`)
+  .join("\n");
+
+const parseRelationships = (value) => String(value || "")
+  .split(/\r?\n/)
+  .map((line) => {
+    const separator = line.search(/[=：:]/);
+    if (separator < 0) return null;
+    const userId = Number(line.slice(0, separator).trim());
+    const note = line.slice(separator + 1).trim();
+    return Number.isInteger(userId) && userId > 0 && note ? { user_id: userId, note } : null;
+  })
+  .filter(Boolean);
+
 function ModelSelect({ value, options, onChange }) {
   return (
     <select value={value} onChange={(event) => onChange(event.target.value)}>
@@ -41,14 +56,29 @@ const knowledgeDraftFrom = (knowledge = {}, defaults = {}) => ({
   history_turns: knowledge.history_turns ?? defaults.history_turns ?? 2,
   response_mode: knowledge.response_mode || "short",
   temperature: knowledge.temperature ?? "",
+  web_search_enabled: knowledge.web_search_enabled ?? false,
+  persona_group_id: knowledge.persona_group_id ?? 0,
+  persona_user_id: knowledge.persona_user_id ?? 0,
+  context_messages: knowledge.context_messages ?? 10,
+  similar_examples: knowledge.similar_examples ?? 0,
+  relationships_text: relationshipsTextFrom(knowledge.relationships),
 });
 
-const knowledgePayload = (draft) => ({
-  ...draft,
-  max_tokens: Number(draft.max_tokens),
-  history_turns: Number(draft.history_turns),
-  temperature: draft.temperature === "" ? null : Number(draft.temperature),
-});
+const knowledgePayload = (draft) => {
+  const { relationships_text, ...fields } = draft;
+  return ({
+    ...fields,
+    max_tokens: Number(draft.max_tokens),
+    history_turns: Number(draft.history_turns),
+    temperature: draft.temperature === "" ? null : Number(draft.temperature),
+    web_search_enabled: Boolean(draft.web_search_enabled),
+    persona_group_id: Number(draft.persona_group_id || 0),
+    persona_user_id: Number(draft.persona_user_id || 0),
+    context_messages: Number(draft.context_messages),
+    similar_examples: Number(draft.similar_examples),
+    relationships: parseRelationships(relationships_text),
+  });
+};
 
 export default function AiPage({ refreshVersion, onChanged }) {
   const [data, setData] = useState(null);
@@ -270,13 +300,21 @@ export default function AiPage({ refreshVersion, onChanged }) {
                 <div className="knowledge-runtime-grid">
                   <Field label="模型"><ModelSelect value={knowledgeDraft.model} options={modelOptions} onChange={(model) => setKnowledgeDraft((current) => ({ ...current, model }))} /></Field>
                   <Field label="最大输出 Token"><input type="number" min="1" max="32768" value={knowledgeDraft.max_tokens} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, max_tokens: event.target.value }))} /></Field>
-                  <Field label="上下文轮数"><input type="number" min="1" max="20" value={knowledgeDraft.history_turns} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, history_turns: event.target.value }))} /></Field>
+                  <Field label="AI 对话轮数"><input type="number" min="1" max="50" value={knowledgeDraft.history_turns} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, history_turns: event.target.value }))} /></Field>
+                  <Field label="群聊上下文消息"><input type="number" min="1" max="100" value={knowledgeDraft.context_messages} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, context_messages: event.target.value }))} /></Field>
                   <Field label="回复模式"><select value={knowledgeDraft.response_mode} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, response_mode: event.target.value }))}><option value="short">短回复</option><option value="normal">正常回复</option><option value="detailed">详细回复</option></select></Field>
                   <Field label="Temperature" hint="留空使用服务商默认值"><input type="number" min="0" max="2" step="0.1" value={knowledgeDraft.temperature} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, temperature: event.target.value }))} /></Field>
                   <Switch checked={knowledgeDraft.thinking_enabled} onChange={(value) => setKnowledgeDraft((current) => ({ ...current, thinking_enabled: value }))} label="Thinking 模式" description={knowledgeDraft.thinking_enabled ? "请求模型进行思考" : "Non-thinking，直接快速回复"} />
+                  <Switch checked={knowledgeDraft.web_search_enabled} onChange={(value) => setKnowledgeDraft((current) => ({ ...current, web_search_enabled: value }))} label="按需联网检索" description="搜索、最新消息等问题自动查询网页" />
+                  <Field label="参考角色所在群"><input type="number" min="0" value={knowledgeDraft.persona_group_id} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, persona_group_id: event.target.value }))} /></Field>
+                  <Field label="参考角色 QQ"><input type="number" min="0" value={knowledgeDraft.persona_user_id} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, persona_user_id: event.target.value }))} /></Field>
+                  <Field label="相似说话示例数"><input type="number" min="0" max="8" value={knowledgeDraft.similar_examples} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, similar_examples: event.target.value }))} /></Field>
                 </div>
                 <Field label="知识与角色设定" hint="写清身份、语气、世界观、人物关系、事实边界和禁止事项。">
                   <textarea className="knowledge-editor" value={knowledgeDraft.prompt} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, prompt: event.target.value }))} placeholder="例如：你是群里的档案管理员。回答时使用简洁中文，只依据下方档案中的事实……" />
+                </Field>
+                <Field label="按 QQ 号维护人物关系" hint="每行格式：QQ号=关系说明。只会向模型注入当前说话人的那一条。">
+                  <textarea value={knowledgeDraft.relationships_text} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, relationships_text: event.target.value }))} placeholder={'2035126673=关系亲近，偶尔称对方为“妈”，不要每句都叫'} />
                 </Field>
                 <div className="knowledge-actions">
                   <Button tone="danger" icon={Trash2} onClick={deleteKnowledge}>删除</Button>
@@ -294,11 +332,11 @@ export default function AiPage({ refreshVersion, onChanged }) {
             <Field label="允许调用 AI 的群" hint="独立于总体 Bot 启用群，一行一个群号。"><textarea value={form.enabledGroups} onChange={(e) => update("enabledGroups", e.target.value)} /></Field>
           </Panel>
           <Panel title="短期记忆" eyebrow="Context window">
-            <p className="quiet-note">上下文轮数已绑定到各知识库，请在左侧知识库参数中分别设置。</p>
+            <p className="quiet-note">AI 对话轮数和群聊消息窗口已绑定到各知识库，请在左侧分别设置。</p>
             <Field label="随机插话概率" hint="仅监听 AI 启用群的普通纯文本消息；0% 表示关闭。"><div className="range-value"><input type="range" min="0" max="100" step="0.5" value={form.randomPercent} onChange={(e) => update("randomPercent", e.target.value)} /><strong>{form.randomPercent}%</strong></div></Field>
             <Field label="表情包占插话比例" hint="从独立表情包库随机选择；无图时自动回退为文字。"><div className="range-value"><input type="range" min="0" max="100" step="1" value={form.stickerPercent} onChange={(e) => update("stickerPercent", e.target.value)} /><strong>{form.stickerPercent}%</strong></div></Field>
             <Switch checked={form.clear} onChange={(value) => update("clear", value)} label="保存时清空旧上下文" description="切换角色时建议开启" />
-            <p className="quiet-note">随机插话会读取当前消息之前最多 10 句群聊；连续 {Math.round((data?.history_idle_seconds || 1200) / 60)} 分钟无人对话后自动清空。</p>
+            <p className="quiet-note">当前知识库会读取最多 {knowledgeDraft.context_messages || 10} 句群聊；连续 {Math.round((data?.history_idle_seconds || 1200) / 60)} 分钟无人对话后自动清空。</p>
             <Button tone="danger" icon={Eraser} onClick={clearHistory}>立即清空全部上下文</Button>
           </Panel>
         </div>
@@ -334,7 +372,7 @@ export default function AiPage({ refreshVersion, onChanged }) {
                 <Field label="知识库名称"><input autoFocus value={createDraft.name} maxLength={80} onChange={(event) => setCreateDraft((current) => ({ ...current, name: event.target.value }))} /></Field>
                 <Field label="模型"><ModelSelect value={createDraft.model} options={modelOptions} onChange={(model) => setCreateDraft((current) => ({ ...current, model }))} /></Field>
                 <Field label="最大输出 Token"><input type="number" min="1" max="32768" value={createDraft.max_tokens} onChange={(event) => setCreateDraft((current) => ({ ...current, max_tokens: event.target.value }))} /></Field>
-                <Field label="上下文轮数"><input type="number" min="1" max="20" value={createDraft.history_turns} onChange={(event) => setCreateDraft((current) => ({ ...current, history_turns: event.target.value }))} /></Field>
+                <Field label="AI 对话轮数"><input type="number" min="1" max="50" value={createDraft.history_turns} onChange={(event) => setCreateDraft((current) => ({ ...current, history_turns: event.target.value }))} /></Field>
                 <Field label="回复模式"><select value={createDraft.response_mode} onChange={(event) => setCreateDraft((current) => ({ ...current, response_mode: event.target.value }))}><option value="short">短回复</option><option value="normal">正常回复</option><option value="detailed">详细回复</option></select></Field>
                 <Field label="Temperature" hint="留空使用服务商默认值"><input type="number" min="0" max="2" step="0.1" value={createDraft.temperature} onChange={(event) => setCreateDraft((current) => ({ ...current, temperature: event.target.value }))} /></Field>
               </div>

@@ -20,6 +20,7 @@ from qq_personal_bot.dsapi import (
     generate_random_group_reply,
 )
 from qq_personal_bot.settings import AppSettings
+from qq_personal_bot.web_search import WebSearchResult
 
 
 class FakeBot:
@@ -374,6 +375,93 @@ async def test_active_knowledge_base_is_used_for_dsapi_prompt(tmp_path, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_persona_relationship_and_similar_examples_are_injected(tmp_path, monkeypatch):
+    store = make_store(tmp_path, knowledge_prompt="你是春雨。")
+    knowledge_id = store.get_dsapi_config()["active_knowledge_id"]
+    store.update_dsapi_knowledge_base(
+        knowledge_id,
+        name="春雨",
+        prompt="你是春雨。",
+        actor_id=0,
+        persona_group_id=777,
+        persona_user_id=999,
+        similar_examples=3,
+        relationships=[{"user_id": 456, "note": "关系亲近，习惯轻微互怼"}],
+    )
+    store.record_group_message_activity(
+        group_id=777,
+        user_id=456,
+        timestamp=1,
+        raw_message="原神抽卡又歪了",
+        segments=(),
+        message_id=1,
+    )
+    store.record_group_message_activity(
+        group_id=777,
+        user_id=999,
+        timestamp=2,
+        raw_message="下次还赌",
+        segments=(),
+        message_id=2,
+    )
+    captured = {}
+
+    def fake_request(settings, messages, **kwargs):
+        captured["messages"] = messages
+        return "骂它也不出货的"
+
+    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
+
+    response = await generate_mention_reply(
+        FakeBot(),
+        make_event(text="原神这个池子又歪了"),
+        make_settings(tmp_path),
+        store,
+    )
+
+    assert response == "骂它也不出货的"
+    system_prompt = captured["messages"][0]["content"]
+    assert "关系亲近，习惯轻微互怼" in system_prompt
+    assert "原神抽卡又歪了" in system_prompt
+    assert "下次还赌" in system_prompt
+
+
+@pytest.mark.asyncio
+async def test_enabled_web_search_is_injected_for_fresh_query(tmp_path, monkeypatch):
+    store = make_store(tmp_path)
+    store.create_dsapi_knowledge_base(
+        name="联网助手",
+        prompt="",
+        actor_id=0,
+        web_search_enabled=True,
+    )
+    captured = {}
+
+    def fake_search(query):
+        assert query == "帮我查一下 DeepSeek 最新消息"
+        return [WebSearchResult("官方更新", "https://example.test/update", "刚刚发布")]
+
+    def fake_request(settings, messages, **kwargs):
+        captured["messages"] = messages
+        return "刚更新了。"
+
+    monkeypatch.setattr("qq_personal_bot.dsapi.search_web", fake_search)
+    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
+
+    response = await generate_mention_reply(
+        FakeBot(),
+        make_event(text="帮我查一下 DeepSeek 最新消息"),
+        make_settings(tmp_path),
+        store,
+    )
+
+    assert response == "刚更新了。"
+    system_prompt = captured["messages"][0]["content"]
+    assert "联网检索结果" in system_prompt
+    assert "https://example.test/update" in system_prompt
+
+
+@pytest.mark.asyncio
 async def test_thinking_empty_reply_retries_in_nonthinking_mode(tmp_path, monkeypatch):
     store = make_store(tmp_path, knowledge_prompt="果果角色")
     config = store.get_dsapi_config()
@@ -512,6 +600,58 @@ async def test_random_group_reply_includes_previous_ten_group_messages(tmp_path,
         {"role": "user", "content": "最新消息"},
         {"role": "assistant", "content": "接上了。"},
     ]
+
+
+@pytest.mark.asyncio
+async def test_random_group_reply_uses_configured_long_group_context(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_request(settings, messages, **kwargs):
+        captured["messages"] = messages
+        return "接上了"
+
+    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
+    settings = make_settings(tmp_path)
+    store = make_store(
+        tmp_path,
+        random_reply_percent=0,
+        random_sticker_percent=0,
+    )
+    store.create_dsapi_knowledge_base(
+        name="长上下文",
+        prompt="",
+        actor_id=0,
+        context_messages=25,
+    )
+
+    for index in range(26):
+        await generate_random_group_reply(
+            make_event(text=f"群聊{index}", is_at_bot=False, message_id=index),
+            settings,
+            store,
+        )
+    store.set_dsapi_config(
+        knowledge_enabled=False,
+        knowledge_prompt="",
+        history_turns=2,
+        enabled_groups=[123],
+        clear_history=False,
+        actor_id=0,
+        random_reply_percent=100,
+        random_sticker_percent=0,
+    )
+
+    response = await generate_random_group_reply(
+        make_event(text="最新", is_at_bot=False, message_id=99),
+        settings,
+        store,
+    )
+
+    assert response == "接上了"
+    prompt = captured["messages"][-1]["content"]
+    assert "群聊0" not in prompt
+    assert "群聊1" in prompt
+    assert "群聊25" in prompt
 
 
 @pytest.mark.asyncio

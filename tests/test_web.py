@@ -423,6 +423,14 @@ def test_dsapi_knowledge_base_api_crud_and_switch(tmp_path, monkeypatch):
             "history_turns": 20,
             "response_mode": "normal",
             "temperature": 0.4,
+            "web_search_enabled": True,
+            "persona_group_id": 817058418,
+            "persona_user_id": 3615705132,
+            "context_messages": 50,
+            "similar_examples": 5,
+            "relationships": [
+                {"user_id": 2035126673, "note": "关系亲近，偶尔称对方为妈"}
+            ],
         },
     )
 
@@ -441,6 +449,14 @@ def test_dsapi_knowledge_base_api_crud_and_switch(tmp_path, monkeypatch):
             "history_turns": 18,
             "response_mode": "detailed",
             "temperature": 0.2,
+            "web_search_enabled": True,
+            "persona_group_id": 817058418,
+            "persona_user_id": 3615705132,
+            "context_messages": 50,
+            "similar_examples": 5,
+            "relationships": [
+                {"user_id": 2035126673, "note": "关系亲近，偶尔称对方为妈"}
+            ],
         },
     )
     activated = client.post(
@@ -455,6 +471,14 @@ def test_dsapi_knowledge_base_api_crud_and_switch(tmp_path, monkeypatch):
             "history_turns": 20,
             "response_mode": "normal",
             "temperature": 0.1,
+            "web_search_enabled": True,
+            "persona_group_id": 817058418,
+            "persona_user_id": 3615705132,
+            "context_messages": 50,
+            "similar_examples": 5,
+            "relationships": [
+                {"user_id": 2035126673, "note": "关系亲近，偶尔称对方为妈"}
+            ],
         },
     )
 
@@ -472,6 +496,12 @@ def test_dsapi_knowledge_base_api_crud_and_switch(tmp_path, monkeypatch):
     assert activated.json()["active_knowledge"]["response_mode"] == "normal"
     assert activated.json()["response_mode"] == "normal"
     assert activated.json()["temperature"] == 0.1
+    assert activated.json()["active_knowledge"]["web_search_enabled"] is True
+    assert activated.json()["active_knowledge"]["persona_group_id"] == 817058418
+    assert activated.json()["active_knowledge"]["persona_user_id"] == 3615705132
+    assert activated.json()["active_knowledge"]["context_messages"] == 50
+    assert activated.json()["active_knowledge"]["similar_examples"] == 5
+    assert activated.json()["active_knowledge"]["relationships"][0]["user_id"] == 2035126673
 
     deleted = client.delete(f"/api/dsapi/knowledge/{second_id}")
     assert deleted.status_code == 200

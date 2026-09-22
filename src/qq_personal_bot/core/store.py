@@ -30,6 +30,9 @@ from qq_personal_bot.settings import AppSettings
 CHINA_TZ = timezone(timedelta(hours=8))
 _GROUP_MESSAGE_RETENTION_DAYS = 7
 _RUNTIME_CACHE_TTL_SECONDS = 5.0
+_MAX_DSAPI_HISTORY_TURNS = 50
+_MAX_DSAPI_CONTEXT_MESSAGES = 100
+_MAX_DSAPI_SIMILAR_EXAMPLES = 8
 
 
 def _strip_cq_segments(message: str) -> str:
@@ -238,6 +241,12 @@ class PolicyStore:
                 history_turns INTEGER NOT NULL DEFAULT 2,
                 response_mode TEXT NOT NULL DEFAULT 'short',
                 temperature REAL,
+                web_search_enabled INTEGER NOT NULL DEFAULT 0,
+                persona_group_id INTEGER NOT NULL DEFAULT 0,
+                persona_user_id INTEGER NOT NULL DEFAULT 0,
+                context_messages INTEGER NOT NULL DEFAULT 10,
+                similar_examples INTEGER NOT NULL DEFAULT 0,
+                relationships_json TEXT NOT NULL DEFAULT '{}',
                 created_at REAL NOT NULL,
                 updated_at REAL NOT NULL
             );
@@ -518,6 +527,12 @@ class PolicyStore:
             "history_turns": "INTEGER NOT NULL DEFAULT 0",
             "response_mode": "TEXT NOT NULL DEFAULT 'short'",
             "temperature": "REAL",
+            "web_search_enabled": "INTEGER NOT NULL DEFAULT 0",
+            "persona_group_id": "INTEGER NOT NULL DEFAULT 0",
+            "persona_user_id": "INTEGER NOT NULL DEFAULT 0",
+            "context_messages": "INTEGER NOT NULL DEFAULT 10",
+            "similar_examples": "INTEGER NOT NULL DEFAULT 0",
+            "relationships_json": "TEXT NOT NULL DEFAULT '{}'",
         }
         for column, definition in migrations.items():
             if column not in columns:
@@ -539,7 +554,10 @@ class PolicyStore:
             default_history_turns = int(history_turns_row["value"] if history_turns_row else 2)
         except ValueError:
             default_history_turns = 2
-        default_history_turns = max(1, min(default_history_turns, 20))
+        default_history_turns = max(
+            1,
+            min(default_history_turns, _MAX_DSAPI_HISTORY_TURNS),
+        )
         conn.execute(
             "UPDATE dsapi_knowledge_bases SET history_turns = ? WHERE history_turns <= 0",
             (default_history_turns,),
@@ -640,6 +658,12 @@ class PolicyStore:
         history_turns: int = 2,
         response_mode: str = "short",
         temperature: float | None = None,
+        web_search_enabled: bool = False,
+        persona_group_id: int = 0,
+        persona_user_id: int = 0,
+        context_messages: int = 10,
+        similar_examples: int = 0,
+        relationships: Mapping[int | str, str] | Sequence[Mapping[str, Any]] = (),
     ) -> dict[str, Any]:
         normalized_name = self._normalize_knowledge_name(name)
         normalized_prompt = self._normalize_knowledge_prompt(prompt)
@@ -648,6 +672,21 @@ class PolicyStore:
         normalized_history_turns = self._normalize_dsapi_history_turns(history_turns)
         normalized_response_mode = self._normalize_dsapi_response_mode(response_mode)
         normalized_temperature = self._normalize_dsapi_temperature(temperature)
+        normalized_persona_group_id = self._normalize_optional_positive_id(
+            persona_group_id,
+            "persona_group_id",
+        )
+        normalized_persona_user_id = self._normalize_optional_positive_id(
+            persona_user_id,
+            "persona_user_id",
+        )
+        normalized_context_messages = self._normalize_dsapi_context_messages(
+            context_messages
+        )
+        normalized_similar_examples = self._normalize_dsapi_similar_examples(
+            similar_examples
+        )
+        normalized_relationships = self._normalize_dsapi_relationships(relationships)
         now = time.time()
         with self._connect() as conn:
             try:
@@ -655,10 +694,12 @@ class PolicyStore:
                     """
                     INSERT INTO dsapi_knowledge_bases(
                         name, prompt, model, thinking_enabled, max_tokens, history_turns,
-                        response_mode, temperature,
+                        response_mode, temperature, web_search_enabled,
+                        persona_group_id, persona_user_id, context_messages,
+                        similar_examples, relationships_json,
                         created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         normalized_name,
@@ -669,6 +710,12 @@ class PolicyStore:
                         normalized_history_turns,
                         normalized_response_mode,
                         normalized_temperature,
+                        1 if web_search_enabled else 0,
+                        normalized_persona_group_id,
+                        normalized_persona_user_id,
+                        normalized_context_messages,
+                        normalized_similar_examples,
+                        json.dumps(normalized_relationships, ensure_ascii=False),
                         now,
                         now,
                     ),
@@ -692,6 +739,12 @@ class PolicyStore:
                     "history_turns": normalized_history_turns,
                     "response_mode": normalized_response_mode,
                     "temperature": normalized_temperature,
+                    "web_search_enabled": bool(web_search_enabled),
+                    "persona_group_id": normalized_persona_group_id,
+                    "persona_user_id": normalized_persona_user_id,
+                    "context_messages": normalized_context_messages,
+                    "similar_examples": normalized_similar_examples,
+                    "relationships": len(normalized_relationships),
                 },
                 conn=conn,
             )
@@ -714,6 +767,12 @@ class PolicyStore:
         history_turns: int | None = None,
         response_mode: str | None = None,
         temperature: float | None = None,
+        web_search_enabled: bool | None = None,
+        persona_group_id: int | None = None,
+        persona_user_id: int | None = None,
+        context_messages: int | None = None,
+        similar_examples: int | None = None,
+        relationships: Mapping[int | str, str] | Sequence[Mapping[str, Any]] | None = None,
         activate: bool = False,
         clear_history: bool = False,
     ) -> dict[str, Any]:
@@ -745,13 +804,43 @@ class PolicyStore:
                 current["response_mode"] if response_mode is None else response_mode
             )
             normalized_temperature = self._normalize_dsapi_temperature(temperature)
+            normalized_web_search = (
+                bool(current["web_search_enabled"])
+                if web_search_enabled is None
+                else bool(web_search_enabled)
+            )
+            normalized_persona_group_id = self._normalize_optional_positive_id(
+                current["persona_group_id"] if persona_group_id is None else persona_group_id,
+                "persona_group_id",
+            )
+            normalized_persona_user_id = self._normalize_optional_positive_id(
+                current["persona_user_id"] if persona_user_id is None else persona_user_id,
+                "persona_user_id",
+            )
+            normalized_context_messages = self._normalize_dsapi_context_messages(
+                current["context_messages"]
+                if context_messages is None
+                else context_messages
+            )
+            normalized_similar_examples = self._normalize_dsapi_similar_examples(
+                current["similar_examples"]
+                if similar_examples is None
+                else similar_examples
+            )
+            normalized_relationships = (
+                self._decode_dsapi_relationships(current["relationships_json"])
+                if relationships is None
+                else self._normalize_dsapi_relationships(relationships)
+            )
             try:
                 conn.execute(
                     """
                     UPDATE dsapi_knowledge_bases
                     SET name = ?, prompt = ?, model = ?, thinking_enabled = ?,
                         max_tokens = ?, history_turns = ?, response_mode = ?,
-                        temperature = ?, updated_at = ?
+                        temperature = ?, web_search_enabled = ?, persona_group_id = ?,
+                        persona_user_id = ?, context_messages = ?, similar_examples = ?,
+                        relationships_json = ?, updated_at = ?
                     WHERE id = ?
                     """,
                     (
@@ -763,6 +852,12 @@ class PolicyStore:
                         normalized_history_turns,
                         normalized_response_mode,
                         normalized_temperature,
+                        1 if normalized_web_search else 0,
+                        normalized_persona_group_id,
+                        normalized_persona_user_id,
+                        normalized_context_messages,
+                        normalized_similar_examples,
+                        json.dumps(normalized_relationships, ensure_ascii=False),
                         time.time(),
                         normalized_id,
                     ),
@@ -792,6 +887,12 @@ class PolicyStore:
                     "history_turns": normalized_history_turns,
                     "response_mode": normalized_response_mode,
                     "temperature": normalized_temperature,
+                    "web_search_enabled": normalized_web_search,
+                    "persona_group_id": normalized_persona_group_id,
+                    "persona_user_id": normalized_persona_user_id,
+                    "context_messages": normalized_context_messages,
+                    "similar_examples": normalized_similar_examples,
+                    "relationships": len(normalized_relationships),
                     "activated": bool(activate),
                     "previous_id": previous_id,
                     "history_messages_cleared": cleared,
@@ -1880,7 +1981,7 @@ class PolicyStore:
             history_turns = int(self.get_setting("dsapi_history_turns", "2"))
         except ValueError:
             history_turns = 2
-        history_turns = max(1, min(history_turns, 20))
+        history_turns = max(1, min(history_turns, _MAX_DSAPI_HISTORY_TURNS))
         try:
             random_reply_percent = float(
                 self.get_setting("dsapi_random_reply_percent", "2")
@@ -1974,8 +2075,10 @@ class PolicyStore:
             else None
         )
         turns = int(history_turns)
-        if turns < 1 or turns > 20:
-            raise ValueError("history_turns must be between 1 and 20")
+        if turns < 1 or turns > _MAX_DSAPI_HISTORY_TURNS:
+            raise ValueError(
+                f"history_turns must be between 1 and {_MAX_DSAPI_HISTORY_TURNS}"
+            )
         percent = float(random_reply_percent)
         if percent < 0 or percent > 100:
             raise ValueError("random_reply_percent must be between 0 and 100")
@@ -2188,7 +2291,7 @@ class PolicyStore:
         *,
         knowledge_id: int = 0,
     ) -> list[dict[str, str]]:
-        message_limit = max(1, min(int(history_turns), 20)) * 2
+        message_limit = max(1, min(int(history_turns), _MAX_DSAPI_HISTORY_TURNS)) * 2
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -2250,7 +2353,7 @@ class PolicyStore:
         history_turns: int,
         knowledge_id: int = 0,
     ) -> None:
-        message_limit = max(1, min(int(history_turns), 20)) * 2
+        message_limit = max(1, min(int(history_turns), _MAX_DSAPI_HISTORY_TURNS)) * 2
         normalized_group_id = int(group_id)
         now = time.time()
         with self._connect() as conn:
@@ -2349,6 +2452,38 @@ class PolicyStore:
             ).fetchall()
         return [
             {"user_id": int(row["user_id"]), "content": str(row["content"])}
+            for row in rows
+        ]
+
+    def get_recent_group_messages(
+        self,
+        group_id: int,
+        *,
+        message_limit: int = 10_000,
+    ) -> list[dict[str, Any]]:
+        """Return a bounded chronological window used by persona example retrieval."""
+        normalized_limit = max(1, min(int(message_limit), 20_000))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT user_id, content, created_at
+                FROM (
+                    SELECT id, user_id, content, created_at
+                    FROM group_daily_messages
+                    WHERE group_id = ?
+                    ORDER BY id DESC
+                    LIMIT ?
+                )
+                ORDER BY id ASC
+                """,
+                (int(group_id), normalized_limit),
+            ).fetchall()
+        return [
+            {
+                "user_id": int(row["user_id"]),
+                "content": str(row["content"]),
+                "created_at": float(row["created_at"]),
+            }
             for row in rows
         ]
 
@@ -3543,7 +3678,9 @@ class PolicyStore:
         rows = conn.execute(
             """
             SELECT id, name, prompt, model, thinking_enabled, max_tokens, history_turns,
-                   response_mode, temperature, created_at, updated_at
+                   response_mode, temperature, web_search_enabled,
+                   persona_group_id, persona_user_id, context_messages,
+                   similar_examples, relationships_json, created_at, updated_at
             FROM dsapi_knowledge_bases
             ORDER BY updated_at DESC, id DESC
             """
@@ -3555,6 +3692,7 @@ class PolicyStore:
 
     def _public_knowledge_base(self, row: sqlite3.Row | Mapping[str, Any]) -> dict[str, Any]:
         prompt = str(row["prompt"])
+        relationships = self._decode_dsapi_relationships(row["relationships_json"])
         return {
             "id": int(row["id"]),
             "name": str(row["name"]),
@@ -3568,6 +3706,18 @@ class PolicyStore:
             "temperature": (
                 float(row["temperature"]) if row["temperature"] is not None else None
             ),
+            "web_search_enabled": bool(row["web_search_enabled"]),
+            "persona_group_id": int(row["persona_group_id"]),
+            "persona_user_id": int(row["persona_user_id"]),
+            "context_messages": int(row["context_messages"]),
+            "similar_examples": int(row["similar_examples"]),
+            "relationships": [
+                {"user_id": int(user_id), "note": note}
+                for user_id, note in sorted(
+                    relationships.items(),
+                    key=lambda item: int(item[0]),
+                )
+            ],
             "created_at": float(row["created_at"]),
             "updated_at": float(row["updated_at"]),
         }
@@ -3602,9 +3752,78 @@ class PolicyStore:
 
     def _normalize_dsapi_history_turns(self, history_turns: int) -> int:
         normalized = int(history_turns)
-        if normalized < 1 or normalized > 20:
-            raise ValueError("history_turns must be between 1 and 20")
+        if normalized < 1 or normalized > _MAX_DSAPI_HISTORY_TURNS:
+            raise ValueError(
+                f"history_turns must be between 1 and {_MAX_DSAPI_HISTORY_TURNS}"
+            )
         return normalized
+
+    def _normalize_dsapi_context_messages(self, context_messages: int) -> int:
+        normalized = int(context_messages)
+        if normalized < 1 or normalized > _MAX_DSAPI_CONTEXT_MESSAGES:
+            raise ValueError(
+                "context_messages must be between 1 and "
+                f"{_MAX_DSAPI_CONTEXT_MESSAGES}"
+            )
+        return normalized
+
+    def _normalize_dsapi_similar_examples(self, similar_examples: int) -> int:
+        normalized = int(similar_examples)
+        if normalized < 0 or normalized > _MAX_DSAPI_SIMILAR_EXAMPLES:
+            raise ValueError(
+                "similar_examples must be between 0 and "
+                f"{_MAX_DSAPI_SIMILAR_EXAMPLES}"
+            )
+        return normalized
+
+    def _normalize_optional_positive_id(self, value: int, field_name: str) -> int:
+        normalized = int(value)
+        if normalized < 0:
+            raise ValueError(f"{field_name} must be zero or a positive integer")
+        return normalized
+
+    def _normalize_dsapi_relationships(
+        self,
+        relationships: Mapping[int | str, str] | Sequence[Mapping[str, Any]],
+    ) -> dict[str, str]:
+        if isinstance(relationships, Mapping):
+            items = relationships.items()
+        elif isinstance(relationships, Sequence) and not isinstance(
+            relationships,
+            (str, bytes),
+        ):
+            items = (
+                (item.get("user_id"), item.get("note"))
+                for item in relationships
+                if isinstance(item, Mapping)
+            )
+        else:
+            raise TypeError("relationships must be a mapping or list")
+
+        normalized: dict[str, str] = {}
+        for raw_user_id, raw_note in items:
+            user_id = self._normalize_optional_positive_id(raw_user_id, "relationship user_id")
+            note = " ".join(str(raw_note or "").split())
+            if user_id <= 0 or not note:
+                continue
+            if len(note) > 500:
+                raise ValueError("relationship note must not exceed 500 characters")
+            normalized[str(user_id)] = note
+        if len(normalized) > 500:
+            raise ValueError("relationships must not contain more than 500 users")
+        return normalized
+
+    def _decode_dsapi_relationships(self, value: Any) -> dict[str, str]:
+        try:
+            decoded = json.loads(str(value or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+        if not isinstance(decoded, Mapping):
+            return {}
+        try:
+            return self._normalize_dsapi_relationships(decoded)
+        except (TypeError, ValueError):
+            return {}
 
     def _normalize_dsapi_response_mode(self, response_mode: str) -> str:
         normalized = str(response_mode).strip().lower()

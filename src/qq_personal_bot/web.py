@@ -100,6 +100,12 @@ class KnowledgeBasePayload(BaseModel):
     history_turns: int | None = None
     response_mode: str | None = None
     temperature: float | None = None
+    web_search_enabled: bool = False
+    persona_group_id: int = 0
+    persona_user_id: int = 0
+    context_messages: int = 10
+    similar_examples: int = 0
+    relationships: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class KnowledgeActivationPayload(BaseModel):
@@ -112,6 +118,12 @@ class KnowledgeActivationPayload(BaseModel):
     history_turns: int | None = None
     response_mode: str | None = None
     temperature: float | None = None
+    web_search_enabled: bool | None = None
+    persona_group_id: int | None = None
+    persona_user_id: int | None = None
+    context_messages: int | None = None
+    similar_examples: int | None = None
+    relationships: list[dict[str, Any]] | None = None
 
 
 class LuaPayload(BaseModel):
@@ -458,6 +470,12 @@ def create_app():
                 ),
                 response_mode=payload.response_mode or "short",
                 temperature=payload.temperature,
+                web_search_enabled=payload.web_search_enabled,
+                persona_group_id=payload.persona_group_id,
+                persona_user_id=payload.persona_user_id,
+                context_messages=payload.context_messages,
+                similar_examples=payload.similar_examples,
+                relationships=payload.relationships,
             )
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -482,6 +500,12 @@ def create_app():
                 history_turns=payload.history_turns,
                 response_mode=payload.response_mode,
                 temperature=payload.temperature,
+                web_search_enabled=payload.web_search_enabled,
+                persona_group_id=payload.persona_group_id,
+                persona_user_id=payload.persona_user_id,
+                context_messages=payload.context_messages,
+                similar_examples=payload.similar_examples,
+                relationships=payload.relationships,
             )
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -518,6 +542,12 @@ def create_app():
                     history_turns=payload.history_turns,
                     response_mode=payload.response_mode,
                     temperature=payload.temperature,
+                    web_search_enabled=payload.web_search_enabled,
+                    persona_group_id=payload.persona_group_id,
+                    persona_user_id=payload.persona_user_id,
+                    context_messages=payload.context_messages,
+                    similar_examples=payload.similar_examples,
+                    relationships=payload.relationships,
                     activate=True,
                     clear_history=payload.clear_history,
                 )

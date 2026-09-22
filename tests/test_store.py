@@ -743,6 +743,48 @@ def test_dsapi_knowledge_base_rejects_unknown_response_mode(tmp_path):
         )
 
 
+def test_dsapi_knowledge_base_stores_persona_search_and_long_context(tmp_path):
+    db_path = tmp_path / "policy.sqlite3"
+    store = PolicyStore(db_path)
+    store.initialize(AppSettings(db_path=db_path, admins=()))
+
+    created = store.create_dsapi_knowledge_base(
+        name="春雨",
+        prompt="像普通群友一样接话",
+        actor_id=1,
+        history_turns=30,
+        web_search_enabled=True,
+        persona_group_id=817058418,
+        persona_user_id=3615705132,
+        context_messages=50,
+        similar_examples=5,
+        relationships=[{"user_id": 2035126673, "note": "关系亲近，偶尔称对方为妈"}],
+    )
+
+    assert created["history_turns"] == 30
+    assert created["web_search_enabled"] is True
+    assert created["persona_group_id"] == 817058418
+    assert created["persona_user_id"] == 3615705132
+    assert created["context_messages"] == 50
+    assert created["similar_examples"] == 5
+    assert created["relationships"] == [
+        {"user_id": 2035126673, "note": "关系亲近，偶尔称对方为妈"}
+    ]
+
+    updated = store.update_dsapi_knowledge_base(
+        created["id"],
+        name="春雨",
+        prompt="像普通群友一样接话",
+        actor_id=1,
+        context_messages=60,
+        relationships=[],
+    )
+
+    assert updated["web_search_enabled"] is True
+    assert updated["context_messages"] == 60
+    assert updated["relationships"] == []
+
+
 def test_dsapi_history_expires_after_group_is_idle(tmp_path):
     db_path = tmp_path / "policy.sqlite3"
     store = PolicyStore(db_path)
