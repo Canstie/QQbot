@@ -33,6 +33,7 @@ _RUNTIME_CACHE_TTL_SECONDS = 5.0
 _MAX_DSAPI_HISTORY_TURNS = 50
 _MAX_DSAPI_CONTEXT_MESSAGES = 100
 _MAX_DSAPI_SIMILAR_EXAMPLES = 8
+_MAX_DSAPI_REPLY_MESSAGES = 3
 
 
 def _strip_cq_segments(message: str) -> str:
@@ -240,8 +241,10 @@ class PolicyStore:
                 max_tokens INTEGER NOT NULL DEFAULT 80,
                 history_turns INTEGER NOT NULL DEFAULT 2,
                 response_mode TEXT NOT NULL DEFAULT 'short',
+                max_reply_messages INTEGER NOT NULL DEFAULT 1,
                 temperature REAL,
                 web_search_enabled INTEGER NOT NULL DEFAULT 0,
+                relationship_memory_enabled INTEGER NOT NULL DEFAULT 0,
                 persona_group_id INTEGER NOT NULL DEFAULT 0,
                 persona_user_id INTEGER NOT NULL DEFAULT 0,
                 context_messages INTEGER NOT NULL DEFAULT 10,
@@ -250,6 +253,30 @@ class PolicyStore:
                 created_at REAL NOT NULL,
                 updated_at REAL NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS dsapi_style_examples (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                knowledge_id INTEGER NOT NULL,
+                topic TEXT NOT NULL,
+                response TEXT NOT NULL,
+                created_at REAL NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_dsapi_style_examples_knowledge
+            ON dsapi_style_examples(knowledge_id, id);
+
+            CREATE TABLE IF NOT EXISTS dsapi_relationship_memory (
+                knowledge_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                summary TEXT NOT NULL,
+                interaction_count INTEGER NOT NULL DEFAULT 0,
+                last_group_id INTEGER NOT NULL DEFAULT 0,
+                updated_at REAL NOT NULL,
+                PRIMARY KEY(knowledge_id, user_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_dsapi_relationship_memory_knowledge
+            ON dsapi_relationship_memory(knowledge_id, updated_at DESC);
 
             CREATE TABLE IF NOT EXISTS download_images (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -526,8 +553,10 @@ class PolicyStore:
             "max_tokens": "INTEGER NOT NULL DEFAULT 0",
             "history_turns": "INTEGER NOT NULL DEFAULT 0",
             "response_mode": "TEXT NOT NULL DEFAULT 'short'",
+            "max_reply_messages": "INTEGER NOT NULL DEFAULT 1",
             "temperature": "REAL",
             "web_search_enabled": "INTEGER NOT NULL DEFAULT 0",
+            "relationship_memory_enabled": "INTEGER NOT NULL DEFAULT 0",
             "persona_group_id": "INTEGER NOT NULL DEFAULT 0",
             "persona_user_id": "INTEGER NOT NULL DEFAULT 0",
             "context_messages": "INTEGER NOT NULL DEFAULT 10",
@@ -657,8 +686,11 @@ class PolicyStore:
         max_tokens: int = 80,
         history_turns: int = 2,
         response_mode: str = "short",
+        max_reply_messages: int = 1,
         temperature: float | None = None,
         web_search_enabled: bool = False,
+        relationship_memory_enabled: bool = False,
+        style_examples: Sequence[Mapping[str, Any]] = (),
         persona_group_id: int = 0,
         persona_user_id: int = 0,
         context_messages: int = 10,
@@ -671,6 +703,9 @@ class PolicyStore:
         normalized_max_tokens = self._normalize_dsapi_max_tokens(max_tokens)
         normalized_history_turns = self._normalize_dsapi_history_turns(history_turns)
         normalized_response_mode = self._normalize_dsapi_response_mode(response_mode)
+        normalized_max_reply_messages = self._normalize_dsapi_max_reply_messages(
+            max_reply_messages
+        )
         normalized_temperature = self._normalize_dsapi_temperature(temperature)
         normalized_persona_group_id = self._normalize_optional_positive_id(
             persona_group_id,
@@ -686,6 +721,7 @@ class PolicyStore:
         normalized_similar_examples = self._normalize_dsapi_similar_examples(
             similar_examples
         )
+        normalized_style_examples = self._normalize_dsapi_style_examples(style_examples)
         normalized_relationships = self._normalize_dsapi_relationships(relationships)
         now = time.time()
         with self._connect() as conn:
@@ -694,12 +730,13 @@ class PolicyStore:
                     """
                     INSERT INTO dsapi_knowledge_bases(
                         name, prompt, model, thinking_enabled, max_tokens, history_turns,
-                        response_mode, temperature, web_search_enabled,
+                        response_mode, max_reply_messages, temperature, web_search_enabled,
+                        relationship_memory_enabled,
                         persona_group_id, persona_user_id, context_messages,
                         similar_examples, relationships_json,
                         created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         normalized_name,
@@ -709,8 +746,10 @@ class PolicyStore:
                         normalized_max_tokens,
                         normalized_history_turns,
                         normalized_response_mode,
+                        normalized_max_reply_messages,
                         normalized_temperature,
                         1 if web_search_enabled else 0,
+                        1 if relationship_memory_enabled else 0,
                         normalized_persona_group_id,
                         normalized_persona_user_id,
                         normalized_context_messages,
@@ -723,6 +762,11 @@ class PolicyStore:
             except sqlite3.IntegrityError as exc:
                 raise ValueError("knowledge base name already exists") from exc
             knowledge_id = int(cursor.lastrowid)
+            self._replace_dsapi_style_examples(
+                conn,
+                knowledge_id,
+                normalized_style_examples,
+            )
             if self._active_knowledge_id(conn) is None:
                 self._set_active_knowledge_id(knowledge_id, conn)
                 self._sync_legacy_knowledge_prompt(knowledge_id, conn)
@@ -738,8 +782,11 @@ class PolicyStore:
                     "max_tokens": normalized_max_tokens,
                     "history_turns": normalized_history_turns,
                     "response_mode": normalized_response_mode,
+                    "max_reply_messages": normalized_max_reply_messages,
                     "temperature": normalized_temperature,
                     "web_search_enabled": bool(web_search_enabled),
+                    "relationship_memory_enabled": bool(relationship_memory_enabled),
+                    "style_examples": len(normalized_style_examples),
                     "persona_group_id": normalized_persona_group_id,
                     "persona_user_id": normalized_persona_user_id,
                     "context_messages": normalized_context_messages,
@@ -752,7 +799,12 @@ class PolicyStore:
                 "SELECT * FROM dsapi_knowledge_bases WHERE id = ?",
                 (knowledge_id,),
             ).fetchone()
-        return self._public_knowledge_base(row)
+            result = self._public_knowledge_base(
+                row,
+                style_examples=normalized_style_examples,
+                relationship_count=0,
+            )
+        return result
 
     def update_dsapi_knowledge_base(
         self,
@@ -766,8 +818,11 @@ class PolicyStore:
         max_tokens: int | None = None,
         history_turns: int | None = None,
         response_mode: str | None = None,
+        max_reply_messages: int | None = None,
         temperature: float | None = None,
         web_search_enabled: bool | None = None,
+        relationship_memory_enabled: bool | None = None,
+        style_examples: Sequence[Mapping[str, Any]] | None = None,
         persona_group_id: int | None = None,
         persona_user_id: int | None = None,
         context_messages: int | None = None,
@@ -803,11 +858,26 @@ class PolicyStore:
             normalized_response_mode = self._normalize_dsapi_response_mode(
                 current["response_mode"] if response_mode is None else response_mode
             )
+            normalized_max_reply_messages = self._normalize_dsapi_max_reply_messages(
+                current["max_reply_messages"]
+                if max_reply_messages is None
+                else max_reply_messages
+            )
             normalized_temperature = self._normalize_dsapi_temperature(temperature)
             normalized_web_search = (
                 bool(current["web_search_enabled"])
                 if web_search_enabled is None
                 else bool(web_search_enabled)
+            )
+            normalized_relationship_memory = (
+                bool(current["relationship_memory_enabled"])
+                if relationship_memory_enabled is None
+                else bool(relationship_memory_enabled)
+            )
+            normalized_style_examples = (
+                self._get_dsapi_style_examples(conn, normalized_id)
+                if style_examples is None
+                else self._normalize_dsapi_style_examples(style_examples)
             )
             normalized_persona_group_id = self._normalize_optional_positive_id(
                 current["persona_group_id"] if persona_group_id is None else persona_group_id,
@@ -838,7 +908,8 @@ class PolicyStore:
                     UPDATE dsapi_knowledge_bases
                     SET name = ?, prompt = ?, model = ?, thinking_enabled = ?,
                         max_tokens = ?, history_turns = ?, response_mode = ?,
-                        temperature = ?, web_search_enabled = ?, persona_group_id = ?,
+                        max_reply_messages = ?, temperature = ?, web_search_enabled = ?,
+                        relationship_memory_enabled = ?, persona_group_id = ?,
                         persona_user_id = ?, context_messages = ?, similar_examples = ?,
                         relationships_json = ?, updated_at = ?
                     WHERE id = ?
@@ -851,8 +922,10 @@ class PolicyStore:
                         normalized_max_tokens,
                         normalized_history_turns,
                         normalized_response_mode,
+                        normalized_max_reply_messages,
                         normalized_temperature,
                         1 if normalized_web_search else 0,
+                        1 if normalized_relationship_memory else 0,
                         normalized_persona_group_id,
                         normalized_persona_user_id,
                         normalized_context_messages,
@@ -864,6 +937,11 @@ class PolicyStore:
                 )
             except sqlite3.IntegrityError as exc:
                 raise ValueError("knowledge base name already exists") from exc
+            self._replace_dsapi_style_examples(
+                conn,
+                normalized_id,
+                normalized_style_examples,
+            )
             previous_id = self._active_knowledge_id(conn)
             changed = bool(activate and previous_id != normalized_id)
             cleared = 0
@@ -886,8 +964,11 @@ class PolicyStore:
                     "max_tokens": normalized_max_tokens,
                     "history_turns": normalized_history_turns,
                     "response_mode": normalized_response_mode,
+                    "max_reply_messages": normalized_max_reply_messages,
                     "temperature": normalized_temperature,
                     "web_search_enabled": normalized_web_search,
+                    "relationship_memory_enabled": normalized_relationship_memory,
+                    "style_examples": len(normalized_style_examples),
                     "persona_group_id": normalized_persona_group_id,
                     "persona_user_id": normalized_persona_user_id,
                     "context_messages": normalized_context_messages,
@@ -903,7 +984,13 @@ class PolicyStore:
                 "SELECT * FROM dsapi_knowledge_bases WHERE id = ?",
                 (normalized_id,),
             ).fetchone()
-        return self._public_knowledge_base(row)
+            relationship_count = self._dsapi_relationship_count(conn, normalized_id)
+            result = self._public_knowledge_base(
+                row,
+                style_examples=normalized_style_examples,
+                relationship_count=relationship_count,
+            )
+        return result
 
     def delete_dsapi_knowledge_base(self, knowledge_id: int, *, actor_id: int) -> dict[str, Any]:
         normalized_id = int(knowledge_id)
@@ -915,6 +1002,14 @@ class PolicyStore:
             if row is None:
                 raise ValueError("knowledge base not found")
             was_active = self._active_knowledge_id(conn) == normalized_id
+            conn.execute(
+                "DELETE FROM dsapi_style_examples WHERE knowledge_id = ?",
+                (normalized_id,),
+            )
+            conn.execute(
+                "DELETE FROM dsapi_relationship_memory WHERE knowledge_id = ?",
+                (normalized_id,),
+            )
             conn.execute("DELETE FROM dsapi_knowledge_bases WHERE id = ?", (normalized_id,))
             cleared = self._clear_dsapi_history(conn, normalized_id)
             if was_active:
@@ -2402,6 +2497,105 @@ class PolicyStore:
                 ),
             )
 
+    def get_dsapi_style_examples(self, knowledge_id: int) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            return self._get_dsapi_style_examples(conn, int(knowledge_id))
+
+    def replace_dsapi_style_examples(
+        self,
+        knowledge_id: int,
+        examples: Sequence[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        normalized = self._normalize_dsapi_style_examples(examples)
+        with self._connect() as conn:
+            if not self._knowledge_base_exists(int(knowledge_id), conn):
+                raise ValueError("knowledge base not found")
+            self._replace_dsapi_style_examples(conn, int(knowledge_id), normalized)
+        return normalized
+
+    def get_dsapi_relationship_memory(
+        self,
+        knowledge_id: int,
+        user_id: int,
+    ) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT summary, interaction_count, last_group_id, updated_at
+                FROM dsapi_relationship_memory
+                WHERE knowledge_id = ? AND user_id = ?
+                """,
+                (int(knowledge_id), int(user_id)),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "knowledge_id": int(knowledge_id),
+            "user_id": int(user_id),
+            "summary": str(row["summary"]),
+            "interaction_count": int(row["interaction_count"]),
+            "last_group_id": int(row["last_group_id"]),
+            "updated_at": float(row["updated_at"]),
+        }
+
+    def upsert_dsapi_relationship_memory(
+        self,
+        *,
+        knowledge_id: int,
+        user_id: int,
+        group_id: int,
+        summary: str,
+    ) -> dict[str, Any]:
+        normalized_summary = " ".join(str(summary).split())
+        if not normalized_summary:
+            raise ValueError("relationship summary is required")
+        if len(normalized_summary) > 500:
+            raise ValueError("relationship summary must not exceed 500 characters")
+        now = time.time()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO dsapi_relationship_memory(
+                    knowledge_id, user_id, summary, interaction_count,
+                    last_group_id, updated_at
+                )
+                VALUES (?, ?, ?, 1, ?, ?)
+                ON CONFLICT(knowledge_id, user_id) DO UPDATE SET
+                    summary = excluded.summary,
+                    interaction_count = dsapi_relationship_memory.interaction_count + 1,
+                    last_group_id = excluded.last_group_id,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    int(knowledge_id),
+                    int(user_id),
+                    normalized_summary,
+                    int(group_id),
+                    now,
+                ),
+            )
+        return self.get_dsapi_relationship_memory(knowledge_id, user_id) or {}
+
+    def clear_dsapi_relationship_memory(
+        self,
+        knowledge_id: int,
+        *,
+        actor_id: int,
+    ) -> int:
+        with self._connect() as conn:
+            deleted = conn.execute(
+                "DELETE FROM dsapi_relationship_memory WHERE knowledge_id = ?",
+                (int(knowledge_id),),
+            ).rowcount
+            self.audit(
+                actor_id,
+                "clear_dsapi_relationship_memory",
+                str(int(knowledge_id)),
+                {"deleted": int(deleted)},
+                conn=conn,
+            )
+        return int(deleted)
+
     def get_dsapi_group_context(
         self,
         group_id: int,
@@ -3678,21 +3872,40 @@ class PolicyStore:
         rows = conn.execute(
             """
             SELECT id, name, prompt, model, thinking_enabled, max_tokens, history_turns,
-                   response_mode, temperature, web_search_enabled,
+                   response_mode, max_reply_messages, temperature, web_search_enabled,
+                   relationship_memory_enabled,
                    persona_group_id, persona_user_id, context_messages,
                    similar_examples, relationships_json, created_at, updated_at
             FROM dsapi_knowledge_bases
             ORDER BY updated_at DESC, id DESC
             """
         ).fetchall()
-        return [
-            {**self._public_knowledge_base(row), "active": int(row["id"]) == active_id}
-            for row in rows
-        ]
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            knowledge_id = int(row["id"])
+            result.append(
+                {
+                    **self._public_knowledge_base(
+                        row,
+                        style_examples=self._get_dsapi_style_examples(conn, knowledge_id),
+                        relationship_count=self._dsapi_relationship_count(
+                            conn,
+                            knowledge_id,
+                        ),
+                    ),
+                    "active": knowledge_id == active_id,
+                }
+            )
+        return result
 
-    def _public_knowledge_base(self, row: sqlite3.Row | Mapping[str, Any]) -> dict[str, Any]:
+    def _public_knowledge_base(
+        self,
+        row: sqlite3.Row | Mapping[str, Any],
+        *,
+        style_examples: Sequence[Mapping[str, Any]] = (),
+        relationship_count: int = 0,
+    ) -> dict[str, Any]:
         prompt = str(row["prompt"])
-        relationships = self._decode_dsapi_relationships(row["relationships_json"])
         return {
             "id": int(row["id"]),
             "name": str(row["name"]),
@@ -3703,24 +3916,86 @@ class PolicyStore:
             "max_tokens": int(row["max_tokens"]),
             "history_turns": int(row["history_turns"]),
             "response_mode": str(row["response_mode"]),
+            "max_reply_messages": int(row["max_reply_messages"]),
             "temperature": (
                 float(row["temperature"]) if row["temperature"] is not None else None
             ),
             "web_search_enabled": bool(row["web_search_enabled"]),
-            "persona_group_id": int(row["persona_group_id"]),
-            "persona_user_id": int(row["persona_user_id"]),
+            "relationship_memory_enabled": bool(row["relationship_memory_enabled"]),
+            "style_examples": [
+                {
+                    "topic": str(item.get("topic") or ""),
+                    "response": str(item.get("response") or ""),
+                }
+                for item in style_examples
+            ],
+            "relationship_count": int(relationship_count),
             "context_messages": int(row["context_messages"]),
             "similar_examples": int(row["similar_examples"]),
-            "relationships": [
-                {"user_id": int(user_id), "note": note}
-                for user_id, note in sorted(
-                    relationships.items(),
-                    key=lambda item: int(item[0]),
-                )
-            ],
             "created_at": float(row["created_at"]),
             "updated_at": float(row["updated_at"]),
         }
+
+    def _get_dsapi_style_examples(
+        self,
+        conn: sqlite3.Connection,
+        knowledge_id: int,
+    ) -> list[dict[str, Any]]:
+        rows = conn.execute(
+            """
+            SELECT topic, response
+            FROM dsapi_style_examples
+            WHERE knowledge_id = ?
+            ORDER BY id
+            """,
+            (int(knowledge_id),),
+        ).fetchall()
+        return [
+            {"topic": str(row["topic"]), "response": str(row["response"])}
+            for row in rows
+        ]
+
+    def _replace_dsapi_style_examples(
+        self,
+        conn: sqlite3.Connection,
+        knowledge_id: int,
+        examples: Sequence[Mapping[str, Any]],
+    ) -> None:
+        conn.execute(
+            "DELETE FROM dsapi_style_examples WHERE knowledge_id = ?",
+            (int(knowledge_id),),
+        )
+        now = time.time()
+        conn.executemany(
+            """
+            INSERT INTO dsapi_style_examples(knowledge_id, topic, response, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            [
+                (
+                    int(knowledge_id),
+                    str(item["topic"]),
+                    str(item["response"]),
+                    now,
+                )
+                for item in examples
+            ],
+        )
+
+    def _dsapi_relationship_count(
+        self,
+        conn: sqlite3.Connection,
+        knowledge_id: int,
+    ) -> int:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM dsapi_relationship_memory
+            WHERE knowledge_id = ?
+            """,
+            (int(knowledge_id),),
+        ).fetchone()
+        return int(row["count"] if row else 0)
 
     def _normalize_knowledge_name(self, name: str) -> str:
         normalized = " ".join(str(name).split())
@@ -3776,6 +4051,34 @@ class PolicyStore:
             )
         return normalized
 
+    def _normalize_dsapi_style_examples(
+        self,
+        examples: Sequence[Mapping[str, Any]],
+    ) -> list[dict[str, str]]:
+        if isinstance(examples, (str, bytes)) or not isinstance(examples, Sequence):
+            raise TypeError("style_examples must be a list")
+        normalized: list[dict[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for item in examples:
+            if not isinstance(item, Mapping):
+                continue
+            topic = " ".join(str(item.get("topic") or "").split())
+            response = " ".join(str(item.get("response") or "").split())
+            if not topic or not response:
+                continue
+            if len(topic) > 500:
+                raise ValueError("style example topic must not exceed 500 characters")
+            if len(response) > 500:
+                raise ValueError("style example response must not exceed 500 characters")
+            key = (topic, response)
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append({"topic": topic, "response": response})
+        if len(normalized) > 500:
+            raise ValueError("style_examples must not contain more than 500 items")
+        return normalized
+
     def _normalize_optional_positive_id(self, value: int, field_name: str) -> int:
         normalized = int(value)
         if normalized < 0:
@@ -3829,6 +4132,15 @@ class PolicyStore:
         normalized = str(response_mode).strip().lower()
         if normalized not in {"short", "normal", "detailed"}:
             raise ValueError("response_mode must be short, normal, or detailed")
+        return normalized
+
+    def _normalize_dsapi_max_reply_messages(self, max_reply_messages: int) -> int:
+        normalized = int(max_reply_messages)
+        if normalized < 1 or normalized > _MAX_DSAPI_REPLY_MESSAGES:
+            raise ValueError(
+                "max_reply_messages must be between 1 and "
+                f"{_MAX_DSAPI_REPLY_MESSAGES}"
+            )
         return normalized
 
     def _normalize_dsapi_temperature(self, temperature: float | None) -> float | None:

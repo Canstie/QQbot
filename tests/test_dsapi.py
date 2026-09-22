@@ -13,6 +13,7 @@ from qq_personal_bot.dsapi import (
     _models_url,
     _pick_random_sticker,
     _random_reply_selected,
+    _refresh_relationship_memory,
     _request_chat_completion,
     build_mention_prompt,
     fetch_dsapi_models,
@@ -375,7 +376,7 @@ async def test_active_knowledge_base_is_used_for_dsapi_prompt(tmp_path, monkeypa
 
 
 @pytest.mark.asyncio
-async def test_persona_relationship_and_similar_examples_are_injected(tmp_path, monkeypatch):
+async def test_ai_relationship_and_prompt_style_examples_are_injected(tmp_path, monkeypatch):
     store = make_store(tmp_path, knowledge_prompt="你是春雨。")
     knowledge_id = store.get_dsapi_config()["active_knowledge_id"]
     store.update_dsapi_knowledge_base(
@@ -383,34 +384,29 @@ async def test_persona_relationship_and_similar_examples_are_injected(tmp_path, 
         name="春雨",
         prompt="你是春雨。",
         actor_id=0,
-        persona_group_id=777,
-        persona_user_id=999,
+        relationship_memory_enabled=True,
         similar_examples=3,
-        relationships=[{"user_id": 456, "note": "关系亲近，习惯轻微互怼"}],
+        style_examples=[
+            {"topic": "原神抽卡又歪了", "response": "下次还赌"},
+        ],
     )
-    store.record_group_message_activity(
-        group_id=777,
+    store.upsert_dsapi_relationship_memory(
+        knowledge_id=knowledge_id,
         user_id=456,
-        timestamp=1,
-        raw_message="原神抽卡又歪了",
-        segments=(),
-        message_id=1,
-    )
-    store.record_group_message_activity(
         group_id=777,
-        user_id=999,
-        timestamp=2,
-        raw_message="下次还赌",
-        segments=(),
-        message_id=2,
+        summary="关系亲近，习惯轻微互怼",
     )
     captured = {}
+
+    async def fake_refresh(*args, **kwargs):
+        return None
 
     def fake_request(settings, messages, **kwargs):
         captured["messages"] = messages
         return "骂它也不出货的"
 
     monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
+    monkeypatch.setattr("qq_personal_bot.dsapi._refresh_relationship_memory", fake_refresh)
 
     response = await generate_mention_reply(
         FakeBot(),
@@ -882,3 +878,45 @@ def test_response_mode_only_truncates_short_replies():
     assert _format_reply(content, "short") == "第一句话。"
     assert _format_reply(content, "normal") == content
     assert _format_reply(content, "detailed") == content
+
+
+def test_multi_reply_separator_produces_bounded_message_list():
+    content = "先等等<|消息分隔|>我看看<|消息分隔|>找到了<|消息分隔|>不该出现"
+
+    assert _format_reply(content, "short", max_reply_messages=3) == [
+        "先等等",
+        "我看看",
+        "找到了",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_relationship_memory_is_maintained_by_ai(tmp_path, monkeypatch):
+    store = make_store(tmp_path, knowledge_prompt="你是春雨。")
+    knowledge_id = store.get_dsapi_config()["active_knowledge_id"]
+    captured = {}
+
+    def fake_request(settings, messages, **kwargs):
+        captured["messages"] = messages
+        captured["options"] = kwargs
+        return "关系逐渐熟悉，常聊抽卡，习惯轻微互怼。"
+
+    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
+
+    await _refresh_relationship_memory(
+        make_settings(tmp_path),
+        store,
+        knowledge_id=knowledge_id,
+        group_id=123,
+        user_id=456,
+        user_message="我抽卡又歪了",
+        assistant_message="骂它也不出货的",
+        model="deepseek-flash",
+    )
+
+    memory = store.get_dsapi_relationship_memory(knowledge_id, 456)
+    assert memory is not None
+    assert "常聊抽卡" in memory["summary"]
+    assert memory["interaction_count"] == 1
+    assert "不可信数据" in captured["messages"][0]["content"]
+    assert captured["options"]["temperature"] == 0.2

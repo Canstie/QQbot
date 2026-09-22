@@ -84,6 +84,36 @@ def _build_miniapp_image_response(cached: CachedMiniAppImages) -> Message:
     return response
 
 
+async def _finish_ai_response(
+    matcher: Any,
+    bot: Bot,
+    event: Any,
+    response: str | list[str] | Path,
+    *,
+    explicit_group_send: bool,
+    random_reply: bool = False,
+) -> None:
+    parts: list[str | Path] = response if isinstance(response, list) else [response]
+    for part in parts[:-1]:
+        rendered = _build_random_group_response(part) if random_reply else part
+        await _send_response(
+            matcher,
+            bot,
+            event,
+            rendered,
+            explicit_group_send=explicit_group_send,
+        )
+    last = parts[-1]
+    rendered = _build_random_group_response(last) if random_reply else last
+    await _finish_with_response(
+        matcher,
+        bot,
+        event,
+        rendered,
+        explicit_group_send=explicit_group_send,
+    )
+
+
 async def _send_xiaoheihe_captcha_to_group(
     bot: Bot,
     event: Any,
@@ -343,12 +373,13 @@ async def _dispatch_onebot_message(
                 logger.warning(f"DSAPI random group reply failed: {exc}")
                 return
             if response:
-                await _finish_with_response(
+                await _finish_ai_response(
                     matcher,
                     bot,
                     event,
-                    _build_random_group_response(response),
+                    response,
                     explicit_group_send=explicit_group_send,
+                    random_reply=True,
                 )
         return
 
@@ -502,7 +533,7 @@ async def _dispatch_onebot_message(
             )
             return
         if response:
-            await _finish_with_response(
+            await _finish_ai_response(
                 matcher,
                 bot,
                 event,

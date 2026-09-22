@@ -21,18 +21,18 @@ const modelOptionsWithCurrent = (options, currentModel) => {
   return [{ key: "custom", id: currentModel, label: `现有模型：${currentModel}`, vision: false }, ...options];
 };
 
-const relationshipsTextFrom = (relationships = []) => relationships
-  .map((item) => `${item.user_id}=${item.note}`)
+const styleExamplesTextFrom = (examples = []) => examples
+  .map((item) => `${item.topic} => ${item.response}`)
   .join("\n");
 
-const parseRelationships = (value) => String(value || "")
+const parseStyleExamples = (value) => String(value || "")
   .split(/\r?\n/)
   .map((line) => {
-    const separator = line.search(/[=：:]/);
+    const separator = line.indexOf("=>");
     if (separator < 0) return null;
-    const userId = Number(line.slice(0, separator).trim());
-    const note = line.slice(separator + 1).trim();
-    return Number.isInteger(userId) && userId > 0 && note ? { user_id: userId, note } : null;
+    const topic = line.slice(0, separator).trim();
+    const response = line.slice(separator + 2).trim();
+    return topic && response ? { topic, response } : null;
   })
   .filter(Boolean);
 
@@ -55,28 +55,29 @@ const knowledgeDraftFrom = (knowledge = {}, defaults = {}) => ({
   max_tokens: knowledge.max_tokens ?? defaults.max_tokens ?? defaults.default_max_tokens ?? 80,
   history_turns: knowledge.history_turns ?? defaults.history_turns ?? 2,
   response_mode: knowledge.response_mode || "short",
+  max_reply_messages: knowledge.max_reply_messages ?? 1,
   temperature: knowledge.temperature ?? "",
   web_search_enabled: knowledge.web_search_enabled ?? false,
-  persona_group_id: knowledge.persona_group_id ?? 0,
-  persona_user_id: knowledge.persona_user_id ?? 0,
+  relationship_memory_enabled: knowledge.relationship_memory_enabled ?? false,
   context_messages: knowledge.context_messages ?? 10,
   similar_examples: knowledge.similar_examples ?? 0,
-  relationships_text: relationshipsTextFrom(knowledge.relationships),
+  style_examples_text: styleExamplesTextFrom(knowledge.style_examples),
+  relationship_count: knowledge.relationship_count ?? 0,
 });
 
 const knowledgePayload = (draft) => {
-  const { relationships_text, ...fields } = draft;
+  const { style_examples_text, relationship_count, ...fields } = draft;
   return ({
     ...fields,
     max_tokens: Number(draft.max_tokens),
     history_turns: Number(draft.history_turns),
+    max_reply_messages: Number(draft.max_reply_messages),
     temperature: draft.temperature === "" ? null : Number(draft.temperature),
     web_search_enabled: Boolean(draft.web_search_enabled),
-    persona_group_id: Number(draft.persona_group_id || 0),
-    persona_user_id: Number(draft.persona_user_id || 0),
+    relationship_memory_enabled: Boolean(draft.relationship_memory_enabled),
     context_messages: Number(draft.context_messages),
     similar_examples: Number(draft.similar_examples),
-    relationships: parseRelationships(relationships_text),
+    style_examples: parseStyleExamples(style_examples_text),
   });
 };
 
@@ -243,6 +244,16 @@ export default function AiPage({ refreshVersion, onChanged }) {
     } catch (error) { setNotice(error.message); }
   };
 
+  const clearRelationships = async () => {
+    if (!selectedKnowledgeId || !window.confirm("清空此知识库由 AI 自动维护的全部人物关系？")) return;
+    try {
+      const result = await remove(`/dsapi/knowledge/${selectedKnowledgeId}/relationships`);
+      applyConfig(result, selectedKnowledgeId);
+      setNotice(`已清空 ${result.deleted} 条长期人物关系`);
+      onChanged();
+    } catch (error) { setNotice(error.message); }
+  };
+
   const uploadSticker = async () => {
     if (!stickerFile) { setNotice("请先选择表情包图片"); return; }
     try {
@@ -303,21 +314,22 @@ export default function AiPage({ refreshVersion, onChanged }) {
                   <Field label="AI 对话轮数"><input type="number" min="1" max="50" value={knowledgeDraft.history_turns} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, history_turns: event.target.value }))} /></Field>
                   <Field label="群聊上下文消息"><input type="number" min="1" max="100" value={knowledgeDraft.context_messages} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, context_messages: event.target.value }))} /></Field>
                   <Field label="回复模式"><select value={knowledgeDraft.response_mode} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, response_mode: event.target.value }))}><option value="short">短回复</option><option value="normal">正常回复</option><option value="detailed">详细回复</option></select></Field>
+                  <Field label="单轮连续消息上限"><input type="number" min="1" max="3" value={knowledgeDraft.max_reply_messages} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, max_reply_messages: event.target.value }))} /></Field>
                   <Field label="Temperature" hint="留空使用服务商默认值"><input type="number" min="0" max="2" step="0.1" value={knowledgeDraft.temperature} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, temperature: event.target.value }))} /></Field>
                   <Switch checked={knowledgeDraft.thinking_enabled} onChange={(value) => setKnowledgeDraft((current) => ({ ...current, thinking_enabled: value }))} label="Thinking 模式" description={knowledgeDraft.thinking_enabled ? "请求模型进行思考" : "Non-thinking，直接快速回复"} />
                   <Switch checked={knowledgeDraft.web_search_enabled} onChange={(value) => setKnowledgeDraft((current) => ({ ...current, web_search_enabled: value }))} label="按需联网检索" description="搜索、最新消息等问题自动查询网页" />
-                  <Field label="参考角色所在群"><input type="number" min="0" value={knowledgeDraft.persona_group_id} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, persona_group_id: event.target.value }))} /></Field>
-                  <Field label="参考角色 QQ"><input type="number" min="0" value={knowledgeDraft.persona_user_id} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, persona_user_id: event.target.value }))} /></Field>
-                  <Field label="相似说话示例数"><input type="number" min="0" max="8" value={knowledgeDraft.similar_examples} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, similar_examples: event.target.value }))} /></Field>
+                  <Switch checked={knowledgeDraft.relationship_memory_enabled} onChange={(value) => setKnowledgeDraft((current) => ({ ...current, relationship_memory_enabled: value }))} label="AI 自动维护人物关系" description={`按对方 QQ 自动归纳，当前已记住 ${knowledgeDraft.relationship_count || 0} 人`} />
+                  <Field label="当前话题示例数"><input type="number" min="0" max="8" value={knowledgeDraft.similar_examples} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, similar_examples: event.target.value }))} /></Field>
                 </div>
                 <Field label="知识与角色设定" hint="写清身份、语气、世界观、人物关系、事实边界和禁止事项。">
                   <textarea className="knowledge-editor" value={knowledgeDraft.prompt} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, prompt: event.target.value }))} placeholder="例如：你是群里的档案管理员。回答时使用简洁中文，只依据下方档案中的事实……" />
                 </Field>
-                <Field label="按 QQ 号维护人物关系" hint="每行格式：QQ号=关系说明。只会向模型注入当前说话人的那一条。">
-                  <textarea value={knowledgeDraft.relationships_text} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, relationships_text: event.target.value }))} placeholder={'2035126673=关系亲近，偶尔称对方为“妈”，不要每句都叫'} />
+                <Field label="提示词风格示例" hint="每行格式：群友消息 => 角色回复。系统会按当前话题挑选最相似的示例，不绑定任何真实 QQ。">
+                  <textarea value={knowledgeDraft.style_examples_text} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, style_examples_text: event.target.value }))} placeholder={'原神抽卡又歪了 => 骂它也不出货的\n有人自夸很厉害 => 就这？'} />
                 </Field>
                 <div className="knowledge-actions">
                   <Button tone="danger" icon={Trash2} onClick={deleteKnowledge}>删除</Button>
+                  <Button tone="ghost" icon={Eraser} onClick={clearRelationships}>清空人物关系</Button>
                   <Button tone="ghost" icon={Save} onClick={persistKnowledge}>保存知识库</Button>
                   <Button icon={CheckCircle2} onClick={activateKnowledge}>{data?.active_knowledge_id === selectedKnowledgeId ? "保存并立即生效" : "保存并启用此知识库"}</Button>
                 </div>
@@ -374,9 +386,11 @@ export default function AiPage({ refreshVersion, onChanged }) {
                 <Field label="最大输出 Token"><input type="number" min="1" max="32768" value={createDraft.max_tokens} onChange={(event) => setCreateDraft((current) => ({ ...current, max_tokens: event.target.value }))} /></Field>
                 <Field label="AI 对话轮数"><input type="number" min="1" max="50" value={createDraft.history_turns} onChange={(event) => setCreateDraft((current) => ({ ...current, history_turns: event.target.value }))} /></Field>
                 <Field label="回复模式"><select value={createDraft.response_mode} onChange={(event) => setCreateDraft((current) => ({ ...current, response_mode: event.target.value }))}><option value="short">短回复</option><option value="normal">正常回复</option><option value="detailed">详细回复</option></select></Field>
+                <Field label="单轮连续消息上限"><input type="number" min="1" max="3" value={createDraft.max_reply_messages} onChange={(event) => setCreateDraft((current) => ({ ...current, max_reply_messages: event.target.value }))} /></Field>
                 <Field label="Temperature" hint="留空使用服务商默认值"><input type="number" min="0" max="2" step="0.1" value={createDraft.temperature} onChange={(event) => setCreateDraft((current) => ({ ...current, temperature: event.target.value }))} /></Field>
               </div>
               <Switch checked={createDraft.thinking_enabled} onChange={(value) => setCreateDraft((current) => ({ ...current, thinking_enabled: value }))} label="开启 Thinking 模式" description={createDraft.thinking_enabled ? "随该知识库启用深度思考" : "保持 Non-thinking，优先快速回复"} />
+              <Switch checked={createDraft.relationship_memory_enabled} onChange={(value) => setCreateDraft((current) => ({ ...current, relationship_memory_enabled: value }))} label="AI 自动维护人物关系" description="根据实际对话按 QQ 自动归纳，不需手工填写" />
               <Field label="知识与角色设定" hint="可留空，创建后仍可继续编辑。"><textarea value={createDraft.prompt} onChange={(event) => setCreateDraft((current) => ({ ...current, prompt: event.target.value }))} placeholder="输入身份、语气、世界观、人物关系与事实资料……" /></Field>
             </div>
             <footer className="knowledge-modal__actions"><Button tone="ghost" onClick={() => setCreateOpen(false)}>取消</Button><Button icon={Plus} onClick={createKnowledge}>创建知识库</Button></footer>

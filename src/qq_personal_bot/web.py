@@ -99,13 +99,13 @@ class KnowledgeBasePayload(BaseModel):
     max_tokens: int | None = None
     history_turns: int | None = None
     response_mode: str | None = None
+    max_reply_messages: int = 1
     temperature: float | None = None
     web_search_enabled: bool = False
-    persona_group_id: int = 0
-    persona_user_id: int = 0
+    relationship_memory_enabled: bool = False
+    style_examples: list[dict[str, Any]] = Field(default_factory=list)
     context_messages: int = 10
     similar_examples: int = 0
-    relationships: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class KnowledgeActivationPayload(BaseModel):
@@ -117,13 +117,13 @@ class KnowledgeActivationPayload(BaseModel):
     max_tokens: int | None = None
     history_turns: int | None = None
     response_mode: str | None = None
+    max_reply_messages: int | None = None
     temperature: float | None = None
     web_search_enabled: bool | None = None
-    persona_group_id: int | None = None
-    persona_user_id: int | None = None
+    relationship_memory_enabled: bool | None = None
+    style_examples: list[dict[str, Any]] | None = None
     context_messages: int | None = None
     similar_examples: int | None = None
-    relationships: list[dict[str, Any]] | None = None
 
 
 class LuaPayload(BaseModel):
@@ -399,6 +399,7 @@ def create_app():
             "max_tokens": active_knowledge.get("max_tokens") or settings.dsapi_max_tokens,
             "thinking_enabled": bool(active_knowledge.get("thinking_enabled", False)),
             "response_mode": active_knowledge.get("response_mode") or "short",
+            "max_reply_messages": active_knowledge.get("max_reply_messages") or 1,
             "temperature": active_knowledge.get("temperature"),
             "default_model": settings.dsapi_model,
             "default_max_tokens": settings.dsapi_max_tokens,
@@ -469,13 +470,13 @@ def create_app():
                     else 2
                 ),
                 response_mode=payload.response_mode or "short",
+                max_reply_messages=payload.max_reply_messages,
                 temperature=payload.temperature,
                 web_search_enabled=payload.web_search_enabled,
-                persona_group_id=payload.persona_group_id,
-                persona_user_id=payload.persona_user_id,
+                relationship_memory_enabled=payload.relationship_memory_enabled,
+                style_examples=payload.style_examples,
                 context_messages=payload.context_messages,
                 similar_examples=payload.similar_examples,
-                relationships=payload.relationships,
             )
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -499,13 +500,13 @@ def create_app():
                 max_tokens=payload.max_tokens,
                 history_turns=payload.history_turns,
                 response_mode=payload.response_mode,
+                max_reply_messages=payload.max_reply_messages,
                 temperature=payload.temperature,
                 web_search_enabled=payload.web_search_enabled,
-                persona_group_id=payload.persona_group_id,
-                persona_user_id=payload.persona_user_id,
+                relationship_memory_enabled=payload.relationship_memory_enabled,
+                style_examples=payload.style_examples,
                 context_messages=payload.context_messages,
                 similar_examples=payload.similar_examples,
-                relationships=payload.relationships,
             )
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -519,6 +520,21 @@ def create_app():
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {**result, **(await get_dsapi_config())}
+
+    @app.delete("/api/dsapi/knowledge/{knowledge_id}/relationships")
+    async def clear_knowledge_relationships(
+        knowledge_id: int,
+        request: Request,
+    ) -> dict:
+        require_token(request)
+        try:
+            deleted = get_store().clear_dsapi_relationship_memory(
+                knowledge_id,
+                actor_id=0,
+            )
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"deleted": deleted, **(await get_dsapi_config())}
 
     @app.post("/api/dsapi/knowledge/{knowledge_id}/activate")
     async def activate_knowledge_base(
@@ -541,13 +557,13 @@ def create_app():
                     max_tokens=payload.max_tokens,
                     history_turns=payload.history_turns,
                     response_mode=payload.response_mode,
+                    max_reply_messages=payload.max_reply_messages,
                     temperature=payload.temperature,
                     web_search_enabled=payload.web_search_enabled,
-                    persona_group_id=payload.persona_group_id,
-                    persona_user_id=payload.persona_user_id,
+                    relationship_memory_enabled=payload.relationship_memory_enabled,
+                    style_examples=payload.style_examples,
                     context_messages=payload.context_messages,
                     similar_examples=payload.similar_examples,
-                    relationships=payload.relationships,
                     activate=True,
                     clear_history=payload.clear_history,
                 )

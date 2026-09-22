@@ -239,6 +239,26 @@ def test_recent_bot_output_event_is_group_scoped():
     assert chat._is_recent_bot_output_event(echoed, now=101.0) is False
 
 
+@pytest.mark.asyncio
+async def test_multi_message_ai_reply_sends_each_part_in_order():
+    from unittest.mock import AsyncMock
+
+    matcher = SimpleNamespace(send=AsyncMock(), finish=AsyncMock())
+    bot = SimpleNamespace(send_group_msg=AsyncMock())
+    event = SimpleNamespace(group_id=123)
+
+    await chat._finish_ai_response(
+        matcher,
+        bot,
+        event,
+        ["第一条", "第二条", "第三条"],
+        explicit_group_send=False,
+    )
+
+    assert [call.args[0] for call in matcher.send.call_args_list] == ["第一条", "第二条"]
+    matcher.finish.assert_awaited_once_with("第三条")
+
+
 def test_quoted_response_replies_to_original_message():
     event = SimpleNamespace(message_id=42)
 
