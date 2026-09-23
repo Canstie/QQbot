@@ -165,6 +165,7 @@ def build_help_sections(
                 (True, "/bot aik list|<序号>  查看或切换知识库"),
                 (True, "/bot prefix list|add|remove  管理前缀"),
                 (enabled("downloads.ingest"), "/download  下载引用聊天记录中的图片"),
+                (enabled("downloads.stickers"), "/dimg  将引用图片加入 AI 表情包库"),
                 (enabled("downloads.overview"), "/download_overview  查看下载图库统计"),
                 (steam_base, "/steam on|off  开关本群 Steam 监控"),
                 (steam_base, "/steam addid|delid  管理监控玩家"),

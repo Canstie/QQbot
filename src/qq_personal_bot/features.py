@@ -34,6 +34,12 @@ STATIC_FEATURES: tuple[FeatureDefinition, ...] = (
     ),
     FeatureDefinition("classics.forward_all", "图片功能", "典图合并转发", "发送本群全部典图。"),
     FeatureDefinition("downloads.ingest", "图片功能", "下载聊天图片", "下载引用聊天记录中的图片。"),
+    FeatureDefinition(
+        "downloads.stickers",
+        "图片功能",
+        "下载 AI 表情包",
+        "将引用消息中的图片加入 AI 可发送的表情包库。",
+    ),
     FeatureDefinition("downloads.overview", "图片功能", "下载图库概览", "查询已下载图片统计。"),
     FeatureDefinition("flows.menu_add", "菜单与饭店", "添加菜单", "通过群聊分步添加菜单。"),
     FeatureDefinition("flows.restaurant_add", "菜单与饭店", "添加饭店", "通过群聊分步添加饭店。"),

@@ -126,6 +126,26 @@ async def test_download_silently_ignores_non_admin(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_dimg_silently_ignores_non_admin(monkeypatch):
+    matcher = FakeMatcher()
+    bot = FakeBot()
+    store = SimpleNamespace(
+        is_feature_enabled=lambda feature_id: True,
+        is_admin=lambda user_id: False,
+    )
+    monkeypatch.setattr(download, "get_store", lambda: store)
+
+    await download._handle_dimg(
+        matcher,
+        bot,
+        SimpleNamespace(user_id=123, message=[]),
+    )
+
+    assert matcher.messages == []
+    assert bot.calls == []
+
+
+@pytest.mark.asyncio
 async def test_download_overview_silently_ignores_non_admin(monkeypatch):
     matcher = FakeMatcher()
     store = SimpleNamespace(is_admin=lambda user_id: False)
@@ -158,6 +178,26 @@ async def test_collects_images_from_nested_forward_record():
     assert collected.errors == []
     assert ("get_forward_msg", {"id": "outer"}) in bot.calls
     assert ("get_forward_msg", {"id": "inner"}) in bot.calls
+
+
+def test_collects_qq_market_stickers_as_images():
+    images: list[dict] = []
+    forward_ids: list[tuple[str, int]] = []
+
+    download._scan_message_payload(
+        [
+            {"type": "mface", "data": {"url": "https://example.test/mface.gif"}},
+            {"type": "marketface", "data": {"file": "market.webp"}},
+        ],
+        images,
+        forward_ids,
+    )
+
+    assert images == [
+        {"url": "https://example.test/mface.gif"},
+        {"file": "market.webp"},
+    ]
+    assert forward_ids == []
 
 
 @pytest.mark.asyncio
@@ -297,6 +337,70 @@ async def test_concurrent_duplicate_sources_create_one_object(tmp_path, monkeypa
     assert stats.succeeded == 1
     assert stats.skipped == 1
     assert len(storage.objects) == 1
+
+
+@pytest.mark.asyncio
+async def test_dimg_saves_supported_images_to_ai_sticker_library(tmp_path, monkeypatch):
+    body = b"GIF89a" + b"animated-sticker"
+    monkeypatch.setattr(
+        download,
+        "_read_image_source",
+        lambda source: body if source != "invalid" else b"not-an-image",
+    )
+
+    stats = await download._download_sticker_sources(
+        ["first", "duplicate", "invalid"],
+        sticker_dir=tmp_path / "stickers",
+    )
+
+    files = list((tmp_path / "stickers").glob("*.gif"))
+    assert stats == download.DownloadStats(total=3, succeeded=1, skipped=1, failed=1)
+    assert len(files) == 1
+    assert files[0].read_bytes() == body
+
+
+@pytest.mark.asyncio
+async def test_dimg_reports_progress_and_adds_referenced_image(tmp_path, monkeypatch):
+    matcher = FakeMatcher()
+    store = SimpleNamespace(
+        is_feature_enabled=lambda feature_id: True,
+        is_admin=lambda user_id: True,
+    )
+
+    async def collected(bot, event):
+        return download._CollectedImages(images=[{"url": "image"}], errors=[])
+
+    async def resolved(bot, image):
+        return "image"
+
+    monkeypatch.setattr(download, "get_store", lambda: store)
+    monkeypatch.setattr(
+        download,
+        "get_settings",
+        lambda: SimpleNamespace(sticker_dir=tmp_path / "stickers"),
+    )
+    monkeypatch.setattr(download, "_collect_referenced_images", collected)
+    monkeypatch.setattr(download, "_resolve_image_source", resolved)
+    monkeypatch.setattr(
+        download,
+        "_read_image_source",
+        lambda source: b"\x89PNG\r\n\x1a\nbody",
+    )
+
+    with pytest.raises(CommandFinished):
+        await download._handle_dimg(
+            matcher,
+            FakeBot(),
+            SimpleNamespace(
+                user_id=1,
+                message=[],
+                reply=SimpleNamespace(message_id="quoted", message=[]),
+            ),
+        )
+
+    assert matcher.messages[0] == "⏳ 正在加入 AI 表情包库，请稍候……"
+    assert "已加入 AI 可发送的表情包库" in matcher.messages[-1]
+    assert len(list((tmp_path / "stickers").glob("*.png"))) == 1
 
 
 @pytest.mark.asyncio

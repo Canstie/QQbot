@@ -23,17 +23,20 @@ from qq_personal_bot.download_storage import (
     get_download_storage,
 )
 from qq_personal_bot.menu_recipes import resolve_local_source
-from qq_personal_bot.runtime import get_store
+from qq_personal_bot.runtime import get_settings, get_store
 
 download = on_command("download", priority=5, block=True)
 download_overview = on_command("download_overview", priority=5, block=True)
+dimg = on_command("dimg", priority=5, block=True)
 
 _CHINA_TZ = timezone(timedelta(hours=8))
 _MAX_IMAGE_BYTES = 50 * 1024 * 1024
 _MAX_FORWARD_DEPTH = 7
 _MAX_IMAGES_PER_DOWNLOAD = 300
 _DOWNLOAD_CONCURRENCY = 4
-_CQ_SEGMENT_RE = re.compile(r"\[CQ:(image|forward),([^\]]+)\]")
+_MAX_STICKER_BYTES = 10 * 1024 * 1024
+_CQ_SEGMENT_RE = re.compile(r"\[CQ:(image|mface|marketface|forward),([^\]]+)\]")
+_IMAGE_SEGMENT_TYPES = frozenset({"image", "mface", "marketface"})
 _DIRECT_SOURCE_SCHEMES = frozenset({"http", "https", "file"})
 
 
@@ -99,6 +102,48 @@ async def _handle_download(matcher: Matcher, bot: Bot, event: MessageEvent) -> N
     await matcher.finish(_format_download_result(stats))
 
 
+async def _handle_dimg(matcher: Matcher, bot: Bot, event: MessageEvent) -> None:
+    store = get_store()
+    if not getattr(store, "is_feature_enabled", lambda _feature: True)(
+        "downloads.stickers"
+    ):
+        return
+    if not store.is_admin(int(event.user_id)):
+        return
+
+    embedded_message, reply_id = _referenced_message(event)
+    if embedded_message is None and reply_id is None and not _contains_segment_type(
+        getattr(event, "message", None), "forward"
+    ):
+        await matcher.finish("请引用一条图片或表情消息后发送 /dimg。")
+        return
+
+    await matcher.send("⏳ 正在加入 AI 表情包库，请稍候……")
+    try:
+        collected = await _collect_referenced_images(bot, event)
+    except DownloadInputError as exc:
+        await matcher.finish(str(exc).replace("/download", "/dimg"))
+        return
+
+    if not collected.images:
+        message = (
+            "读取引用消息失败，请确认消息仍可访问后重试。"
+            if collected.errors
+            else "引用消息中没有找到图片或表情。"
+        )
+        await matcher.finish(message)
+        return
+
+    sources = await asyncio.gather(
+        *(_resolve_image_source(bot, image) for image in collected.images)
+    )
+    stats = await _download_sticker_sources(
+        list(sources),
+        sticker_dir=get_settings().sticker_dir,
+    )
+    await matcher.finish(_format_sticker_download_result(stats))
+
+
 @download.handle()
 async def handle_download(matcher: Matcher, bot: Bot, event: MessageEvent) -> None:
     await _handle_download(matcher, bot, event)
@@ -107,6 +152,11 @@ async def handle_download(matcher: Matcher, bot: Bot, event: MessageEvent) -> No
 @download_overview.handle()
 async def handle_download_overview(matcher: Matcher, event: MessageEvent) -> None:
     await _handle_download_overview(matcher, event)
+
+
+@dimg.handle()
+async def handle_dimg(matcher: Matcher, bot: Bot, event: MessageEvent) -> None:
+    await _handle_dimg(matcher, bot, event)
 
 
 async def _handle_download_overview(matcher: Matcher, event: MessageEvent) -> None:
@@ -220,7 +270,7 @@ def _scan_message_payload(
         data = value.get("data")
         if segment_type:
             normalized_data = dict(data) if isinstance(data, Mapping) else {}
-            if segment_type == "image":
+            if segment_type in _IMAGE_SEGMENT_TYPES:
                 images.append(normalized_data)
                 return
             if segment_type == "forward":
@@ -290,7 +340,7 @@ def _scan_cq_message(
             key, separator, value = item.partition("=")
             if separator:
                 data[key.strip()] = html.unescape(value.strip())
-        if segment_type == "image":
+        if segment_type in _IMAGE_SEGMENT_TYPES:
             images.append(data)
         else:
             forward_id = _first_value(data, "id", "resid")
@@ -437,6 +487,48 @@ async def _download_image_sources(
     )
 
 
+async def _download_sticker_sources(
+    sources: list[str | None],
+    *,
+    sticker_dir: Path,
+) -> DownloadStats:
+    root = sticker_dir.resolve(strict=False)
+    root.mkdir(parents=True, exist_ok=True)
+    semaphore = asyncio.Semaphore(_DOWNLOAD_CONCURRENCY)
+    save_lock = asyncio.Lock()
+
+    async def process(source: str | None) -> str:
+        if not source:
+            return "failed"
+        try:
+            async with semaphore:
+                body = await asyncio.to_thread(_read_image_source, source)
+            if len(body) > _MAX_STICKER_BYTES:
+                return "failed"
+            image_type = _image_type(body)
+            if image_type is None:
+                return "failed"
+            suffix, _ = image_type
+            short_digest = hashlib.sha256(body).hexdigest()[:12]
+            async with save_lock:
+                if any(root.glob(f"*-{short_digest}{suffix}")):
+                    return "skipped"
+                target = root / f"dimg-{short_digest}{suffix}"
+                target.write_bytes(body)
+            return "succeeded"
+        except Exception as exc:
+            logger.warning(f"Dimg: sticker download failed for {source}: {exc}")
+            return "failed"
+
+    results = await asyncio.gather(*(process(source) for source in sources))
+    return DownloadStats(
+        total=len(sources),
+        succeeded=results.count("succeeded"),
+        skipped=results.count("skipped"),
+        failed=results.count("failed"),
+    )
+
+
 def _read_image_source(source: str) -> bytes:
     if source.startswith("base64://"):
         try:
@@ -482,6 +574,15 @@ def _format_download_result(stats: DownloadStats) -> str:
         f"✅ 成功 {stats.succeeded}，⏭️ 跳过 {stats.skipped}（已存在），"
         f"❌ 失败 {stats.failed}\n"
         "☁️ 已保存"
+    )
+
+
+def _format_sticker_download_result(stats: DownloadStats) -> str:
+    return (
+        f"AI 表情包下载完成：共 {stats.total} 张\n"
+        f"✅ 新增 {stats.succeeded}，⏭️ 跳过 {stats.skipped}（已存在），"
+        f"❌ 失败 {stats.failed}\n"
+        "🎭 已加入 AI 可发送的表情包库"
     )
 
 
