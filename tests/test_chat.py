@@ -66,7 +66,7 @@ def test_recent_bot_output_event_is_ignored():
 @pytest.mark.parametrize("reason", ["ok", "group_not_enabled", "group_rate_limited"])
 @pytest.mark.parametrize("explicit_send", [False, True])
 @pytest.mark.parametrize("command,count", [("涩图", None), ("涩图 2", 2)])
-async def test_gallery_command_policy_and_forward_send(monkeypatch, reason, explicit_send, command, count):
+async def test_gallery_command_policy_and_delivery(monkeypatch, tmp_path, reason, explicit_send, command, count):
     from unittest.mock import AsyncMock
     event = SimpleNamespace(segments=(), group_id=123, is_at_bot=False)
     decision = PolicyDecision(reason == "ok", reason, handler="default", normalized_message=command)
@@ -76,25 +76,43 @@ async def test_gallery_command_policy_and_forward_send(monkeypatch, reason, expl
     monkeypatch.setattr(chat, "handle_custom_flow", lambda event: None)
     monkeypatch.setattr(chat, "get_policy_engine", lambda: SimpleNamespace(evaluate=lambda *a, **kw: decision))
     nodes = [{"type": "node", "data": {"content": []}}]
-    async def gallery(send, self_id, requested):
-        assert self_id == "456" and requested == count
+
+    async def gallery_images(send):
+        await send(tmp_path / "first.png")
+        await send(tmp_path / "second.gif")
+
+    async def gallery_forward(send, self_id, requested):
+        assert self_id == "456" and requested == 2
         await send(nodes)
-    query = AsyncMock(side_effect=gallery)
-    monkeypatch.setattr(chat, "send_random_gallery", query)
+
+    image_query = AsyncMock(side_effect=gallery_images)
+    forward_query = AsyncMock(side_effect=gallery_forward)
+    monkeypatch.setattr(chat, "send_random_gallery", image_query)
+    monkeypatch.setattr(chat, "send_random_gallery_forward", forward_query)
     lua = AsyncMock(side_effect=AssertionError("gallery must finish before Lua"))
     monkeypatch.setattr(chat, "run_lua_message", lua)
     matcher = SimpleNamespace(send=AsyncMock(), finish=AsyncMock())
     bot = SimpleNamespace(self_id=456, send_group_msg=AsyncMock(), call_api=AsyncMock())
     await chat._handle_onebot_message(matcher, bot, event, explicit_group_send=explicit_send)
-    if reason == "ok":
-        query.assert_awaited_once()
+    if reason == "ok" and count is None:
+        image_query.assert_awaited_once()
+        forward_query.assert_not_awaited()
+        responses = ([call.kwargs["message"] for call in bot.send_group_msg.call_args_list]
+                     if explicit_send else [call.args[0] for call in matcher.send.call_args_list])
+        assert [response.type for response in responses] == ["image", "image"]
+        assert responses[0].data["file"] == (tmp_path / "first.png").resolve().as_uri()
+        bot.call_api.assert_not_awaited()
+    elif reason == "ok":
+        forward_query.assert_awaited_once()
+        image_query.assert_not_awaited()
         bot.call_api.assert_awaited_once_with(
             "send_group_forward_msg", group_id=123, messages=nodes, _timeout=600
         )
         matcher.send.assert_not_awaited()
         bot.send_group_msg.assert_not_awaited()
     else:
-        query.assert_not_awaited()
+        image_query.assert_not_awaited()
+        forward_query.assert_not_awaited()
         bot.call_api.assert_not_awaited()
         matcher.send.assert_not_awaited()
         bot.send_group_msg.assert_not_awaited()

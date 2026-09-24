@@ -63,14 +63,51 @@ def build_forward_nodes(paths: list[Path], self_id: str) -> list[dict]:
     }} for path in paths]
 
 
-async def send_random_gallery(
+async def send_random_gallery(send_image: Callable[[Path], Awaitable[None]]) -> str | None:
+    store = get_store()
+    # Keep the short reservation transaction synchronous so cancellation cannot lose its result.
+    records = store.reserve_download_images(secrets.randbelow(5) + 1)
+    if not records:
+        return "图库暂无图片，请管理员使用 /download 添加。"
+    unsent = {item["id"]: item for item in records}
+    sent = 0
+
+    try:
+        storage = get_download_storage()
+        with tempfile.TemporaryDirectory(prefix="qqbot-gallery-") as directory:
+            for record in records:
+                try:
+                    path = await _cache_image_async(storage, record, Path(directory))
+                except (DownloadStorageError, OSError) as exc:
+                    logger.warning("Gallery read failed for image %s: %s", record["id"], exc)
+                    continue
+                try:
+                    await send_image(path)
+                except Exception:
+                    logger.exception("Gallery send failed for image %s", record["id"])
+                    break
+                sent += 1
+                unsent.pop(record["id"])
+                path.unlink(missing_ok=True)
+    except (DownloadStorageError, OSError) as exc:
+        logger.warning("Gallery unavailable: %s", exc)
+    finally:
+        store.release_download_images(list(unsent.values()))
+    if sent == 0:
+        return "图库图片暂时无法读取或发送，请稍后再试。"
+    if unsent:
+        return f"已发送 {sent} 张，部分图片读取或发送失败，请稍后再试。"
+    return None
+
+
+async def send_random_gallery_forward(
     send_forward: Callable[[list[dict]], Awaitable[None]],
     self_id: str,
-    count: int | None = None,
+    count: int,
 ) -> str | None:
-    if count is not None and not 1 <= count <= MAX_FORWARD_IMAGES:
+    if not 1 <= count <= MAX_FORWARD_IMAGES:
         raise ValueError(f"图片数量须在 1—{MAX_FORWARD_IMAGES} 之间")
-    requested = count if count is not None else secrets.randbelow(5) + 1
+    requested = count
     store = get_store()
     # Keep the short reservation transaction synchronous so cancellation cannot lose its result.
     records = store.reserve_download_images(requested)
