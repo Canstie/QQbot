@@ -13,7 +13,7 @@ _IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".gif", ".webp"})
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Migrate local /download images to MinIO")
+    parser = argparse.ArgumentParser(description="Migrate locally downloaded images to MinIO")
     parser.add_argument("--source", type=Path, default=Path("downloadimage"))
     parser.add_argument("--delete-source-after-verify", action="store_true")
     return parser.parse_args()

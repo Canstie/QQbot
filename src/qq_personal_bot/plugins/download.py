@@ -25,8 +25,8 @@ from qq_personal_bot.download_storage import (
 from qq_personal_bot.menu_recipes import resolve_local_source
 from qq_personal_bot.runtime import get_settings, get_store
 
-download = on_command("download", priority=5, block=True)
-download_overview = on_command("download_overview", priority=5, block=True)
+download = on_command("d", priority=5, block=True)
+download_overview = on_command("dov", priority=5, block=True)
 dimg = on_command("dimg", priority=5, block=True)
 
 _CHINA_TZ = timezone(timedelta(hours=8))
@@ -69,7 +69,7 @@ async def _handle_download(matcher: Matcher, bot: Bot, event: MessageEvent) -> N
     if embedded_message is None and reply_id is None and not _contains_segment_type(
         getattr(event, "message", None), "forward"
     ):
-        await matcher.finish("请引用一条聊天记录后发送 /download。")
+        await matcher.finish("请引用一条聊天记录后发送 /d。")
         return
 
     await matcher.send("⏳ 正在下载聊天记录中的图片，请稍候……")
@@ -122,7 +122,7 @@ async def _handle_dimg(matcher: Matcher, bot: Bot, event: MessageEvent) -> None:
     try:
         collected = await _collect_referenced_images(bot, event)
     except DownloadInputError as exc:
-        await matcher.finish(str(exc).replace("/download", "/dimg"))
+        await matcher.finish(str(exc).replace("发送 /d。", "发送 /dimg。"))
         return
 
     if not collected.images:
@@ -181,7 +181,7 @@ async def _collect_referenced_images(bot: Bot, event: Any) -> _CollectedImages:
         if _contains_segment_type(direct_message, "forward"):
             embedded_message = direct_message
         else:
-            raise DownloadInputError("请引用一条聊天记录后发送 /download。")
+            raise DownloadInputError("请引用一条聊天记录后发送 /d。")
 
     images: list[dict[str, Any]] = []
     forward_ids: list[tuple[str, int]] = []

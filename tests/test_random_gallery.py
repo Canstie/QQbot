@@ -166,7 +166,7 @@ async def test_empty_gallery_does_not_access_minio(monkeypatch, tmp_path):
     storage = Mock(side_effect=AssertionError("must not fetch"))
     monkeypatch.setattr(gallery, "get_download_storage", storage)
     sender = AsyncMock()
-    assert "图库暂无图片" in await gallery.send_random_gallery(sender)
+    assert "/d 添加" in await gallery.send_random_gallery(sender)
     sender.assert_not_awaited()
     storage.assert_not_called()
 

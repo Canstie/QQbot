@@ -108,6 +108,26 @@ class FakeStorage:
         self.objects.pop(object_key, None)
 
 
+def test_short_download_commands_are_registered():
+    assert next(iter(download.download.rule.checkers)).call.cmds == (("d",),)
+    assert next(iter(download.download_overview.rule.checkers)).call.cmds == (("dov",),)
+    assert next(iter(download.dimg.rule.checkers)).call.cmds == (("dimg",),)
+
+
+@pytest.mark.asyncio
+async def test_download_without_reference_prompts_for_short_command(monkeypatch):
+    matcher = FakeMatcher()
+    store = SimpleNamespace(is_admin=lambda user_id: True)
+    monkeypatch.setattr(download, "get_store", lambda: store)
+
+    with pytest.raises(CommandFinished):
+        await download._handle_download(
+            matcher, FakeBot(), SimpleNamespace(user_id=1, message=[])
+        )
+
+    assert matcher.messages == ["请引用一条聊天记录后发送 /d。"]
+
+
 @pytest.mark.asyncio
 async def test_download_silently_ignores_non_admin(monkeypatch):
     matcher = FakeMatcher()

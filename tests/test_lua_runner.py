@@ -1670,7 +1670,8 @@ async def test_builtin_help_lists_public_features_only_for_regular_user(tmp_path
     assert "~总结  生成今天的群聊速报长图" not in help_text
     assert "~今日饭店  随机抽一家本群饭店" in help_text
     assert "/bot" not in help_text
-    assert "/download" not in help_text
+    assert "/d  " not in help_text
+    assert "/dov  " not in help_text
     assert "/dimg" not in help_text
     assert "/steam" not in help_text
 
@@ -1698,7 +1699,8 @@ async def test_builtin_help_appends_admin_features_for_admin(tmp_path, monkeypat
     assert "~help  查看动态功能菜单" in help_text
     assert "~总结  生成今天的群聊速报长图" in help_text
     assert "/check  查看服务器 CPU、内存和磁盘" in help_text
-    assert "/download  下载引用聊天记录中的图片" in help_text
+    assert "/d  下载引用聊天记录中的图片" in help_text
+    assert "/dov  查看下载图库统计" in help_text
     assert "/dimg  将引用图片加入 AI 表情包库" in help_text
     assert "/bot status  查看当前群策略" in help_text
     assert "/bot aion|aioff [群号]  开关群 AI" in help_text
@@ -1726,7 +1728,7 @@ def test_help_card_hides_disabled_features_immediately(tmp_path, monkeypatch):
     assert "~今日菜单" not in help_text
     assert "~今日饭店" not in help_text
     assert "B站分享" not in help_text
-    assert "/download  " not in help_text
+    assert "/d  " not in help_text
     assert "/dimg  " not in help_text
     assert "/steam list" in help_text
     assert "/steam price" not in help_text

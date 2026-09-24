@@ -68,7 +68,7 @@ async def send_random_gallery(send_image: Callable[[Path], Awaitable[None]]) -> 
     # Keep the short reservation transaction synchronous so cancellation cannot lose its result.
     records = store.reserve_download_images(secrets.randbelow(5) + 1)
     if not records:
-        return "图库暂无图片，请管理员使用 /download 添加。"
+        return "图库暂无图片，请管理员使用 /d 添加。"
     unsent = {item["id"]: item for item in records}
     sent = 0
 
@@ -112,7 +112,7 @@ async def send_random_gallery_forward(
     # Keep the short reservation transaction synchronous so cancellation cannot lose its result.
     records = store.reserve_download_images(requested)
     if not records:
-        return "图库暂无图片，请管理员使用 /download 添加。"
+        return "图库暂无图片，请管理员使用 /d 添加。"
     unsent = {item["id"]: item for item in records}
     readable = 0
     try:
