@@ -240,6 +240,26 @@ async def test_explicit_count_sends_one_forward_and_reports_small_pool(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_explicit_twenty_sends_twenty_distinct_images_in_one_forward(monkeypatch, tmp_path):
+    from unittest.mock import AsyncMock
+
+    store = make_store(tmp_path)
+    objects = {}
+    for i in range(25):
+        row, body = add_image(store, i)
+        objects[row["object_key"]] = body
+    monkeypatch.setattr(gallery, "get_store", lambda: store)
+    monkeypatch.setattr(gallery, "get_download_storage", lambda: FakeStorage(objects))
+    sender = AsyncMock()
+
+    assert await gallery.send_random_gallery(sender, "123", 20) is None
+    sender.assert_awaited_once()
+    nodes = sender.call_args.args[0]
+    assert len(nodes) == 20
+    assert len({node["data"]["content"][0]["data"]["file"] for node in nodes}) == 20
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("count", [0, 101])
 async def test_invalid_count_does_not_reserve(monkeypatch, count):
     from unittest.mock import AsyncMock, Mock

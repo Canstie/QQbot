@@ -4750,7 +4750,7 @@ class PolicyStore:
 
     def reserve_download_images(self, count: int) -> list[dict[str, Any]]:
         """Atomically rotate the least recently used images to the end of the queue."""
-        count = max(1, min(int(count), 5))
+        count = max(1, min(int(count), 100))
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             rows = conn.execute(
