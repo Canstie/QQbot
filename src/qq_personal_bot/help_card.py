@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -88,7 +89,7 @@ def build_help_sections(
             (lua("存典"), "~存典  引用图片保存为本群典图"),
             (lua("爆典"), "~爆典  随机发送本群典图"),
             (enabled("classics.forward_all"), "~爆典all  合并发送本群全部典图"),
-            (enabled("gallery.random"), "~涩图  从下载图库随机发送图片"),
+            (enabled("gallery.random"), "~涩图 [数量]  随机图库图片合并转发（1—100 张）"),
             (lua("左对称"), "~左对称  引用图片生成左对称图"),
             (lua("右对称"), "~右对称  引用图片生成右对称图"),
             (lua("上对称"), "~上对称  引用图片生成上对称图"),

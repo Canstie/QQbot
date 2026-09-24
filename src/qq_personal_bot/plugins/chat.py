@@ -39,7 +39,7 @@ from qq_personal_bot.performance import (
     reset_latency_trace,
 )
 from qq_personal_bot.plugins.custom_flows import handle_custom_flow
-from qq_personal_bot.random_gallery import send_random_gallery
+from qq_personal_bot.random_gallery import MAX_FORWARD_IMAGES, send_random_gallery
 from qq_personal_bot.replies import build_reply
 from qq_personal_bot.runtime import get_policy_engine, get_settings, get_store
 from qq_personal_bot.teachers import parse_teacher_command, query_teachers
@@ -399,17 +399,29 @@ async def _dispatch_onebot_message(
                                     send_classic_forward, send_classic_notice)
         return
 
-    if decision.handler == "default" and decision.normalized_message.strip() == "涩图":
+    gallery_parts = decision.normalized_message.strip().split()
+    if decision.handler == "default" and gallery_parts and gallery_parts[0] == "涩图":
         if not get_store().is_feature_enabled("gallery.random"):
             return
-        async def send_gallery_image(path: Path) -> None:
-            await _send_response(
-                matcher, bot, event, MessageSegment.image(path.resolve().as_uri()),
-                explicit_group_send=explicit_group_send,
-            )
+        count = None
+        if len(gallery_parts) > 1:
+            value = gallery_parts[1]
+            if (len(gallery_parts) != 2 or len(value) > 3 or not value.isascii()
+                    or not value.isdecimal() or not 1 <= int(value) <= MAX_FORWARD_IMAGES):
+                await _send_response(
+                    matcher, bot, event,
+                    MessageSegment.text(f"用法：~涩图 [数量]，数量须在 1—{MAX_FORWARD_IMAGES} 之间。"),
+                    explicit_group_send=explicit_group_send,
+                )
+                return
+            count = int(value)
+
+        async def send_gallery_forward(nodes: list[dict]) -> None:
+            await bot.call_api("send_group_forward_msg", group_id=int(internal_event.group_id),
+                               messages=nodes, _timeout=600)
 
         with latency_phase("gallery"):
-            notice = await send_random_gallery(send_gallery_image)
+            notice = await send_random_gallery(send_gallery_forward, str(bot.self_id), count)
         if notice:
             await _send_response(matcher, bot, event, MessageSegment.text(notice),
                                  explicit_group_send=explicit_group_send)

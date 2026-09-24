@@ -65,36 +65,66 @@ def test_recent_bot_output_event_is_ignored():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("reason", ["ok", "group_not_enabled", "group_rate_limited"])
 @pytest.mark.parametrize("explicit_send", [False, True])
-async def test_gallery_command_policy_and_image_send(monkeypatch, tmp_path, reason, explicit_send):
+@pytest.mark.parametrize("command,count", [("涩图", None), ("涩图 2", 2)])
+async def test_gallery_command_policy_and_forward_send(monkeypatch, reason, explicit_send, command, count):
     from unittest.mock import AsyncMock
     event = SimpleNamespace(segments=(), group_id=123, is_at_bot=False)
-    decision = PolicyDecision(reason == "ok", reason, handler="default", normalized_message="涩图")
+    decision = PolicyDecision(reason == "ok", reason, handler="default", normalized_message=command)
     monkeypatch.setattr(chat, "onebot_to_internal", lambda event, self_id: event)
     monkeypatch.setattr(chat, "_record_group_activity", lambda *a, **kw: None)
     monkeypatch.setattr(chat, "pending_lua_command", lambda event: None)
     monkeypatch.setattr(chat, "handle_custom_flow", lambda event: None)
     monkeypatch.setattr(chat, "get_policy_engine", lambda: SimpleNamespace(evaluate=lambda *a, **kw: decision))
-    async def gallery(send):
-        await send(tmp_path / "first.png")
-        await send(tmp_path / "second.gif")
+    nodes = [{"type": "node", "data": {"content": []}}]
+    async def gallery(send, self_id, requested):
+        assert self_id == "456" and requested == count
+        await send(nodes)
     query = AsyncMock(side_effect=gallery)
     monkeypatch.setattr(chat, "send_random_gallery", query)
     lua = AsyncMock(side_effect=AssertionError("gallery must finish before Lua"))
     monkeypatch.setattr(chat, "run_lua_message", lua)
     matcher = SimpleNamespace(send=AsyncMock(), finish=AsyncMock())
-    bot = SimpleNamespace(self_id=456, send_group_msg=AsyncMock())
+    bot = SimpleNamespace(self_id=456, send_group_msg=AsyncMock(), call_api=AsyncMock())
     await chat._handle_onebot_message(matcher, bot, event, explicit_group_send=explicit_send)
     if reason == "ok":
         query.assert_awaited_once()
-        responses = ([call.kwargs["message"] for call in bot.send_group_msg.call_args_list]
-                     if explicit_send else [call.args[0] for call in matcher.send.call_args_list])
-        assert [response.type for response in responses] == ["image", "image"]
-        assert responses[0].data["file"] == (tmp_path / "first.png").resolve().as_uri()
+        bot.call_api.assert_awaited_once_with(
+            "send_group_forward_msg", group_id=123, messages=nodes, _timeout=600
+        )
+        matcher.send.assert_not_awaited()
+        bot.send_group_msg.assert_not_awaited()
     else:
         query.assert_not_awaited()
+        bot.call_api.assert_not_awaited()
         matcher.send.assert_not_awaited()
         bot.send_group_msg.assert_not_awaited()
     lua.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["涩图 0", "涩图 101", "涩图 abc", "涩图 1 2"])
+async def test_gallery_command_rejects_invalid_count(monkeypatch, command):
+    from unittest.mock import AsyncMock
+
+    event = SimpleNamespace(segments=(), group_id=123, is_at_bot=False)
+    decision = PolicyDecision(True, "ok", handler="default", normalized_message=command)
+    monkeypatch.setattr(chat, "onebot_to_internal", lambda event, self_id: event)
+    monkeypatch.setattr(chat, "_record_group_activity", lambda *a, **kw: None)
+    monkeypatch.setattr(chat, "pending_lua_command", lambda event: None)
+    monkeypatch.setattr(chat, "handle_custom_flow", lambda event: None)
+    monkeypatch.setattr(chat, "get_policy_engine", lambda: SimpleNamespace(evaluate=lambda *a, **kw: decision))
+    monkeypatch.setattr(chat, "get_store", lambda: SimpleNamespace(is_feature_enabled=lambda feature: True))
+    query = AsyncMock()
+    monkeypatch.setattr(chat, "send_random_gallery", query)
+    monkeypatch.setattr(chat, "run_lua_message", AsyncMock(side_effect=AssertionError("must stop")))
+    matcher = SimpleNamespace(send=AsyncMock(), finish=AsyncMock())
+    bot = SimpleNamespace(self_id=456, send_group_msg=AsyncMock(), call_api=AsyncMock())
+
+    await chat._handle_onebot_message(matcher, bot, event, explicit_group_send=False)
+
+    query.assert_not_awaited()
+    bot.call_api.assert_not_awaited()
+    assert "用法：~涩图 [数量]" in matcher.send.call_args.args[0].data["text"]
 
 
 @pytest.mark.asyncio

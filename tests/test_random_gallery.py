@@ -1,6 +1,9 @@
 import hashlib
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 import pytest
 
@@ -104,6 +107,11 @@ class FakeStorage:
         return response
 
 
+def node_path(node):
+    url = node["data"]["content"][0]["data"]["file"]
+    return Path(url2pathname(urlparse(url).path))
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("random_value,expected", [(0, 1), (4, 5)])
 async def test_random_count_reads_minio_and_cleans_files(monkeypatch, tmp_path, random_value, expected):
@@ -118,11 +126,15 @@ async def test_random_count_reads_minio_and_cleans_files(monkeypatch, tmp_path, 
     monkeypatch.setattr(gallery.secrets, "randbelow", lambda limit: random_value)
     paths = []
 
-    async def send(path):
-        assert path.read_bytes() in objects.values()
-        paths.append(path)
+    async def send(nodes):
+        assert len(nodes) == expected
+        for node in nodes:
+            assert node["data"]["user_id"] == "123"
+            path = node_path(node)
+            assert path.read_bytes() in objects.values()
+            paths.append(path)
 
-    assert await gallery.send_random_gallery(send) is None
+    assert await gallery.send_random_gallery(send, "123") is None
     assert len(paths) == expected and len(set(paths)) == expected
     assert all(not path.parent.exists() for path in paths)
     assert all(response.closed and response.released for response in storage.responses)
@@ -142,10 +154,11 @@ async def test_failures_release_lru_and_cleanup(monkeypatch, tmp_path, failure):
     monkeypatch.setattr(gallery, "get_store", lambda: store)
     monkeypatch.setattr(gallery, "get_download_storage", factory)
     paths = []
-    async def send(path):
-        paths.append(path)
+    async def send(nodes):
+        paths.extend(node_path(node) for node in nodes)
         raise RuntimeError("OneBot send failed")
-    assert "暂时无法" in await gallery.send_random_gallery(send)
+    notice = await gallery.send_random_gallery(send, "123")
+    assert ("未确认送达" if failure == "send" else "暂时无法") in notice
     assert store.reserve_download_images(1)[0]["previous_seq"] == 0
     assert all(not path.parent.exists() for path in paths)
     assert all(response.closed and response.released for response in storage.responses)
@@ -158,7 +171,7 @@ async def test_empty_gallery_does_not_access_minio(monkeypatch, tmp_path):
     storage = Mock(side_effect=AssertionError("must not fetch"))
     monkeypatch.setattr(gallery, "get_download_storage", storage)
     sender = AsyncMock()
-    assert "图库暂无图片" in await gallery.send_random_gallery(sender)
+    assert "图库暂无图片" in await gallery.send_random_gallery(sender, "123")
     sender.assert_not_awaited()
     storage.assert_not_called()
 
@@ -173,8 +186,9 @@ async def test_partial_read_failure_keeps_successful_use(monkeypatch, tmp_path):
     monkeypatch.setattr(gallery.secrets, "randbelow", lambda limit: 4)
     from unittest.mock import AsyncMock
     sender = AsyncMock()
-    assert "已发送 1 张" in await gallery.send_random_gallery(sender)
+    assert "已发送 1 张" in await gallery.send_random_gallery(sender, "123")
     sender.assert_awaited_once()
+    assert len(sender.call_args.args[0]) == 1
     assert store.reserve_download_images(1)[0]["id"] == bad["id"]
 
 
@@ -196,10 +210,42 @@ async def test_cancelled_send_cleans_and_releases_reservations(monkeypatch, tmp_
     monkeypatch.setattr(gallery, "get_store", lambda: store)
     monkeypatch.setattr(gallery, "get_download_storage", lambda: FakeStorage({row["object_key"]: body}))
     paths = []
-    async def send(path):
-        paths.append(path)
+    async def send(nodes):
+        paths.extend(node_path(node) for node in nodes)
         raise asyncio.CancelledError()
     with pytest.raises(asyncio.CancelledError):
-        await gallery.send_random_gallery(send)
+        await gallery.send_random_gallery(send, "123")
     assert not paths[0].parent.exists()
     assert store.reserve_download_images(1)[0]["previous_seq"] == 0
+
+
+@pytest.mark.asyncio
+async def test_explicit_count_sends_one_forward_and_reports_small_pool(monkeypatch, tmp_path):
+    from unittest.mock import AsyncMock
+
+    store = make_store(tmp_path)
+    objects = {}
+    for i in range(3):
+        row, body = add_image(store, i)
+        objects[row["object_key"]] = body
+    monkeypatch.setattr(gallery, "get_store", lambda: store)
+    monkeypatch.setattr(gallery, "get_download_storage", lambda: FakeStorage(objects))
+    sender = AsyncMock()
+
+    assert "只有 3 张" in await gallery.send_random_gallery(sender, "123", 4)
+    sender.assert_awaited_once()
+    assert len(sender.call_args.args[0]) == 3
+    assert len({node["data"]["content"][0]["data"]["file"]
+                for node in sender.call_args.args[0]}) == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("count", [0, 101])
+async def test_invalid_count_does_not_reserve(monkeypatch, count):
+    from unittest.mock import AsyncMock, Mock
+
+    store = Mock()
+    monkeypatch.setattr(gallery, "get_store", lambda: store)
+    with pytest.raises(ValueError):
+        await gallery.send_random_gallery(AsyncMock(), "123", count)
+    store.reserve_download_images.assert_not_called()
