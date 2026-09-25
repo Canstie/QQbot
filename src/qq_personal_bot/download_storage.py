@@ -68,6 +68,17 @@ class DownloadObjectStorage:
         except Exception as exc:
             raise DownloadStorageError(f"MinIO 对象校验失败：{object_key}") from exc
 
+    def image_exists(self, object_key: str) -> bool:
+        try:
+            self.client.stat_object(self.bucket, object_key)
+            return True
+        except S3Error as exc:
+            if exc.code in {"NoSuchKey", "NoSuchObject"}:
+                return False
+            raise DownloadStorageError(f"MinIO 对象校验失败：{object_key}") from exc
+        except Exception as exc:
+            raise DownloadStorageError(f"MinIO 对象校验失败：{object_key}") from exc
+
     def get_image(self, object_key: str) -> Any:
         try:
             return self.client.get_object(self.bucket, object_key)

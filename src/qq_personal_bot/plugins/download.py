@@ -6,16 +6,18 @@ import binascii
 import hashlib
 import html
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from nonebot import logger, on_command
-from nonebot.adapters.onebot.v11 import Bot, MessageEvent
+from nonebot.adapters.onebot.v11 import Bot, Message, MessageEvent
 from nonebot.matcher import Matcher
+from nonebot.params import CommandArg
 
 from qq_personal_bot.download_storage import (
     DownloadObjectStorage,
@@ -28,6 +30,7 @@ from qq_personal_bot.runtime import get_settings, get_store
 download = on_command("d", priority=5, block=True)
 download_overview = on_command("dov", priority=5, block=True)
 dimg = on_command("dimg", priority=5, block=True)
+remove_download = on_command("rm", priority=5, block=True)
 
 _CHINA_TZ = timezone(timedelta(hours=8))
 _MAX_IMAGE_BYTES = 50 * 1024 * 1024
@@ -157,6 +160,43 @@ async def handle_download_overview(matcher: Matcher, event: MessageEvent) -> Non
 @dimg.handle()
 async def handle_dimg(matcher: Matcher, bot: Bot, event: MessageEvent) -> None:
     await _handle_dimg(matcher, bot, event)
+
+
+@remove_download.handle()
+async def handle_remove_download(
+    matcher: Matcher,
+    event: MessageEvent,
+    args: Message = CommandArg(),  # noqa: B008 - NoneBot dependency marker
+) -> None:
+    await _handle_remove_download(matcher, event, args.extract_plain_text().strip())
+
+
+async def _handle_remove_download(
+    matcher: Matcher, event: MessageEvent, sha256: str
+) -> None:
+    store = get_store()
+    if not store.is_admin(int(event.user_id)):
+        return
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", sha256):
+        await matcher.finish("用法：/rm <图片的 SHA-256 哈希值>")
+        return
+
+    digest = sha256.lower()
+    record = store.get_download_image_by_hash(digest)
+    if record is None:
+        await matcher.finish("未找到对应哈希的图片，未删除任何内容。")
+        return
+    try:
+        await asyncio.to_thread(
+            get_download_storage().remove_image,
+            record["object_key"],
+            missing_ok=True,
+        )
+    except DownloadStorageError:
+        await matcher.finish("删除失败：MinIO 对象存储暂不可用，图库记录未删除。")
+        return
+    store.delete_download_image(record["id"])
+    await matcher.finish(f"已删除图片：{digest}")
 
 
 async def _handle_download_overview(matcher: Matcher, event: MessageEvent) -> None:

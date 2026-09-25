@@ -50,6 +50,9 @@ class _FakeDownloadStorage:
     def get_image(self, object_key: str):
         return _FakeMinioResponse(self.objects[object_key])
 
+    def image_exists(self, object_key: str) -> bool:
+        return object_key in self.objects
+
     def remove_image(self, object_key: str, *, missing_ok: bool = False) -> None:
         if missing_ok:
             self.objects.pop(object_key, None)
@@ -1022,6 +1025,46 @@ def test_download_gallery_lists_streams_and_deletes_images(tmp_path, monkeypatch
     assert deleted.status_code == 200
     assert object_key not in storage.objects
     assert store.get_download_image(record["id"]) is None
+
+
+def test_download_gallery_matches_only_an_existing_exact_hash(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("QQBOT_WEB_TOKEN", raising=False)
+    monkeypatch.setenv("QQBOT_DB_PATH", str(tmp_path / "policy.sqlite3"))
+    reset_runtime()
+    store = get_store()
+    body = b"GIF89a-exact-match"
+    digest = hashlib.sha256(body).hexdigest()
+    object_key = f"20260817/{digest}.gif"
+    store.record_download_image(
+        sha256=digest,
+        object_key=object_key,
+        content_type="image/gif",
+        size_bytes=len(body),
+        downloaded_date="20260817",
+    )
+    storage = _FakeDownloadStorage({object_key: body})
+    monkeypatch.setattr(web_module, "get_download_storage", lambda: storage)
+    client = TestClient(create_app())
+
+    match = client.post("/api/download-images/match", content=body)
+    assert match.status_code == 200
+    assert match.json()["sha256"] == digest
+    assert match.json()["matched"] is True
+    assert match.json()["image"]["object_key"] == object_key
+
+    unmatched = client.post("/api/download-images/match", content=body + b"x")
+    assert unmatched.status_code == 200
+    assert unmatched.json()["matched"] is False
+    assert unmatched.json()["image"] is None
+
+    storage.objects.clear()
+    missing_object = client.post("/api/download-images/match", content=body)
+    assert missing_object.status_code == 200
+    assert missing_object.json()["matched"] is False
+
+    empty = client.post("/api/download-images/match", content=b"")
+    assert empty.status_code == 400
 
 
 def test_download_gallery_rejects_invalid_date(tmp_path, monkeypatch):

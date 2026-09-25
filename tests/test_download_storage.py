@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from minio.error import S3Error
 
 from qq_personal_bot.download_storage import DownloadObjectStorage, DownloadStorageError
 
@@ -46,9 +47,24 @@ def test_minio_storage_uploads_reads_stats_and_removes():
     storage.put_image("20260817/image.png", b"image", "image/png", {"sha256": "a" * 64})
 
     assert storage.stat_image("20260817/image.png").size == 5
+    assert storage.image_exists("20260817/image.png") is True
     assert storage.get_image("20260817/image.png") == b"image"
     storage.remove_image("20260817/image.png")
     assert client.objects == {}
+
+
+def test_minio_storage_distinguishes_missing_object_from_storage_failure():
+    class MissingClient(FakeMinioClient):
+        def stat_object(self, bucket, object_key):
+            raise S3Error(None, "NoSuchKey", "missing", object_key, None, None)
+
+    class FailingClient(FakeMinioClient):
+        def stat_object(self, bucket, object_key):
+            raise OSError("offline")
+
+    assert _storage(MissingClient()).image_exists("missing") is False
+    with pytest.raises(DownloadStorageError):
+        _storage(FailingClient()).image_exists("missing")
 
 
 def test_minio_storage_reports_missing_bucket():

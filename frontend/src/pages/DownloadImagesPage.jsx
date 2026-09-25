@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { Cloud, Image, RefreshCw, Trash2 } from "lucide-react";
+import { Cloud, Image, RefreshCw, Search, Trash2, Upload } from "lucide-react";
 
-import { formatBytes, formatDate, get, remove } from "../api";
+import { api, formatBytes, formatDate, get, remove } from "../api";
 import { Button, Empty, IconButton, Metric, PageHeader, Panel, Status } from "../components/Ui";
 
 const PAGE_SIZE = 60;
@@ -19,6 +19,10 @@ export default function DownloadImagesPage({ refreshVersion, onChanged }) {
   const [total, setTotal] = useState(0);
   const [notice, setNotice] = useState("正在连接对象图库");
   const [loading, setLoading] = useState(false);
+  const [hashResult, setHashResult] = useState(null);
+  const [hashError, setHashError] = useState("");
+  const [hashLoading, setHashLoading] = useState(false);
+  const hashRequest = useRef(0);
   const skipRefresh = useRef(null);
 
   const loadOverview = () => get("/download-images/overview").then(setOverview);
@@ -63,10 +67,32 @@ export default function DownloadImagesPage({ refreshVersion, onChanged }) {
           : entry)
         .filter((entry) => entry.count > 0 || entry.date === selectedDate));
       setNotice("图片已删除");
+      setHashResult((current) => current?.image?.id === item.id ? { ...current, matched: false, image: null } : current);
       skipRefresh.current = { date: selectedDate, version: refreshVersion };
       onChanged();
     } catch (error) {
       setNotice(error.message);
+    }
+  };
+
+  const matchImage = async (file) => {
+    if (!file) return;
+    const requestId = ++hashRequest.current;
+    setHashResult(null);
+    setHashError("");
+    setHashLoading(true);
+    try {
+      if (file.size > 50 * 1024 * 1024) throw new Error("图片不能超过 50 MB");
+      const result = await api("/download-images/match", {
+        method: "POST",
+        body: file,
+        headers: { "Content-Type": file.type || "application/octet-stream" },
+      });
+      if (requestId === hashRequest.current) setHashResult({ ...result, fileName: file.name });
+    } catch (error) {
+      if (requestId === hashRequest.current) setHashError(error.message);
+    } finally {
+      if (requestId === hashRequest.current) setHashLoading(false);
     }
   };
 
@@ -90,6 +116,33 @@ export default function DownloadImagesPage({ refreshVersion, onChanged }) {
           <span><strong>{overview.storage_available === false ? "MinIO 离线" : "MinIO 已连接"}</strong><small>PRIVATE / QQBOT-DOWNLOADS</small></span>
         </div>
       </div>
+
+      <Panel className="download-hash-panel" title="按图片哈希查找" eyebrow="Exact SHA-256 match">
+        <div className="download-hash-layout">
+          <label className="download-hash-picker">
+            <Upload size={23} />
+            <strong>选择本地图片</strong>
+            <span>上传后计算 SHA-256，只匹配内容完全相同的 OSS 图片；最多 50 MB。</span>
+            <input type="file" accept="image/*" disabled={hashLoading} onChange={(event) => { matchImage(event.target.files?.[0]); event.target.value = ""; }} />
+          </label>
+          <div className="download-hash-result" aria-live="polite">
+            {hashLoading && <Status icon={Search}>正在计算哈希并查找对象图库…</Status>}
+            {hashError && <Status tone="error">{hashError}</Status>}
+            {!hashLoading && !hashError && !hashResult && <p>选择图片后显示完整哈希和精确匹配结果。</p>}
+            {hashResult && <>
+              <small>{hashResult.fileName}</small>
+              <code>{hashResult.sha256}</code>
+              {hashResult.matched ? <>
+                <Status tone="ok">找到唯一匹配的 OSS 图片</Status>
+                <div className="download-hash-match">
+                  <a href={hashResult.image.image_url} target="_blank" rel="noreferrer"><img src={hashResult.image.image_url} alt="匹配的图库图片" /></a>
+                  <div><span>{formatBytes(hashResult.image.size_bytes)} · {dateLabel(hashResult.image.downloaded_date)}</span><Button tone="danger" icon={Trash2} onClick={() => deleteImage(hashResult.image)}>删除匹配图片</Button></div>
+                </div>
+              </> : <Status>图库中没有相同哈希的 OSS 图片。</Status>}
+            </>}
+          </div>
+        </div>
+      </Panel>
 
       <Panel className="download-date-panel" title="收录日期" eyebrow="Contact strips">
         <div className="date-contact-strip" role="list" aria-label="按收录日期筛选">

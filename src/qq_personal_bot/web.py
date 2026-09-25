@@ -889,6 +889,40 @@ def create_app():
         ]
         return result
 
+    @app.post("/api/download-images/match")
+    async def match_download_image(request: Request) -> dict:
+        require_token(request)
+        digest = hashlib.sha256()
+        size = 0
+        async for chunk in request.stream():
+            size += len(chunk)
+            if size > 50 * 1024 * 1024:
+                raise HTTPException(status_code=413, detail="图片不能超过 50 MB")
+            digest.update(chunk)
+        if size == 0:
+            raise HTTPException(status_code=400, detail="请选择图片")
+
+        record = get_store().get_download_image_by_hash(digest.hexdigest())
+        if record is None:
+            return {"sha256": digest.hexdigest(), "matched": False, "image": None}
+        try:
+            exists = await asyncio.to_thread(
+                get_download_storage().image_exists, record["object_key"]
+            )
+        except DownloadStorageError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        if not exists:
+            return {"sha256": digest.hexdigest(), "matched": False, "image": None}
+        return {
+            "sha256": digest.hexdigest(),
+            "matched": True,
+            "image": {
+                **record,
+                "created_at": datetime.fromtimestamp(record["created_at"], UTC).isoformat(),
+                "image_url": f"./api/download-images/{record['id']}/content",
+            },
+        }
+
     @app.get("/api/download-images/{image_id}/content")
     async def get_download_image_content(image_id: int) -> StreamingResponse:
         record = get_store().get_download_image(image_id)

@@ -112,6 +112,82 @@ def test_short_download_commands_are_registered():
     assert next(iter(download.download.rule.checkers)).call.cmds == (("d",),)
     assert next(iter(download.download_overview.rule.checkers)).call.cmds == (("dov",),)
     assert next(iter(download.dimg.rule.checkers)).call.cmds == (("dimg",),)
+    assert next(iter(download.remove_download.rule.checkers)).call.cmds == (("rm",),)
+
+
+@pytest.mark.asyncio
+async def test_rm_deletes_only_exact_indexed_image(tmp_path, monkeypatch):
+    store = PolicyStore(tmp_path / "policy.sqlite3")
+    store.initialize(AppSettings(db_path=tmp_path / "policy.sqlite3", admins=(1,)))
+    body = b"GIF89a-target"
+    digest = hashlib.sha256(body).hexdigest()
+    object_key = f"20260817/{digest}.gif"
+    store.record_download_image(
+        sha256=digest,
+        object_key=object_key,
+        content_type="image/gif",
+        size_bytes=len(body),
+        downloaded_date="20260817",
+    )
+    storage = FakeStorage()
+    storage.objects[object_key] = body
+    monkeypatch.setattr(download, "get_store", lambda: store)
+    monkeypatch.setattr(download, "get_download_storage", lambda: storage)
+
+    matcher = FakeMatcher()
+    with pytest.raises(CommandFinished):
+        await download._handle_remove_download(
+            matcher, SimpleNamespace(user_id=1), digest.upper()
+        )
+    assert matcher.messages == [f"已删除图片：{digest}"]
+    assert store.get_download_image_by_hash(digest) is None
+    assert storage.objects == {}
+
+    matcher = FakeMatcher()
+    with pytest.raises(CommandFinished):
+        await download._handle_remove_download(matcher, SimpleNamespace(user_id=1), digest)
+    assert matcher.messages == ["未找到对应哈希的图片，未删除任何内容。"]
+
+
+@pytest.mark.asyncio
+async def test_rm_rejects_invalid_hash_and_non_admin(monkeypatch):
+    matcher = FakeMatcher()
+    store = SimpleNamespace(is_admin=lambda user_id: user_id == 1)
+    monkeypatch.setattr(download, "get_store", lambda: store)
+
+    with pytest.raises(CommandFinished):
+        await download._handle_remove_download(matcher, SimpleNamespace(user_id=1), "abc")
+    assert matcher.messages == ["用法：/rm <图片的 SHA-256 哈希值>"]
+
+    matcher = FakeMatcher()
+    await download._handle_remove_download(matcher, SimpleNamespace(user_id=2), "a" * 64)
+    assert matcher.messages == []
+
+
+@pytest.mark.asyncio
+async def test_rm_preserves_index_when_storage_delete_fails(tmp_path, monkeypatch):
+    store = PolicyStore(tmp_path / "policy.sqlite3")
+    store.initialize(AppSettings(db_path=tmp_path / "policy.sqlite3", admins=(1,)))
+    digest = "a" * 64
+    store.record_download_image(
+        sha256=digest,
+        object_key=f"20260817/{digest}.gif",
+        content_type="image/gif",
+        size_bytes=10,
+        downloaded_date="20260817",
+    )
+
+    class FailingStorage:
+        def remove_image(self, object_key, *, missing_ok=False):
+            raise download.DownloadStorageError("offline")
+
+    monkeypatch.setattr(download, "get_store", lambda: store)
+    monkeypatch.setattr(download, "get_download_storage", FailingStorage)
+    matcher = FakeMatcher()
+    with pytest.raises(CommandFinished):
+        await download._handle_remove_download(matcher, SimpleNamespace(user_id=1), digest)
+    assert store.get_download_image_by_hash(digest) is not None
+    assert matcher.messages == ["删除失败：MinIO 对象存储暂不可用，图库记录未删除。"]
 
 
 @pytest.mark.asyncio

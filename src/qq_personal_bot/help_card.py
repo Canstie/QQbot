@@ -168,6 +168,7 @@ def build_help_sections(
                 (enabled("downloads.ingest"), "/d  下载引用聊天记录中的图片"),
                 (enabled("downloads.stickers"), "/dimg  将引用图片加入 AI 表情包库"),
                 (enabled("downloads.overview"), "/dov  查看下载图库统计"),
+                (True, "/rm <SHA-256>  删除下载图库中的图片"),
                 (steam_base, "/steam on|off  开关本群 Steam 监控"),
                 (steam_base, "/steam addid|delid  管理监控玩家"),
                 (steam_base, "/steam bind|unbind  添加或移除玩家与绑定"),
