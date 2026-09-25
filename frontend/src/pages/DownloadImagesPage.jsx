@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Cloud, Image, RefreshCw, Trash2 } from "lucide-react";
 
 import { formatBytes, formatDate, get, remove } from "../api";
@@ -19,6 +19,7 @@ export default function DownloadImagesPage({ refreshVersion, onChanged }) {
   const [total, setTotal] = useState(0);
   const [notice, setNotice] = useState("正在连接对象图库");
   const [loading, setLoading] = useState(false);
+  const skipRefresh = useRef(null);
 
   const loadOverview = () => get("/download-images/overview").then(setOverview);
   const loadImages = async ({ append = false } = {}) => {
@@ -40,14 +41,29 @@ export default function DownloadImagesPage({ refreshVersion, onChanged }) {
   };
 
   useEffect(() => { loadOverview().catch((error) => setNotice(error.message)); }, [refreshVersion]);
-  useEffect(() => { loadImages(); }, [selectedDate, refreshVersion]);
+  useEffect(() => {
+    const skipped = skipRefresh.current;
+    if (skipped?.date === selectedDate && refreshVersion > skipped.version) {
+      skipRefresh.current = null;
+      return;
+    }
+    if (skipped && skipped.date !== selectedDate) skipRefresh.current = null;
+    loadImages();
+  }, [selectedDate, refreshVersion]);
 
   const deleteImage = async (item) => {
     if (!window.confirm(`从对象图库删除这张图片？\n${item.sha256}`)) return;
     try {
       await remove(`/download-images/${item.id}`);
+      setImages((current) => current.filter((image) => image.id !== item.id));
+      setTotal((current) => Math.max(0, current - 1));
+      setDates((current) => current
+        .map((entry) => entry.date === item.downloaded_date
+          ? { ...entry, count: Math.max(0, entry.count - 1) }
+          : entry)
+        .filter((entry) => entry.count > 0 || entry.date === selectedDate));
       setNotice("图片已删除");
-      await Promise.all([loadOverview(), loadImages()]);
+      skipRefresh.current = { date: selectedDate, version: refreshVersion };
       onChanged();
     } catch (error) {
       setNotice(error.message);
@@ -89,14 +105,14 @@ export default function DownloadImagesPage({ refreshVersion, onChanged }) {
       </Panel>
 
       <Panel className="download-gallery-panel" title={selectedDate ? dateLabel(selectedDate) : "全部图片"} eyebrow={`${total} images`}>
-        {!images.length && !loading && <Empty title="图库中还没有图片" description="管理员引用聊天记录发送 /download 后，图片会出现在这里。" />}
+        {!images.length && !loading && <Empty title="图库中还没有图片" description="管理员引用聊天记录发送 /d 后，图片会出现在这里。" />}
         <div className="masonry-gallery download-gallery">
           {images.map((item) => (
             <figure key={item.id}>
               <a href={item.image_url} target="_blank" rel="noreferrer"><img src={item.image_url} alt="" loading="lazy" /></a>
               <figcaption>
                 <div><strong>{item.sha256.slice(0, 12)}</strong><small>{formatBytes(item.size_bytes)} · {formatDate(item.created_at)}</small></div>
-                <IconButton label="删除图片" icon={Trash2} tone="danger" onClick={() => deleteImage(item)} />
+                <IconButton label="删除图片" icon={Trash2} tone="danger" disabled={loading} onClick={() => deleteImage(item)} />
               </figcaption>
             </figure>
           ))}
