@@ -65,7 +65,7 @@ def test_recent_bot_output_event_is_ignored():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("reason", ["ok", "group_not_enabled", "group_rate_limited"])
 @pytest.mark.parametrize("explicit_send", [False, True])
-@pytest.mark.parametrize("command,count", [("涩图", None), ("涩图 2", 2)])
+@pytest.mark.parametrize("command,count", [("涩图", None), ("涩图 2", 2), ("涩图 40", 40)])
 async def test_gallery_command_policy_and_delivery(monkeypatch, tmp_path, reason, explicit_send, command, count):
     from unittest.mock import AsyncMock
     event = SimpleNamespace(segments=(), group_id=123, is_at_bot=False)
@@ -82,7 +82,7 @@ async def test_gallery_command_policy_and_delivery(monkeypatch, tmp_path, reason
         await send(tmp_path / "second.gif")
 
     async def gallery_forward(send, self_id, requested):
-        assert self_id == "456" and requested == 2
+        assert self_id == "456" and requested == count
         await send(nodes)
 
     image_query = AsyncMock(side_effect=gallery_images)
@@ -120,7 +120,7 @@ async def test_gallery_command_policy_and_delivery(monkeypatch, tmp_path, reason
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("command", ["涩图 0", "涩图 101", "涩图 abc", "涩图 1 2"])
+@pytest.mark.parametrize("command", ["涩图 0", "涩图 41", "涩图 100", "涩图 abc", "涩图 1 2"])
 async def test_gallery_command_rejects_invalid_count(monkeypatch, command):
     from unittest.mock import AsyncMock
 
@@ -142,7 +142,7 @@ async def test_gallery_command_rejects_invalid_count(monkeypatch, command):
 
     query.assert_not_awaited()
     bot.call_api.assert_not_awaited()
-    assert "用法：~涩图 [数量]" in matcher.send.call_args.args[0].data["text"]
+    assert "用法：~涩图 [数量]，数量须在 1—40 之间。" in matcher.send.call_args.args[0].data["text"]
 
 
 @pytest.mark.asyncio

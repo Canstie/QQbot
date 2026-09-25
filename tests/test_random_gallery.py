@@ -255,6 +255,17 @@ async def test_explicit_twenty_sends_twenty_distinct_images_in_one_forward(monke
 
 
 @pytest.mark.asyncio
+async def test_forty_is_accepted_as_forward_limit(monkeypatch):
+    from unittest.mock import AsyncMock, Mock
+
+    store = Mock()
+    store.reserve_download_images.return_value = []
+    monkeypatch.setattr(gallery, "get_store", lambda: store)
+    assert "图库暂无图片" in await gallery.send_random_gallery_forward(AsyncMock(), "123", 40)
+    store.reserve_download_images.assert_called_once_with(40)
+
+
+@pytest.mark.asyncio
 async def test_forward_failure_releases_reservation_and_cleans_files(monkeypatch, tmp_path):
     from unittest.mock import AsyncMock
 
@@ -271,7 +282,7 @@ async def test_forward_failure_releases_reservation_and_cleans_files(monkeypatch
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("count", [0, 101])
+@pytest.mark.parametrize("count", [0, 41, 101])
 async def test_invalid_count_does_not_reserve(monkeypatch, count):
     from unittest.mock import AsyncMock, Mock
 

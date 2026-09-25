@@ -14,7 +14,7 @@ from qq_personal_bot.runtime import get_store
 
 logger = logging.getLogger(__name__)
 MAX_IMAGE_BYTES = 50 * 1024 * 1024
-MAX_FORWARD_IMAGES = 100
+MAX_FORWARD_IMAGES = 40
 EXTENSIONS = {"image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif",
               "image/webp": ".webp", "image/bmp": ".bmp", "image/avif": ".avif"}
 
