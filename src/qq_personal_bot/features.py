@@ -30,7 +30,7 @@ STATIC_FEATURES: tuple[FeatureDefinition, ...] = (
         "activity.record",
         "群数据",
         "群聊速报",
-        "记录当天群消息，并为 ~总结 生成聊天文件、AI 摘要和长图。",
+        "记录群消息，并为 ~总结 [昨天] 生成聊天文件、AI 摘要和长图。",
     ),
     FeatureDefinition("classics.forward_all", "图片功能", "典图合并转发", "发送本群全部典图。"),
     FeatureDefinition("downloads.ingest", "图片功能", "下载聊天图片", "下载引用聊天记录中的图片。"),

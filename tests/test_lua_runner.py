@@ -1346,7 +1346,7 @@ async def test_builtin_change_wife_reply_uses_avatar_and_name_only(tmp_path, mon
     assert result.quote is True
     assert result.reply is not None
     assert result.reply.startswith("你今天亲爱的群老婆是\n[CQ:image,file=https://q1.qlogo.cn/")
-    assert any(name in result.reply for name in {"Alpha", "BetaCard", "Gamma"})
+    assert any(name in result.reply for name in ("Alpha", "BetaCard", "Gamma"))
     assert "（" not in result.reply
 
 
@@ -1667,7 +1667,7 @@ async def test_builtin_help_lists_public_features_only_for_regular_user(tmp_path
     assert "~help  查看动态功能菜单" in help_text
     assert "~今日菜单  随机推荐今日吃什么" in help_text
     assert "~抽群老婆  抽取今日双向绑定对象" in help_text
-    assert "~总结  生成今天的群聊速报长图" not in help_text
+    assert "~总结 [昨天]  生成今天或昨天的群聊速报长图" not in help_text
     assert "~今日饭店  随机抽一家本群饭店" in help_text
     assert "/bot" not in help_text
     assert "/d  " not in help_text
@@ -1697,7 +1697,7 @@ async def test_builtin_help_appends_admin_features_for_admin(tmp_path, monkeypat
     assert sections[-1].title == "管理员命令"
     help_text = "\n".join(item for section in sections for item in section.items)
     assert "~help  查看动态功能菜单" in help_text
-    assert "~总结  生成今天的群聊速报长图" in help_text
+    assert "~总结 [昨天]  生成今天或昨天的群聊速报长图" in help_text
     assert "/check  查看服务器 CPU、内存和磁盘" in help_text
     assert "/d  下载引用聊天记录中的图片" in help_text
     assert "/dov  查看下载图库统计" in help_text

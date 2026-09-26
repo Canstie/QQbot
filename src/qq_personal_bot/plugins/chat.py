@@ -441,7 +441,8 @@ async def _dispatch_onebot_message(
                                  explicit_group_send=explicit_group_send)
         return
 
-    if decision.handler == "default" and decision.normalized_message.strip() == "总结":
+    digest_parts = decision.normalized_message.split() if decision.handler == "default" else []
+    if digest_parts and digest_parts[0] == "总结":
         store = get_store()
         if not store.is_admin(int(internal_event.user_id)):
             return
@@ -450,11 +451,23 @@ async def _dispatch_onebot_message(
             for feature_id in ("activity.record", "lua.master", "lua.command.总结")
         ):
             return
+        if digest_parts not in (["总结"], ["总结", "昨天"]):
+            await _send_response(
+                matcher,
+                bot,
+                event,
+                MessageSegment.text("用法：~总结 或 ~总结 昨天"),
+                explicit_group_send=explicit_group_send,
+            )
+            return
+        yesterday = len(digest_parts) == 2
         await _send_response(
             matcher,
             bot,
             event,
-            MessageSegment.text("⏳ 正在整理今天的聊天记录并生成群聊速报……"),
+            MessageSegment.text(
+                f"⏳ 正在整理{'昨天' if yesterday else '今天'}的聊天记录并生成群聊速报……"
+            ),
             explicit_group_send=explicit_group_send,
         )
         with latency_phase("activity_flush"):
@@ -466,6 +479,7 @@ async def _dispatch_onebot_message(
                     internal_event,
                     get_settings(),
                     store,
+                    yesterday=yesterday,
                 )
         except GroupDigestEmptyError as exc:
             await _send_response(

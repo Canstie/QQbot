@@ -147,13 +147,17 @@ async def test_gallery_command_rejects_invalid_count(monkeypatch, command):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("explicit_send", [False, True])
+@pytest.mark.parametrize(
+    "command,day_label,yesterday",
+    [("总结", "今天", False), ("总结 昨天", "昨天", True)],
+)
 async def test_digest_command_sends_progress_and_generated_image(
-    monkeypatch, tmp_path, explicit_send
+    monkeypatch, tmp_path, explicit_send, command, day_label, yesterday
 ):
     from unittest.mock import AsyncMock
 
     event = SimpleNamespace(segments=(), group_id=123, user_id=456, is_at_bot=False)
-    decision = PolicyDecision(True, "ok", handler="default", normalized_message="总结")
+    decision = PolicyDecision(True, "ok", handler="default", normalized_message=command)
     store = SimpleNamespace(
         is_admin=lambda user_id: user_id == 456,
         is_feature_enabled=lambda feature_id: True,
@@ -180,13 +184,14 @@ async def test_digest_command_sends_progress_and_generated_image(
     await chat._handle_onebot_message(matcher, bot, event, explicit_group_send=explicit_send)
 
     generate.assert_awaited_once()
+    assert generate.await_args.kwargs["yesterday"] is yesterday
     responses = (
         [call.kwargs["message"] for call in bot.send_group_msg.call_args_list]
         if explicit_send
         else [call.args[0] for call in matcher.send.call_args_list]
     )
     assert [response.type for response in responses] == ["text", "image"]
-    assert "正在整理今天" in responses[0].data["text"]
+    assert f"正在整理{day_label}" in responses[0].data["text"]
     assert responses[1].data["file"] == image_path.as_uri()
     lua.assert_not_awaited()
 

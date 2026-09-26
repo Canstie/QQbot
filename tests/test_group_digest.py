@@ -8,7 +8,12 @@ from PIL import Image
 import qq_personal_bot.group_digest_card as digest_card
 from qq_personal_bot.core.models import MessageEvent
 from qq_personal_bot.core.store import PolicyStore
-from qq_personal_bot.group_digest import _backfill_today_history, generate_group_digest_report
+from qq_personal_bot.group_digest import (
+    GroupDigestEmptyError,
+    _backfill_date_history,
+    _final_prompt,
+    generate_group_digest_report,
+)
 from qq_personal_bot.group_digest_card import _report_title
 from qq_personal_bot.settings import AppSettings
 
@@ -154,15 +159,95 @@ async def test_generate_group_digest_writes_transcript_and_card(tmp_path, monkey
 
 
 @pytest.mark.asyncio
-async def test_history_backfill_keeps_only_today_and_deduplicates(tmp_path):
+@pytest.mark.parametrize(
+    "target_date,expected_content",
+    [("2026-09-13", "历史消息[图片]"), ("2026-09-12", "昨天")],
+)
+async def test_history_backfill_keeps_only_target_date_and_deduplicates(
+    tmp_path, target_date, expected_content
+):
     db_path = tmp_path / "qqbot.sqlite3"
     settings = AppSettings(db_path=db_path, admins=())
     store = PolicyStore(db_path)
     store.initialize(settings)
 
-    await _backfill_today_history(HistoryBot(), 123, "2026-09-13", store)
-    await _backfill_today_history(HistoryBot(), 123, "2026-09-13", store)
+    await _backfill_date_history(HistoryBot(), 123, target_date, store)
+    await _backfill_date_history(HistoryBot(), 123, target_date, store)
 
-    messages = store.get_group_daily_messages(123, "2026-09-13")
+    messages = store.get_group_daily_messages(123, target_date)
     assert len(messages) == 1
-    assert messages[0]["content"] == "历史消息[图片]"
+    assert messages[0]["content"] == expected_content
+
+
+@pytest.mark.asyncio
+async def test_generate_yesterday_digest_uses_yesterday_messages_and_date(tmp_path, monkeypatch):
+    db_path = tmp_path / "qqbot.sqlite3"
+    settings = AppSettings(db_path=db_path, admins=(), dsapi_api_key="test-key")
+    store = PolicyStore(db_path)
+    store.initialize(settings)
+    for day, content in ((12, "昨天的消息"), (13, "今天的消息")):
+        store.record_group_message_activity(
+            group_id=123,
+            user_id=1,
+            timestamp=datetime(2026, 9, day, 9, 0, tzinfo=CHINA_TZ).timestamp(),
+            raw_message=content,
+            segments=({"type": "text", "data": {"text": content}},),
+        )
+
+    seen = {}
+
+    async def fake_summary(transcript_path, **kwargs):
+        seen["summary_date"] = kwargs["target_date"]
+        return {"overview": "昨天的群聊。"}
+
+    def fake_render(settings, *, output_path, date, summary, **kwargs):
+        seen["render_date"] = date
+        seen["message_count"] = summary["total_messages"]
+        output_path.write_bytes(b"rendered")
+
+    monkeypatch.setattr("qq_personal_bot.group_digest._summarize_transcript", fake_summary)
+    monkeypatch.setattr("qq_personal_bot.group_digest.render_group_digest_card", fake_render)
+    event = MessageEvent(
+        platform="onebot.v11",
+        message_id=3,
+        group_id=123,
+        user_id=1,
+        raw_message="~总结 昨天",
+        timestamp=datetime(2026, 9, 13, 0, 5, tzinfo=CHINA_TZ).timestamp(),
+    )
+
+    result = await generate_group_digest_report(DigestBot(), event, settings, store, yesterday=True)
+
+    transcript = result.transcript_path.read_text(encoding="utf-8")
+    assert "日期：2026-09-12（Asia/Shanghai）" in transcript
+    assert "昨天的消息" in transcript
+    assert "今天的消息" not in transcript
+    assert result.message_count == 1
+    assert result.image_path.parent.name == "2026-09-12"
+    assert seen == {"summary_date": "2026-09-12", "render_date": "2026-09-12", "message_count": 1}
+
+
+@pytest.mark.asyncio
+async def test_yesterday_digest_reports_empty_target_date(tmp_path):
+    db_path = tmp_path / "qqbot.sqlite3"
+    settings = AppSettings(db_path=db_path, admins=(), dsapi_api_key="test-key")
+    store = PolicyStore(db_path)
+    store.initialize(settings)
+    event = MessageEvent(
+        platform="onebot.v11",
+        message_id=3,
+        group_id=123,
+        user_id=1,
+        raw_message="~总结 昨天",
+        timestamp=_timestamp(0, 5),
+    )
+
+    with pytest.raises(GroupDigestEmptyError, match="昨天还没有记录到群消息"):
+        await generate_group_digest_report(DigestBot(), event, settings, store, yesterday=True)
+
+
+def test_digest_prompt_names_target_date():
+    prompt = _final_prompt("测试群", "2026-09-12", {}, {}, "<chat-log>昨天的消息</chat-log>")
+
+    assert "2026-09-12（北京时间）" in prompt
+    assert "今日群聊速报" not in prompt

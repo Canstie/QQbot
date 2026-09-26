@@ -241,7 +241,7 @@ def _draw_atmosphere(
     atmosphere = digest.get("atmosphere") or {}
     score = max(0, min(100, int(atmosphere.get("score") or 0)))
     label = str(atmosphere.get("label") or "平稳在线")
-    comment = str(atmosphere.get("comment") or "今天的聊天节奏平稳，大家各自留下了一点声音。")
+    comment = str(atmosphere.get("comment") or "这一天的聊天节奏平稳，大家各自留下了一点声音。")
     height = 150
     draw.rounded_rectangle(
         (CONTENT_LEFT, y + 12, CONTENT_RIGHT, y + height), radius=16, fill="#fbfcfe", outline=LINE
@@ -265,7 +265,7 @@ def _draw_topics(
     topics = list(digest.get("topics") or [])[:5]
     if not topics:
         return y
-    y = _section_heading(draw, y, "今日话题", "TOPICS", fonts)
+    y = _section_heading(draw, y, "当日话题", "TOPICS", fonts)
     for index, topic in enumerate(topics, 1):
         title = str(topic.get("title") or f"话题 {index}")
         summary = str(topic.get("summary") or "")
@@ -337,7 +337,7 @@ def _draw_portraits(
                 font=fonts["body_bold"],
                 fill=INK,
             )
-            title = str(portrait.get("title") or "今日群友")
+            title = str(portrait.get("title") or "当日群友")
             _draw_text(
                 draw,
                 (left + 88, top + 50),
@@ -403,7 +403,7 @@ def _draw_closing(
     digest: Mapping[str, Any],
     fonts: Mapping[str, ImageFont.ImageFont],
 ) -> int:
-    closing = str(digest.get("closing") or "今天的群聊已装订成册，明天继续见。")
+    closing = str(digest.get("closing") or "这一天的群聊已装订成册。")
     lines = _wrap_text(draw, closing, fonts["body"], CONTENT_RIGHT - CONTENT_LEFT - 150, max_lines=4)
     height = max(126, 58 + len(lines) * 31)
     for x in range(CONTENT_LEFT, CONTENT_RIGHT):
@@ -415,7 +415,7 @@ def _draw_closing(
     _draw_text(
         draw,
         (CONTENT_LEFT + 116, y + 22),
-        "今日收束",
+        "当日收束",
         font=fonts["small_bold"],
         fill="#cce8fa",
     )

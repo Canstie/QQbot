@@ -102,7 +102,7 @@ def build_help_sections(
         (
             (
                 is_admin and lua("总结", "activity.record"),
-                "~总结  生成今天的群聊速报长图",
+                "~总结 [昨天]  生成今天或昨天的群聊速报长图",
             ),
             (enabled("flows.menu_add"), "~添加菜单  按提示添加菜名和图片"),
             (enabled("flows.restaurant_add"), "~添加饭店  添加店名和招牌菜"),

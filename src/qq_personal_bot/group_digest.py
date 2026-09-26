@@ -5,7 +5,7 @@ import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -42,19 +42,23 @@ async def generate_group_digest_report(
     event: MessageEvent,
     settings: AppSettings,
     store: PolicyStore,
+    *,
+    yesterday: bool = False,
 ) -> GroupDigestResult:
     if event.group_id is None:
         raise GroupDigestEmptyError("这个功能只能在群聊里使用。")
     if not settings.dsapi_api_key:
         raise DSAPIError("DSAPI key is not configured")
 
-    target_date = _china_date(event.timestamp)
+    target_date = (
+        date.fromisoformat(_china_date(event.timestamp)) - timedelta(days=int(yesterday))
+    ).isoformat()
     with latency_phase("digest_history"):
-        await _backfill_today_history(bot, event.group_id, target_date, store)
+        await _backfill_date_history(bot, event.group_id, target_date, store)
     with latency_phase("digest_database"):
         messages = store.get_group_daily_messages(event.group_id, target_date)
     if not messages:
-        raise GroupDigestEmptyError("今天还没有记录到群消息。")
+        raise GroupDigestEmptyError(f"{'昨天' if yesterday else '今天'}还没有记录到群消息。")
 
     with latency_phase("digest_metadata"):
         group_name, names = await _group_metadata(bot, event.group_id, messages)
@@ -82,6 +86,7 @@ async def generate_group_digest_report(
             settings=settings,
             model=model,
             group_name=group_name,
+            target_date=target_date,
             summary=_summary_for_model(summary, names),
             names=names,
         )
@@ -107,7 +112,7 @@ async def generate_group_digest_report(
     )
 
 
-async def _backfill_today_history(
+async def _backfill_date_history(
     bot: Any,
     group_id: int,
     target_date: str,
@@ -261,6 +266,7 @@ async def _summarize_transcript(
     settings: AppSettings,
     model: str,
     group_name: str,
+    target_date: str,
     summary: Mapping[str, Any],
     names: Mapping[int, str],
 ) -> dict[str, Any]:
@@ -291,7 +297,7 @@ async def _summarize_transcript(
             + "\n</chunk-notes>"
         )
 
-    prompt = _final_prompt(group_name, summary, names, source)
+    prompt = _final_prompt(group_name, target_date, summary, names, source)
     raw = await _complete(
         settings,
         model,
@@ -348,17 +354,18 @@ def _analysis_system_prompt() -> str:
 
 def _final_prompt(
     group_name: str,
+    target_date: str,
     summary: Mapping[str, Any],
     names: Mapping[int, str],
     source: str,
 ) -> str:
     roster = [{"user_id": user_id, "name": name} for user_id, name in names.items()]
     return (
-        f"请为群“{group_name}”制作今日群聊速报的数据。\n"
+        f"请为群“{group_name}”制作 {target_date}（北京时间）的群聊速报数据。\n"
         f"确定性统计：{json.dumps(summary, ensure_ascii=False)}\n"
         f"成员映射：{json.dumps(roster, ensure_ascii=False)}\n"
         "从记录中选 3 至 5 个有区分度的话题、最多 6 位确实活跃且有足够证据的群友画像、"
-        "以及 3 至 5 句确实逐字出现过的短金句。画像只描述当天可观察到的聊天行为。"
+        "以及 3 至 5 句确实逐字出现过的短金句。画像只描述该日可观察到的聊天行为。"
         "participants 和 name 使用成员映射中的昵称；user_id 必须来自成员映射。"
         "quote 必须是记录中的连续原文，不得改写。若证据不足，宁可少写。"
         "只返回 JSON，不要 Markdown、代码块或解释。\n"
@@ -379,7 +386,7 @@ def _schema_text() -> str:
         '"tags":["标签"],"description":"不超过90字"}],'
         '"quotes":[{"user_id":123,"name":"昵称","quote":"逐字原话",'
         '"comment":"不超过60字点评"}],'
-        '"closing":"不超过80字的今日收束"}'
+        '"closing":"不超过80字的当日收束"}'
     )
 
 
@@ -435,7 +442,7 @@ def _normalize_digest(
             }
         )
     return {
-        "overview": _limit(value.get("overview"), 70) or "今天的聊天已经整理成册。",
+        "overview": _limit(value.get("overview"), 70) or "当天的聊天已经整理成册。",
         "atmosphere": {
             "label": _limit(atmosphere.get("label"), 12) or "平稳在线",
             "score": max(0, min(100, _safe_int(atmosphere.get("score")))),
@@ -452,7 +459,7 @@ def _normalize_digest(
         ],
         "portraits": portraits,
         "quotes": quotes,
-        "closing": _limit(value.get("closing"), 160) or "今日份群聊已归档，明天继续见。",
+        "closing": _limit(value.get("closing"), 160) or "这一天的群聊已归档。",
     }
 
 
