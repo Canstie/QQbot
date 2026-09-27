@@ -7,6 +7,7 @@ import pytest
 from qq_personal_bot.core.models import MessageEvent
 from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.dsapi import (
+    DSAPILengthError,
     _brief_reply,
     _chat_completions_url,
     _format_reply,
@@ -369,7 +370,7 @@ async def test_active_knowledge_base_is_used_for_dsapi_prompt(tmp_path, monkeypa
     assert "1至3个短段落" in captured["messages"][0]["content"]
     assert captured["options"] == {
         "model": "deepseek-reasoner",
-        "max_tokens": 512,
+        "max_tokens": None,
         "thinking_enabled": True,
         "temperature": 0.25,
     }
@@ -485,6 +486,89 @@ async def test_thinking_empty_reply_retries_in_nonthinking_mode(tmp_path, monkey
 
     assert response == "降级后回复"
     assert [item["thinking_enabled"] for item in calls] == [True, False]
+
+
+@pytest.mark.asyncio
+async def test_thinking_length_reply_retries_without_sending_partial_text(tmp_path, monkeypatch):
+    store = make_store(tmp_path, knowledge_prompt="测试角色")
+    knowledge = store.get_dsapi_config()["active_knowledge"]
+    knowledge_id = knowledge["id"]
+    store.update_dsapi_knowledge_base(
+        knowledge_id,
+        name=knowledge["name"],
+        prompt=knowledge["prompt"],
+        actor_id=0,
+        thinking_enabled=True,
+        max_tokens=512,
+        response_mode="detailed",
+    )
+    requests = []
+
+    class FakeResponse:
+        def __init__(self, body):
+            self.body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self):
+            thinking = self.body["thinking"]["type"] == "enabled"
+            return json.dumps(
+                {
+                    "choices": [
+                        {
+                            "finish_reason": "length" if thinking else "stop",
+                            "message": {
+                                "content": "这是一段未完成的回复，" if thinking else "这是完整的回答。"
+                            },
+                        }
+                    ],
+                    "usage": {
+                        "completion_tokens": 512 if thinking else 20,
+                        "completion_tokens_details": {"reasoning_tokens": 340 if thinking else 0},
+                    },
+                },
+                ensure_ascii=False,
+            ).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        body = json.loads(request.data.decode("utf-8"))
+        requests.append(body)
+        return FakeResponse(body)
+
+    monkeypatch.setattr("qq_personal_bot.dsapi.urlopen", fake_urlopen)
+
+    response = await generate_mention_reply(
+        FakeBot(), make_event(text="请解释这个问题"), make_settings(tmp_path), store
+    )
+
+    assert response == "这是完整的回答。"
+    assert [body["thinking"]["type"] for body in requests] == ["enabled", "disabled"]
+    assert all("max_tokens" not in body for body in requests)
+    history = store.get_dsapi_chat_history(123, 2, knowledge_id=knowledge_id)
+    assert history[-1] == {"role": "assistant", "content": "这是完整的回答。"}
+
+
+def test_nonthinking_length_response_is_rejected(tmp_path, monkeypatch):
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self):
+            return json.dumps(
+                {"choices": [{"finish_reason": "length", "message": {"content": "半句话，"}}]}
+            ).encode("utf-8")
+
+    monkeypatch.setattr("qq_personal_bot.dsapi.urlopen", lambda *args, **kwargs: FakeResponse())
+
+    with pytest.raises(DSAPILengthError, match="length limit"):
+        _request_chat_completion(make_settings(tmp_path), [{"role": "user", "content": "问题"}])
 
 
 @pytest.mark.asyncio
@@ -765,7 +849,7 @@ def test_chat_completion_request_uses_compatible_endpoint(tmp_path, monkeypatch)
     assert captured["url"] == "https://dsapi.example/v1/chat/completions"
     assert captured["authorization"] == "Bearer secret"
     assert captured["payload"]["model"] == "deepseek-test"
-    assert captured["payload"]["max_tokens"] == 80
+    assert "max_tokens" not in captured["payload"]
     assert captured["payload"]["thinking"] == {"type": "disabled"}
     assert captured["payload"]["stream"] is False
     assert captured["timeout"] == 30.0

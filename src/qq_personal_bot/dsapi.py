@@ -66,6 +66,10 @@ class DSAPIError(RuntimeError):
     pass
 
 
+class DSAPILengthError(DSAPIError):
+    """The model stopped before completing its answer."""
+
+
 def fetch_dsapi_models(settings: AppSettings) -> list[dict[str, Any]]:
     if not settings.dsapi_api_key:
         raise DSAPIError("DSAPI key is not configured")
@@ -401,7 +405,7 @@ async def _generate_text_reply(
         settings,
         messages,
         model=active_knowledge.get("model") or settings.dsapi_model,
-        max_tokens=active_knowledge.get("max_tokens") or settings.dsapi_max_tokens,
+        max_tokens=None,
         thinking_enabled=bool(active_knowledge.get("thinking_enabled", False)),
         temperature=active_knowledge.get("temperature"),
     )
@@ -510,7 +514,7 @@ def _request_chat_completion_with_fallback(
     messages: list[dict[str, Any]],
     *,
     model: str,
-    max_tokens: int,
+    max_tokens: int | None,
     thinking_enabled: bool,
     temperature: float | None,
 ) -> str:
@@ -673,10 +677,11 @@ def _request_chat_completion(
     body: dict[str, Any] = {
         "model": model or settings.dsapi_model,
         "messages": messages,
-        "max_tokens": max_tokens or settings.dsapi_max_tokens,
         "thinking": {"type": "enabled" if thinking_enabled else "disabled"},
         "stream": False,
     }
+    if max_tokens is not None:
+        body["max_tokens"] = int(max_tokens)
     if temperature is not None:
         body["temperature"] = float(temperature)
     payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
@@ -703,10 +708,27 @@ def _request_chat_completion(
         raise DSAPIError("invalid JSON response") from exc
 
     try:
-        content = result["choices"][0]["message"]["content"]
+        choice = result["choices"][0]
+        content = choice["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:
         raise DSAPIError("response does not contain assistant content") from exc
 
+    finish_reason = choice.get("finish_reason")
+    if finish_reason == "length":
+        usage = result.get("usage") or {}
+        details = usage.get("completion_tokens_details") or {}
+        logger.warning(
+            "DSAPI reply reached length limit: model=%s max_tokens=%s thinking=%s "
+            "completion_tokens=%s reasoning_tokens=%s",
+            body["model"],
+            body.get("max_tokens", "provider default"),
+            thinking_enabled,
+            usage.get("completion_tokens"),
+            details.get("reasoning_tokens"),
+        )
+        raise DSAPILengthError("assistant response reached its length limit")
+    if finish_reason not in (None, "", "stop"):
+        raise DSAPIError(f"assistant generation stopped: {finish_reason}")
     if not isinstance(content, str):
         raise DSAPIError("assistant content is not text")
     return content.strip() or None
@@ -817,7 +839,7 @@ async def _resolve_vision_image_sources(bot: Any, message: Any) -> list[str]:
             if image_file:
                 try:
                     payload = await bot.call_api("get_image", file=image_file)
-                except Exception:
+                except Exception:  # noqa: BLE001 - OneBot adapters raise varied lookup errors
                     payload = None
                 source = _direct_vision_image_source(payload)
         if source and source not in sources:

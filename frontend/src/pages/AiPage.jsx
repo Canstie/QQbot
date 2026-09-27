@@ -52,7 +52,6 @@ const knowledgeDraftFrom = (knowledge = {}, defaults = {}) => ({
   prompt: knowledge.prompt || "",
   model: knowledge.model || defaults.model || defaults.default_model || "deepseek-v4-flash",
   thinking_enabled: knowledge.thinking_enabled ?? false,
-  max_tokens: knowledge.max_tokens ?? defaults.max_tokens ?? defaults.default_max_tokens ?? 80,
   history_turns: knowledge.history_turns ?? defaults.history_turns ?? 2,
   response_mode: knowledge.response_mode || "short",
   max_reply_messages: knowledge.max_reply_messages ?? 1,
@@ -69,7 +68,6 @@ const knowledgePayload = (draft) => {
   const { style_examples_text, relationship_count, ...fields } = draft;
   return ({
     ...fields,
-    max_tokens: Number(draft.max_tokens),
     history_turns: Number(draft.history_turns),
     max_reply_messages: Number(draft.max_reply_messages),
     temperature: draft.temperature === "" ? null : Number(draft.temperature),
@@ -280,7 +278,7 @@ export default function AiPage({ refreshVersion, onChanged }) {
     <>
       <PageHeader eyebrow="Model memory" title="AI 角色与知识" description="维护多个角色知识库，随时切换当前设定，并控制每个群的短期对话。" actions={<Button icon={Save} onClick={save}>保存并生效</Button>} />
       <div className="ai-status-strip">
-        <div className="ai-status-strip__model"><BrainCircuit /><div><span>当前模型</span><strong>{data?.model || "读取中"}</strong><small>{data?.thinking_enabled ? "Thinking" : "Non-thinking"} · {data?.max_tokens || "-"} tokens · {data?.base_url || "-"}</small></div></div>
+        <div className="ai-status-strip__model"><BrainCircuit /><div><span>当前模型</span><strong>{data?.model || "读取中"}</strong><small>{data?.thinking_enabled ? "Thinking" : "Non-thinking"} · {data?.base_url || "-"}</small></div></div>
         <Metric label="AI 启用群" value={data?.enabled_groups?.length ?? "-"} tone="blue" />
         <Metric label="上下文消息" value={data?.history_messages ?? "-"} tone="mint" />
         <Metric label="涉及群" value={data?.history_groups ?? "-"} tone="orange" />
@@ -310,7 +308,6 @@ export default function AiPage({ refreshVersion, onChanged }) {
                 </div>
                 <div className="knowledge-runtime-grid">
                   <Field label="模型"><ModelSelect value={knowledgeDraft.model} options={modelOptions} onChange={(model) => setKnowledgeDraft((current) => ({ ...current, model }))} /></Field>
-                  <Field label="最大输出 Token"><input type="number" min="1" max="32768" value={knowledgeDraft.max_tokens} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, max_tokens: event.target.value }))} /></Field>
                   <Field label="AI 对话轮数"><input type="number" min="1" max="50" value={knowledgeDraft.history_turns} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, history_turns: event.target.value }))} /></Field>
                   <Field label="群聊上下文消息"><input type="number" min="1" max="100" value={knowledgeDraft.context_messages} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, context_messages: event.target.value }))} /></Field>
                   <Field label="回复模式"><select value={knowledgeDraft.response_mode} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, response_mode: event.target.value }))}><option value="short">短回复</option><option value="normal">正常回复</option><option value="detailed">详细回复</option></select></Field>
@@ -383,7 +380,6 @@ export default function AiPage({ refreshVersion, onChanged }) {
               <div className="form-grid form-grid--2">
                 <Field label="知识库名称"><input autoFocus value={createDraft.name} maxLength={80} onChange={(event) => setCreateDraft((current) => ({ ...current, name: event.target.value }))} /></Field>
                 <Field label="模型"><ModelSelect value={createDraft.model} options={modelOptions} onChange={(model) => setCreateDraft((current) => ({ ...current, model }))} /></Field>
-                <Field label="最大输出 Token"><input type="number" min="1" max="32768" value={createDraft.max_tokens} onChange={(event) => setCreateDraft((current) => ({ ...current, max_tokens: event.target.value }))} /></Field>
                 <Field label="AI 对话轮数"><input type="number" min="1" max="50" value={createDraft.history_turns} onChange={(event) => setCreateDraft((current) => ({ ...current, history_turns: event.target.value }))} /></Field>
                 <Field label="回复模式"><select value={createDraft.response_mode} onChange={(event) => setCreateDraft((current) => ({ ...current, response_mode: event.target.value }))}><option value="short">短回复</option><option value="normal">正常回复</option><option value="detailed">详细回复</option></select></Field>
                 <Field label="单轮连续消息上限"><input type="number" min="1" max="3" value={createDraft.max_reply_messages} onChange={(event) => setCreateDraft((current) => ({ ...current, max_reply_messages: event.target.value }))} /></Field>

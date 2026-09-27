@@ -19,6 +19,7 @@ from qq_personal_bot.classic_forward import send_all_classics
 from qq_personal_bot.core.models import PolicyDecision
 from qq_personal_bot.dsapi import (
     DSAPIError,
+    DSAPILengthError,
     generate_mention_reply,
     generate_random_group_reply,
 )
@@ -568,7 +569,11 @@ async def _dispatch_onebot_message(
                 matcher,
                 bot,
                 event,
-                "脑袋刚刚卡住啦，再问我一次嘛 (｡•́︿•̀｡)",
+                (
+                    "这次回答没能完整生成，试着缩短问题再问一次。"
+                    if isinstance(exc, DSAPILengthError)
+                    else "脑袋刚刚卡住啦，再问我一次嘛 (｡•́︿•̀｡)"
+                ),
                 explicit_group_send=explicit_group_send,
             )
             return
