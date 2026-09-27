@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
 
 from dotenv import load_dotenv
-
 
 load_dotenv()
 
@@ -76,7 +75,7 @@ class AppSettings:
     dsapi_enabled: bool = True
     dsapi_base_url: str = "https://api.deepseek.com"
     dsapi_api_key: str = ""
-    dsapi_model: str = "deepseek-v4-flash"
+    dsapi_model: str = "deepseek-flash"
     dsapi_timeout_seconds: float = 30.0
     dsapi_max_tokens: int = 80
     dsapi_history_idle_seconds: int = 1200
@@ -96,7 +95,7 @@ class AppSettings:
     port: int = 8080
 
     @classmethod
-    def from_env(cls, environ: Mapping[str, str] | None = None) -> "AppSettings":
+    def from_env(cls, environ: Mapping[str, str] | None = None) -> AppSettings:
         env = environ if environ is not None else os.environ
         web_token = env.get("QQBOT_WEB_TOKEN")
         if web_token is not None:
@@ -147,8 +146,8 @@ class AppSettings:
                 or ""
             ).strip(),
             dsapi_model=(
-                env.get("QQBOT_DSAPI_MODEL", "deepseek-v4-flash").strip()
-                or "deepseek-v4-flash"
+                env.get("QQBOT_DSAPI_MODEL", "deepseek-flash").strip()
+                or "deepseek-flash"
             ),
             dsapi_timeout_seconds=_env_float(env.get("QQBOT_DSAPI_TIMEOUT_SECONDS"), 30.0),
             dsapi_max_tokens=_env_int(env.get("QQBOT_DSAPI_MAX_TOKENS"), 80),

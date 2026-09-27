@@ -22,6 +22,7 @@ from qq_personal_bot.dsapi import (
     DSAPILengthError,
     generate_mention_reply,
     generate_random_group_reply,
+    generate_roast_reply,
 )
 from qq_personal_bot.features import feature_id_for_platform
 from qq_personal_bot.group_digest import GroupDigestEmptyError, generate_group_digest_report
@@ -58,6 +59,21 @@ chat = on_message(priority=50, block=False)
 self_sent = on("message_sent", priority=50, block=False)
 _RECENT_BOT_OUTPUT_TTL_SECONDS = 5.0
 _recent_bot_outputs: deque[tuple[float, int | None, str]] = deque()
+
+
+def _roast_target_ids(event: Any, *, self_id: int | str) -> list[int]:
+    targets: list[int] = []
+    for segment in event.segments:
+        if segment.get("type") != "at":
+            continue
+        value = (segment.get("data") or {}).get("qq")
+        try:
+            user_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if user_id > 0 and str(user_id) != str(self_id) and user_id not in targets:
+            targets.append(user_id)
+    return targets
 
 
 def _build_default_response(content: str, *, direct: bool = False) -> str:
@@ -388,6 +404,48 @@ async def _dispatch_onebot_message(
                 )
         return
 
+    if (
+        decision.handler in {"mention", "default"}
+        and decision.normalized_message.strip() in {"锐评", "锐评一下"}
+    ):
+        targets = _roast_target_ids(internal_event, self_id=bot.self_id)
+        if len(targets) != 1:
+            response = "用法：@我 锐评 @一位群友，或 ~锐评 @一位群友。"
+        else:
+            store = get_store()
+            config = store.get_dsapi_config()
+            if not (
+                store.is_feature_enabled("ai.master")
+                and store.is_feature_enabled("ai.roast")
+                and config["enabled"]
+                and internal_event.group_id in config["enabled_groups"]
+                and store.is_quote_memory_group_enabled(internal_event.group_id)
+            ):
+                response = "本群尚未开启语录锐评。"
+            else:
+                await flush_group_activity()
+                try:
+                    with latency_phase("deepseek"):
+                        response = await generate_roast_reply(
+                            group_id=int(internal_event.group_id),
+                            target_user_id=targets[0],
+                            settings=get_settings(),
+                            store=store,
+                        )
+                except DSAPIError as exc:
+                    logger.warning("DSAPI roast reply failed: %s", exc)
+                    response = "这次锐评没生成完整，稍后再试一次。"
+                if response is None:
+                    response = "这位群友在本群的有效语录还不足 3 条，暂时锐评不了。"
+        await _finish_with_response(
+            matcher,
+            bot,
+            event,
+            response,
+            explicit_group_send=explicit_group_send,
+        )
+        return
+
     if decision.handler == "default" and decision.normalized_message.strip() == "爆典all":
         if not get_store().is_feature_enabled("classics.forward_all"):
             return
@@ -624,12 +682,18 @@ def _record_group_activity(event: Any, *, self_id: int | str) -> None:
         return
 
     store = get_store()
-    if not store.is_feature_enabled("activity.record"):
-        return
     mode = store.get_mode()
     if mode == "allowlist" and not store.is_group_enabled(event.group_id):
         return
     if mode == "blocklist" and store.is_group_blocked(event.group_id):
+        return
+
+    record_activity = store.is_feature_enabled("activity.record")
+    record_quote = (
+        store.is_feature_enabled("ai.roast")
+        and store.is_quote_memory_group_enabled(event.group_id)
+    )
+    if not record_activity and not record_quote:
         return
 
     get_activity_recorder(store).enqueue(
@@ -640,6 +704,8 @@ def _record_group_activity(event: Any, *, self_id: int | str) -> None:
             raw_message=event.raw_message,
             segments=tuple(event.segments),
             message_id=event.message_id,
+            record_activity=record_activity,
+            record_quote=record_quote,
         )
     )
 

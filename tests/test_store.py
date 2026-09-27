@@ -12,7 +12,6 @@ from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.settings import AppSettings
 from tools.qqbot_launcher import DEFAULT_LOG_RETENTION_DAYS, cleanup_logs
 
-
 GIF_1PX = (
     b"GIF89a\x01\x00\x01\x00\x80\x00\x00\xff\xff\xff\x00\x00\x00"
     b"!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00"
@@ -447,6 +446,73 @@ def test_disable_dsapi_group_removes_one_or_all_groups(tmp_path):
     assert store.get_dsapi_config()["enabled_groups"] == []
 
 
+def test_quote_memory_is_group_scoped_unlimited_and_clearable(tmp_path):
+    db_path = tmp_path / "policy.sqlite3"
+    store = PolicyStore(db_path)
+    store.initialize(AppSettings(db_path=db_path, admins=()))
+    assert store.set_quote_memory_groups([123], actor_id=1)["enabled_groups"] == [123]
+
+    records = [
+        {
+            "group_id": 123,
+            "user_id": 456,
+            "message_id": index,
+            "raw_message": f"第 {index} 条发言",
+            "segments": ({"type": "text", "data": {"text": f"第 {index} 条发言"}},),
+            "timestamp": float(index),
+        }
+        for index in range(1, 251)
+    ]
+    assert store.record_group_quote_messages(records) == 250
+    assert store.record_group_quote_messages(records[:1]) == 0
+    assert store.record_group_quote_messages(
+        [{**records[0], "group_id": 789, "message_id": 999}]
+    ) == 0
+    assert len(store.get_group_quotes(123, 456)) == 250
+    assert "第 1 条发言" in {
+        item["content"] for item in store.get_group_quote_evidence(123, 456)
+    }
+    assert store.get_group_quotes(789, 456) == []
+    assert store.get_quote_memory_config()["message_count"] == 250
+    store.set_quote_memory_groups([], actor_id=1)
+    assert store.record_group_quote_messages([{**records[0], "message_id": 251}]) == 0
+    assert store.get_quote_memory_config()["message_count"] == 250
+
+    reopened = PolicyStore(db_path)
+    reopened.initialize(AppSettings(db_path=db_path, admins=()))
+    assert not reopened.is_quote_memory_group_enabled(123)
+    assert reopened.clear_quote_messages(123, user_id=456, actor_id=1) == 250
+    assert reopened.get_group_quotes(123, 456) == []
+
+
+def test_quote_memory_stores_only_speaker_text(tmp_path):
+    db_path = tmp_path / "policy.sqlite3"
+    store = PolicyStore(db_path)
+    store.initialize(AppSettings(db_path=db_path, admins=()))
+    store.set_quote_memory_groups([123], actor_id=1)
+    rows = [
+        {"group_id": 123, "user_id": 456, "message_id": 1, "raw_message": "看图", "segments": ({"type": "image", "data": {"file": "a.jpg"}},)},
+        {"group_id": 123, "user_id": 456, "message_id": 2, "raw_message": "~锐评 @某人", "segments": ()},
+        {"group_id": 123, "user_id": 456, "message_id": 3, "raw_message": "原话", "segments": ({"type": "reply", "data": {"id": 9}}, {"type": "text", "data": {"text": "原话"}})},
+    ]
+    assert store.record_group_quote_messages(rows) == 1
+    assert store.get_group_quotes(123, 456)[0]["content"] == "原话"
+
+
+def test_legacy_flash_models_migrate_to_current_flash(tmp_path):
+    db_path = tmp_path / "policy.sqlite3"
+    settings = AppSettings(db_path=db_path, admins=())
+    store = PolicyStore(db_path)
+    store.initialize(settings)
+    store.create_dsapi_knowledge_base(name="默认", prompt="", actor_id=1)
+    with store._connect() as conn:
+        conn.execute(
+            "UPDATE dsapi_knowledge_bases SET model = 'deepseek-v4-flash-vision-exp'"
+        )
+    store.initialize(settings)
+    assert store.get_dsapi_config()["active_knowledge"]["model"] == "deepseek-flash"
+
+
 def test_set_active_dsapi_model_only_updates_active_knowledge_base(tmp_path):
     db_path = tmp_path / "policy.sqlite3"
     store = PolicyStore(db_path)
@@ -455,7 +521,7 @@ def test_set_active_dsapi_model_only_updates_active_knowledge_base(tmp_path):
         name="第一个",
         prompt="",
         actor_id=1,
-        model="deepseek-v4-flash",
+        model="deepseek-flash",
     )
     second = store.create_dsapi_knowledge_base(
         name="第二个",
@@ -467,12 +533,12 @@ def test_set_active_dsapi_model_only_updates_active_knowledge_base(tmp_path):
     assert active_id == first["id"]
 
     updated = store.set_active_dsapi_model(
-        "deepseek-v4-flash-vision-exp",
+        "deepseek-flash",
         actor_id=10000,
     )
 
     assert updated["id"] == active_id
-    assert updated["model"] == "deepseek-v4-flash-vision-exp"
+    assert updated["model"] == "deepseek-flash"
     bases = {item["id"]: item for item in store.list_dsapi_knowledge_bases()}
     assert bases[second["id"]]["model"] == "deepseek-v4-pro"
 

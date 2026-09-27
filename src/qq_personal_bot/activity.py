@@ -18,6 +18,8 @@ class GroupActivityRecord:
     raw_message: str
     segments: tuple[Any, ...]
     message_id: int | str = ""
+    record_activity: bool = True
+    record_quote: bool = False
 
 
 class GroupActivityRecorder:
@@ -79,23 +81,29 @@ class GroupActivityRecorder:
                     batch.append(self.queue.get_nowait())
                 except asyncio.QueueEmpty:
                     break
+            activities = [
+                {
+                    "group_id": record.group_id,
+                    "user_id": record.user_id,
+                    "timestamp": record.timestamp,
+                    "raw_message": record.raw_message,
+                    "segments": record.segments,
+                    "message_id": record.message_id,
+                }
+                for record in batch
+            ]
             try:
-                await asyncio.to_thread(
-                    self.store.record_group_message_activities,
-                    [
-                        {
-                            "group_id": record.group_id,
-                            "user_id": record.user_id,
-                            "timestamp": record.timestamp,
-                            "raw_message": record.raw_message,
-                            "segments": record.segments,
-                            "message_id": record.message_id,
-                        }
-                        for record in batch
-                    ],
-                )
+                activity_batch = [item for item, record in zip(activities, batch, strict=True) if record.record_activity]
+                if activity_batch:
+                    await asyncio.to_thread(self.store.record_group_message_activities, activity_batch)
             except Exception as exc:  # noqa: BLE001 - keep the writer alive
                 logger.exception(f"Failed to persist group activity batch: {exc}")
+            try:
+                quote_batch = [item for item, record in zip(activities, batch, strict=True) if record.record_quote]
+                if quote_batch:
+                    await asyncio.to_thread(self.store.record_group_quote_messages, quote_batch)
+            except Exception as exc:  # noqa: BLE001 - keep the writer alive
+                logger.exception(f"Failed to persist group quote batch: {exc}")
             finally:
                 for _ in batch:
                     self.queue.task_done()

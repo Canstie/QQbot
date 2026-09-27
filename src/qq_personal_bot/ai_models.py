@@ -2,13 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-
 DSAPI_MODEL_OPTIONS: tuple[dict[str, Any], ...] = (
     {
         "key": "flash",
-        "id": "deepseek-v4-flash",
+        "id": "deepseek-flash",
         "label": "Flash",
-        "vision": False,
+        "vision": True,
     },
     {
         "key": "pro",
@@ -16,23 +15,20 @@ DSAPI_MODEL_OPTIONS: tuple[dict[str, Any], ...] = (
         "label": "Pro",
         "vision": False,
     },
-    {
-        "key": "vision",
-        "id": "deepseek-v4-flash-vision-exp",
-        "label": "Flash Vision Exp",
-        "vision": True,
-    },
 )
 
 _MODELS_BY_KEY = {str(item["key"]): item for item in DSAPI_MODEL_OPTIONS}
 _MODELS_BY_ID = {str(item["id"]): item for item in DSAPI_MODEL_OPTIONS}
+_LEGACY_FLASH_IDS = {"deepseek-v4-flash", "deepseek-v4-flash-vision-exp"}
 
 
 def resolve_dsapi_model(value: str) -> dict[str, Any]:
     normalized = str(value).strip().lower()
     option = _MODELS_BY_KEY.get(normalized) or _MODELS_BY_ID.get(normalized)
+    if option is None and (normalized in _LEGACY_FLASH_IDS or normalized == "vision"):
+        option = _MODELS_BY_KEY["flash"]
     if option is None:
-        raise ValueError("model must be flash, pro, or vision")
+        raise ValueError("model must be flash or pro")
     return dict(option)
 
 
@@ -42,6 +38,8 @@ def dsapi_model_option(model_id: str) -> dict[str, Any] | None:
 
 
 def is_vision_dsapi_model(model_id: str) -> bool:
+    if str(model_id).strip().casefold() in _LEGACY_FLASH_IDS:
+        return True
     option = dsapi_model_option(model_id)
     return bool(option and option["vision"])
 

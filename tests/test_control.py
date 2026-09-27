@@ -28,7 +28,7 @@ class FakeStore:
         self.removed: list[int] = []
         self.ai_enabled: list[tuple[int, int]] = []
         self.ai_disabled: list[tuple[int | None, int]] = []
-        self.model = "deepseek-v4-flash"
+        self.model = "deepseek-flash"
         self.model_changes: list[tuple[str, int]] = []
         self.knowledge_bases = [
             {"id": 11, "name": "果果", "active": True},
@@ -221,13 +221,13 @@ async def test_aim_lists_models_and_marks_current(monkeypatch):
             ["aim", "list"],
         )
 
-    assert "1. flash — deepseek-v4-flash（当前）" in matcher.messages[0]
+    assert "1. flash — deepseek-flash，支持引用图片识别（当前）" in matcher.messages[0]
     assert "2. pro — deepseek-v4-pro" in matcher.messages[0]
-    assert "3. vision — deepseek-v4-flash-vision-exp，支持引用图片识别" in matcher.messages[0]
+    assert "3. vision" not in matcher.messages[0]
 
 
 @pytest.mark.asyncio
-async def test_aim_switches_to_vision_model(monkeypatch):
+async def test_aim_switches_to_flash_with_vision(monkeypatch):
     store = FakeStore()
     matcher = FakeMatcher()
     monkeypatch.setattr(control, "get_store", lambda: store)
@@ -236,12 +236,12 @@ async def test_aim_switches_to_vision_model(monkeypatch):
         await control._handle_bot_command(
             matcher,
             SimpleNamespace(user_id=10000),
-            ["aim", "vision"],
+            ["aim", "flash"],
         )
 
-    assert store.model_changes == [("deepseek-v4-flash-vision-exp", 10000)]
+    assert store.model_changes == [("deepseek-flash", 10000)]
     assert matcher.messages == [
-        "AI 模型已切换为 vision（deepseek-v4-flash-vision-exp）。\n🖼 已开启引用图片识别。"
+        "AI 模型已切换为 flash（deepseek-flash）。\n🖼 已开启引用图片识别。"
     ]
 
 

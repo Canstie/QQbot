@@ -333,9 +333,9 @@ def test_dsapi_config_api_roundtrip_and_clear_history(tmp_path, monkeypatch):
     assert [item["key"] for item in data["model_options"]] == [
         "flash",
         "pro",
-        "vision",
     ]
-    assert data["model_options"][2]["id"] == "deepseek-v4-flash-vision-exp"
+    assert data["model_options"][0]["id"] == "deepseek-flash"
+    assert data["model_options"][0]["vision"] is True
 
     invalid = client.post(
         "/api/dsapi",
@@ -354,6 +354,32 @@ def test_dsapi_config_api_roundtrip_and_clear_history(tmp_path, monkeypatch):
     response = client.delete("/api/dsapi/history")
     assert response.status_code == 200
     assert response.json()["deleted"] == 0
+
+
+def test_quote_memory_config_and_scoped_deletion_api(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("QQBOT_WEB_TOKEN", raising=False)
+    monkeypatch.setenv("QQBOT_DB_PATH", str(tmp_path / "policy.sqlite3"))
+    reset_runtime()
+    client = TestClient(create_app())
+
+    assert client.get("/api/dsapi/quotes").json()["enabled_groups"] == []
+    response = client.put("/api/dsapi/quotes", json={"enabled_groups": [123]})
+    assert response.status_code == 200
+    assert response.json()["enabled_groups"] == [123]
+    store = get_store()
+    store.record_group_quote_messages(
+        [
+            {"group_id": 123, "user_id": 456, "message_id": 1, "raw_message": "第一句"},
+            {"group_id": 123, "user_id": 789, "message_id": 2, "raw_message": "第二句"},
+        ]
+    )
+    response = client.delete("/api/dsapi/quotes/123?user_id=456")
+    assert response.status_code == 200
+    assert response.json()["deleted"] == 1
+    assert response.json()["message_count"] == 1
+    assert client.delete("/api/dsapi/quotes/123").json()["deleted"] == 1
+    assert client.get("/api/dsapi/quotes").json()["message_count"] == 0
 
 
 def test_dsapi_model_refresh_returns_live_provider_models(tmp_path, monkeypatch):

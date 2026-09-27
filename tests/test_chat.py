@@ -5,18 +5,103 @@ from types import SimpleNamespace
 
 import pytest
 
-from qq_personal_bot.core.models import PolicyDecision
+from qq_personal_bot.activity import close_group_activity
+from qq_personal_bot.core.models import MessageEvent, PolicyDecision
+from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.miniapp import (
     CachedMiniAppImages,
     MiniAppImageSource,
     XiaoheiheCaptchaRequired,
 )
 from qq_personal_bot.plugins import chat
+from qq_personal_bot.settings import AppSettings
 from qq_personal_bot.xiaoheihe_captcha import get_xiaoheihe_captcha_store
 
 
 def make_event(*, group_id: int = 123, raw_message: str = "~抽群老婆"):
     return SimpleNamespace(group_id=group_id, raw_message=raw_message, message=raw_message)
+
+
+@pytest.mark.asyncio
+async def test_quote_capture_still_runs_when_daily_activity_is_off(tmp_path, monkeypatch):
+    db_path = tmp_path / "qqbot.sqlite3"
+    store = PolicyStore(db_path)
+    store.initialize(AppSettings(db_path=db_path, admins=()))
+    store.set_group_enabled(123, True, actor_id=0)
+    store.set_feature_enabled("activity.record", False)
+    store.set_quote_memory_groups([123], actor_id=0)
+    monkeypatch.setattr(chat, "get_store", lambda: store)
+
+    for message_id in range(1, 4):
+        content = f"我说的第 {message_id} 句话"
+        chat._record_group_activity(
+            MessageEvent(
+                platform="onebot.v11",
+                group_id=123,
+                user_id=456,
+                message_id=message_id,
+                raw_message=content,
+                segments=({"type": "text", "data": {"text": content}},),
+            ),
+            self_id=999,
+        )
+    await close_group_activity()
+    assert len(store.get_group_quotes(123, 456)) == 3
+
+
+@pytest.mark.asyncio
+async def test_roast_command_uses_mentioned_target_in_same_group(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    internal = SimpleNamespace(
+        group_id=123,
+        user_id=456,
+        message_id=99,
+        raw_message="锐评",
+        is_at_bot=True,
+        segments=(
+            {"type": "at", "data": {"qq": "999"}},
+            {"type": "text", "data": {"text": "锐评"}},
+            {"type": "at", "data": {"qq": "789"}},
+        ),
+    )
+    store = SimpleNamespace(
+        is_feature_enabled=lambda feature_id: True,
+        get_dsapi_config=lambda: {"enabled": True, "enabled_groups": [123]},
+        is_quote_memory_group_enabled=lambda group_id: group_id == 123,
+    )
+    monkeypatch.setattr(chat, "onebot_to_internal", lambda event, self_id: internal)
+    monkeypatch.setattr(chat, "_record_group_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(chat, "extract_miniapp_image_source", lambda segments: None)
+    monkeypatch.setattr(chat, "pending_lua_command", lambda event: None)
+    monkeypatch.setattr(chat, "handle_custom_flow", lambda event: None)
+    monkeypatch.setattr(chat, "get_store", lambda: store)
+    monkeypatch.setattr(chat, "get_settings", lambda: SimpleNamespace())
+    monkeypatch.setattr(
+        chat,
+        "get_policy_engine",
+        lambda: SimpleNamespace(
+            evaluate=lambda event, self_id: PolicyDecision(
+                True, "ok", handler="mention", normalized_message="锐评"
+            )
+        ),
+    )
+    flush = AsyncMock()
+    generate = AsyncMock(return_value="你说早起，结果又睡过头。")
+    finish = AsyncMock()
+    monkeypatch.setattr(chat, "flush_group_activity", flush)
+    monkeypatch.setattr(chat, "generate_roast_reply", generate)
+    monkeypatch.setattr(chat, "_finish_with_response", finish)
+
+    await chat._dispatch_onebot_message(
+        SimpleNamespace(), SimpleNamespace(self_id=999), SimpleNamespace()
+    )
+
+    flush.assert_awaited_once()
+    generate.assert_awaited_once()
+    assert generate.call_args.kwargs["group_id"] == 123
+    assert generate.call_args.kwargs["target_user_id"] == 789
+    assert finish.call_args.args[3] == "你说早起，结果又睡过头。"
 
 
 @pytest.mark.asyncio

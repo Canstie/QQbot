@@ -70,7 +70,7 @@ def _format_ai_models(current_model: str) -> str:
         lines.append(
             f"{index}. {option['key']} — {option['id']}{vision}{current}"
         )
-    lines.append("使用：/bot aim flash|pro|vision")
+    lines.append("使用：/bot aim flash|pro")
     return "\n".join(lines)
 
 
@@ -278,7 +278,7 @@ async def _handle_bot_command(
                     matcher,
                     bot,
                     event,
-                    "Usage: /bot aim list|flash|pro|vision",
+                    "Usage: /bot aim list|flash|pro",
                     explicit_group_send=explicit_group_send,
                 )
             option = resolve_dsapi_model(parts[1])
@@ -401,7 +401,7 @@ async def _handle_bot_command(
             (
                 "Usage: /bot status | on [group_id] | off [group_id] | "
                 "aion [group_id] | aioff [all] | ai rs | "
-                "aim list|flash|pro|vision | "
+                "aim list|flash|pro | "
                 "aik list|<index> | "
                 "mode allowlist|blocklist | admin add <user_id> | "
                 "prefix add|remove|list [prefix]"

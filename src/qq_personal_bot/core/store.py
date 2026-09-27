@@ -62,6 +62,10 @@ class PolicyStore:
                     self.add_admin(admin_id, actor_id=0, conn=conn)
             self._initialize_dsapi_settings(conn)
             self._initialize_knowledge_bases(conn, settings)
+            conn.execute(
+                "UPDATE dsapi_knowledge_bases SET model = 'deepseek-flash' "
+                "WHERE model IN ('deepseek-v4-flash', 'deepseek-v4-flash-vision-exp')"
+            )
             self._initialize_feature_flags(conn, settings)
             self._initialize_steam_settings(conn)
             self.purge_legacy_menu_caches(conn=conn)
@@ -207,6 +211,22 @@ class PolicyStore:
             CREATE UNIQUE INDEX IF NOT EXISTS idx_group_daily_messages_message_id
             ON group_daily_messages(group_id, message_id)
             WHERE message_id <> '';
+
+            CREATE TABLE IF NOT EXISTS group_quote_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                message_id TEXT NOT NULL DEFAULT '',
+                content TEXT NOT NULL,
+                created_at REAL NOT NULL
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_group_quote_message_id
+            ON group_quote_messages(group_id, message_id)
+            WHERE message_id <> '';
+
+            CREATE INDEX IF NOT EXISTS idx_group_quote_user_time
+            ON group_quote_messages(group_id, user_id, id DESC);
 
             CREATE TABLE IF NOT EXISTS dsapi_chat_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -452,6 +472,7 @@ class PolicyStore:
             "dsapi_random_reply_percent": "2",
             "dsapi_random_sticker_percent": "20",
             "dsapi_enabled_groups": "[]",
+            "quote_memory_enabled_groups": "[]",
         }
         for key, value in defaults.items():
             conn.execute(
@@ -473,6 +494,7 @@ class PolicyStore:
             "dsapi_history_turns": "2",
             "dsapi_random_reply_percent": "2",
             "dsapi_random_sticker_percent": "20",
+            "quote_memory_enabled_groups": "[]",
         }
         for key, value in defaults.items():
             conn.execute(
@@ -681,7 +703,7 @@ class PolicyStore:
         name: str,
         prompt: str,
         actor_id: int,
-        model: str = "deepseek-v4-flash",
+        model: str = "deepseek-flash",
         thinking_enabled: bool = False,
         max_tokens: int = 80,
         history_turns: int = 2,
@@ -2071,6 +2093,147 @@ class PolicyStore:
     def is_bilibili_group_blocked(self, group_id: int) -> bool:
         return int(group_id) in self.get_bilibili_blocked_groups()
 
+    def quote_memory_enabled_groups(self) -> list[int]:
+        def load() -> list[int]:
+            try:
+                value = json.loads(self.get_setting("quote_memory_enabled_groups", "[]"))
+                return self._normalize_int_ids(value, "enabled_groups")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return []
+
+        return list(self._cached_runtime_value(("quote_memory_enabled_groups",), load))
+
+    def is_quote_memory_group_enabled(self, group_id: int) -> bool:
+        return int(group_id) in self.quote_memory_enabled_groups()
+
+    def get_quote_memory_config(self) -> dict[str, Any]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT group_id, COUNT(*) AS message_count "
+                "FROM group_quote_messages GROUP BY group_id ORDER BY group_id"
+            ).fetchall()
+        counts = {str(int(row["group_id"])): int(row["message_count"]) for row in rows}
+        return {
+            "enabled_groups": self.quote_memory_enabled_groups(),
+            "group_counts": counts,
+            "message_count": sum(counts.values()),
+        }
+
+    def set_quote_memory_groups(self, group_ids: list[int], *, actor_id: int) -> dict[str, Any]:
+        normalized = self._normalize_int_ids(group_ids, "enabled_groups")
+        with self._connect() as conn:
+            self.set_setting(
+                "quote_memory_enabled_groups",
+                json.dumps(normalized),
+                conn=conn,
+            )
+            self.audit(
+                actor_id,
+                "set_quote_memory_groups",
+                "quote_memory",
+                {"enabled_groups": normalized},
+                conn=conn,
+            )
+        self._invalidate_runtime_cache()
+        return self.get_quote_memory_config()
+
+    def clear_quote_messages(
+        self,
+        group_id: int,
+        *,
+        user_id: int | None = None,
+        actor_id: int,
+    ) -> int:
+        group_id = int(group_id)
+        if group_id <= 0 or (user_id is not None and int(user_id) <= 0):
+            raise ValueError("group_id and user_id must be positive")
+        with self._connect() as conn:
+            if user_id is None:
+                deleted = conn.execute(
+                    "DELETE FROM group_quote_messages WHERE group_id = ?",
+                    (group_id,),
+                ).rowcount
+            else:
+                deleted = conn.execute(
+                    "DELETE FROM group_quote_messages WHERE group_id = ? AND user_id = ?",
+                    (group_id, int(user_id)),
+                ).rowcount
+            self.audit(
+                actor_id,
+                "clear_quote_messages",
+                str(group_id),
+                {"user_id": user_id, "deleted": deleted},
+                conn=conn,
+            )
+        return int(deleted)
+
+    def get_group_quotes(
+        self,
+        group_id: int,
+        user_id: int,
+        *,
+        limit: int = 300,
+    ) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT message_id, content, created_at FROM group_quote_messages "
+                "WHERE group_id = ? AND user_id = ? ORDER BY id DESC LIMIT ?",
+                (int(group_id), int(user_id), max(1, min(int(limit), 1000))),
+            ).fetchall()
+        return [
+            {
+                "message_id": str(row["message_id"]),
+                "content": str(row["content"]),
+                "created_at": float(row["created_at"]),
+            }
+            for row in rows
+        ]
+
+    def get_group_quote_evidence(
+        self,
+        group_id: int,
+        user_id: int,
+    ) -> list[dict[str, Any]]:
+        """Sample recent and older quotes without loading unbounded history."""
+        params = (int(group_id), int(user_id))
+        with self._connect() as conn:
+            recent = conn.execute(
+                "SELECT id, content, created_at FROM group_quote_messages "
+                "WHERE group_id = ? AND user_id = ? ORDER BY id DESC LIMIT 100",
+                params,
+            ).fetchall()
+            if not recent:
+                return []
+            bounds = conn.execute(
+                "SELECT MIN(id) AS first_id, MAX(id) AS last_id "
+                "FROM group_quote_messages WHERE group_id = ? AND user_id = ?",
+                params,
+            ).fetchone()
+            first_id = int(bounds["first_id"])
+            last_id = int(bounds["last_id"])
+            selected = {int(row["id"]): row for row in recent}
+            oldest = conn.execute(
+                "SELECT id, content, created_at FROM group_quote_messages WHERE id = ?",
+                (first_id,),
+            ).fetchone()
+            if oldest is not None:
+                selected[first_id] = oldest
+            if first_id < last_id:
+                for step in range(1, 17):
+                    pivot = first_id + (last_id - first_id) * step // 17
+                    row = conn.execute(
+                        "SELECT id, content, created_at FROM group_quote_messages "
+                        "WHERE group_id = ? AND user_id = ? AND id <= ? "
+                        "ORDER BY id DESC LIMIT 1",
+                        (*params, pivot),
+                    ).fetchone()
+                    if row is not None:
+                        selected[int(row["id"])] = row
+        return [
+            {"content": str(row["content"]), "created_at": float(row["created_at"])}
+            for _, row in sorted(selected.items(), reverse=True)
+        ]
+
     def get_dsapi_config(self) -> dict[str, Any]:
         try:
             history_turns = int(self.get_setting("dsapi_history_turns", "2"))
@@ -2201,7 +2364,7 @@ class PolicyStore:
                     default_model = (
                         str(default_model_row["value"])
                         if default_model_row
-                        else "deepseek-v4-flash"
+                        else "deepseek-flash"
                     )
                     default_max_tokens = (
                         int(default_tokens_row["value"]) if default_tokens_row else 80
@@ -3186,6 +3349,47 @@ class PolicyStore:
             if newest_datetime is not None:
                 self._purge_group_messages_if_due(conn, newest_datetime)
         return inserted
+
+    def record_group_quote_messages(
+        self,
+        activities: Sequence[Mapping[str, Any]],
+    ) -> int:
+        """Keep text utterances from opted-in groups without a message-count limit."""
+        enabled_groups = set(self.quote_memory_enabled_groups())
+        if not activities or not enabled_groups:
+            return 0
+        inserted = 0
+        with self._connect() as conn:
+            for activity in activities:
+                group_id = int(activity["group_id"])
+                if group_id not in enabled_groups:
+                    continue
+                content = self._quote_message_content(
+                    str(activity.get("raw_message") or ""),
+                    activity.get("segments") or (),
+                )
+                if not content or content.startswith(("/bot", "~", "锐评")):
+                    continue
+                cursor = conn.execute(
+                    "INSERT OR IGNORE INTO group_quote_messages("
+                    "group_id, user_id, message_id, content, created_at"
+                    ") VALUES (?, ?, ?, ?, ?)",
+                    (
+                        group_id,
+                        int(activity["user_id"]),
+                        str(activity.get("message_id") or ""),
+                        content,
+                        float(activity.get("timestamp") or time.time()),
+                    ),
+                )
+                inserted += max(0, cursor.rowcount)
+        return inserted
+
+    def _quote_message_content(self, raw_message: str, segments: Any) -> str:
+        text = self._text_from_segments(segments)
+        if text is None:
+            text = _strip_cq_segments(raw_message)
+        return " ".join(text.split())[:4000]
 
     def _purge_group_messages_if_due(
         self,

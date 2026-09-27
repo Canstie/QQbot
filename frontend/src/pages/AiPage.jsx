@@ -5,9 +5,8 @@ import { fileToDataUrl, formatBytes, formatIds, get, parseIds, post, put, remove
 import { Button, Empty, Field, IconButton, Metric, PageHeader, Panel, Status, Switch } from "../components/Ui";
 
 const DEFAULT_MODEL_OPTIONS = [
-  { key: "flash", id: "deepseek-v4-flash", label: "Flash", vision: false },
+  { key: "flash", id: "deepseek-flash", label: "Flash", vision: true },
   { key: "pro", id: "deepseek-v4-pro", label: "Pro", vision: false },
-  { key: "vision", id: "deepseek-v4-flash-vision-exp", label: "Flash Vision Exp", vision: true },
 ];
 
 const RESPONSE_MODE_LABELS = {
@@ -50,7 +49,7 @@ function ModelSelect({ value, options, onChange }) {
 const knowledgeDraftFrom = (knowledge = {}, defaults = {}) => ({
   name: knowledge.name || "",
   prompt: knowledge.prompt || "",
-  model: knowledge.model || defaults.model || defaults.default_model || "deepseek-v4-flash",
+  model: knowledge.model || defaults.model || defaults.default_model || "deepseek-flash",
   thinking_enabled: knowledge.thinking_enabled ?? false,
   history_turns: knowledge.history_turns ?? defaults.history_turns ?? 2,
   response_mode: knowledge.response_mode || "short",
@@ -92,6 +91,10 @@ export default function AiPage({ refreshVersion, onChanged }) {
   const [stickerFile, setStickerFile] = useState(null);
   const [liveModelOptions, setLiveModelOptions] = useState(null);
   const [refreshingModels, setRefreshingModels] = useState(false);
+  const [quoteData, setQuoteData] = useState(null);
+  const [quoteGroups, setQuoteGroups] = useState("");
+  const [quoteClearGroup, setQuoteClearGroup] = useState("");
+  const [quoteClearUser, setQuoteClearUser] = useState("");
   const modelOptions = liveModelOptions || data?.model_options || DEFAULT_MODEL_OPTIONS;
   const visionEnabled = Boolean(modelOptions.find((item) => item.id === data?.model)?.vision);
 
@@ -111,6 +114,35 @@ export default function AiPage({ refreshVersion, onChanged }) {
   const loadStickers = () => get("/stickers").then((result) => {
     setStickers(result.stickers || []);
   }).catch((error) => setNotice(error.message));
+  const loadQuotes = () => get("/dsapi/quotes").then((result) => {
+    setQuoteData(result);
+    setQuoteGroups(formatIds(result.enabled_groups));
+  }).catch((error) => setNotice(error.message));
+
+  const saveQuotes = async () => {
+    try {
+      const result = await put("/dsapi/quotes", { enabled_groups: parseIds(quoteGroups) });
+      setQuoteData(result);
+      setQuoteGroups(formatIds(result.enabled_groups));
+      setNotice("自动语录库启用群已保存；仅记录之后的新消息");
+      onChanged();
+    } catch (error) { setNotice(error.message); }
+  };
+
+  const clearQuotes = async () => {
+    const groupId = Number(quoteClearGroup);
+    const userId = quoteClearUser.trim() ? Number(quoteClearUser) : null;
+    if (!Number.isSafeInteger(groupId) || groupId <= 0 || (userId !== null && (!Number.isSafeInteger(userId) || userId <= 0))) {
+      setNotice("请填写有效群号；QQ 号留空表示清空整个群");
+      return;
+    }
+    if (!window.confirm(userId ? `清空群 ${groupId} 中 QQ ${userId} 的语录？` : `清空群 ${groupId} 的全部语录？`)) return;
+    try {
+      const result = await remove(`/dsapi/quotes/${groupId}${userId ? `?user_id=${userId}` : ""}`);
+      setQuoteData(result);
+      setNotice(`已删除 ${result.deleted} 条语录`);
+    } catch (error) { setNotice(error.message); }
+  };
 
   const refreshModels = async () => {
     setRefreshingModels(true);
@@ -129,6 +161,7 @@ export default function AiPage({ refreshVersion, onChanged }) {
   useEffect(() => {
     void load();
     void loadStickers();
+    void loadQuotes();
   }, [refreshVersion]);
   useEffect(() => {
     if (!createOpen) return undefined;
@@ -347,6 +380,17 @@ export default function AiPage({ refreshVersion, onChanged }) {
             <Switch checked={form.clear} onChange={(value) => update("clear", value)} label="保存时清空旧上下文" description="切换角色时建议开启" />
             <p className="quiet-note">当前知识库会读取最多 {knowledgeDraft.context_messages || 10} 句群聊；连续 {Math.round((data?.history_idle_seconds || 1200) / 60)} 分钟无人对话后自动清空。</p>
             <Button tone="danger" icon={Eraser} onClick={clearHistory}>立即清空全部上下文</Button>
+          </Panel>
+          <Panel title="自动语录库" eyebrow="Group quotes">
+            <p className="quiet-note">仅记录指定群的新文字消息，按群和 QQ 隔离；消息条数与保存时间均不设上限。使用 @我 锐评 @群友 或 ~锐评 @群友。</p>
+            <Field label="启用记录的群" hint="一行一个群号；锐评还需要本群已开启 AI。"><textarea value={quoteGroups} onChange={(event) => setQuoteGroups(event.target.value)} /></Field>
+            <Button icon={Save} onClick={saveQuotes}>保存语录库群设置</Button>
+            <p className="quiet-note">已保存 {quoteData?.message_count ?? 0} 条；关闭某群后旧语录仍保留，可在下方清空。</p>
+            <div className="form-grid form-grid--2">
+              <Field label="清空群号"><input value={quoteClearGroup} onChange={(event) => setQuoteClearGroup(event.target.value)} placeholder="群号" /></Field>
+              <Field label="指定 QQ（可留空）"><input value={quoteClearUser} onChange={(event) => setQuoteClearUser(event.target.value)} placeholder="留空清空整个群" /></Field>
+            </div>
+            <Button tone="danger" icon={Eraser} onClick={clearQuotes}>清空语录</Button>
           </Panel>
         </div>
         <Panel title="随机表情包库" eyebrow="Sticker pool" className="span-12" actions={<Button icon={Upload} onClick={uploadSticker}>上传表情包</Button>}>

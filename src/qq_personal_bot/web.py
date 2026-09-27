@@ -91,6 +91,10 @@ class DSAPIConfigPayload(BaseModel):
     clear_history: bool = True
 
 
+class QuoteMemoryPayload(BaseModel):
+    enabled_groups: list[int] = Field(default_factory=list)
+
+
 class KnowledgeBasePayload(BaseModel):
     name: str
     prompt: str = ""
@@ -427,6 +431,35 @@ def create_app():
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return await get_dsapi_config()
+
+    @app.get("/api/dsapi/quotes")
+    async def get_quote_memory_config() -> dict:
+        return get_store().get_quote_memory_config()
+
+    @app.put("/api/dsapi/quotes")
+    async def save_quote_memory_config(payload: QuoteMemoryPayload, request: Request) -> dict:
+        require_token(request)
+        try:
+            return get_store().set_quote_memory_groups(payload.enabled_groups, actor_id=0)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.delete("/api/dsapi/quotes/{group_id}")
+    async def clear_quote_memory(
+        group_id: int,
+        request: Request,
+        user_id: int | None = None,
+    ) -> dict:
+        require_token(request)
+        try:
+            deleted = get_store().clear_quote_messages(
+                group_id,
+                user_id=user_id,
+                actor_id=0,
+            )
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"deleted": deleted, **get_store().get_quote_memory_config()}
 
     @app.post("/api/dsapi/models/refresh")
     async def refresh_dsapi_models(request: Request) -> dict:

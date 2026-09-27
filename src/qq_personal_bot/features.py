@@ -20,6 +20,7 @@ STATIC_FEATURES: tuple[FeatureDefinition, ...] = (
     FeatureDefinition("ai.master", "AI", "AI 总开关", "控制所有 AI 回复。"),
     FeatureDefinition("ai.mention", "AI", "@ 回复", "被 @ 时生成 AI 回复。"),
     FeatureDefinition("ai.random", "AI", "随机插话", "在普通群消息中随机生成回复。"),
+    FeatureDefinition("ai.roast", "AI", "群友锐评", "记录指定群的文字语录，并按本群原话生成锐评。"),
     FeatureDefinition("cards.bilibili", "卡片解析", "B站卡片", "解析 B站小程序和视频直链并发送图片卡片。"),
     FeatureDefinition("cards.xiaohongshu", "卡片解析", "小红书卡片", "提取小红书分享中的图片。"),
     FeatureDefinition("cards.xiaoheihe", "卡片解析", "小黑盒卡片", "提取小黑盒分享中的图片。"),
