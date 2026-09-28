@@ -28,16 +28,24 @@ def onebot_to_internal(event: Any, self_id: int | str) -> MessageEvent:
                 is_at_bot = True
 
     reply = getattr(event, "reply", None)
-    if reply is not None and not any(segment.get("type") == "reply" for segment in segments):
+    if reply is not None:
         reply_id = getattr(reply, "message_id", None) or getattr(reply, "real_id", None)
         reply_data: dict[str, Any] = {}
         if reply_id is not None:
             reply_data["id"] = reply_id
+        reply_user_id = getattr(reply, "user_id", None)
+        if reply_user_id is not None:
+            reply_data["user_id"] = reply_user_id
         reply_message = getattr(reply, "message", None)
         if reply_message is not None:
             reply_data["message"] = _message_segments(reply_message)
         if reply_data:
-            segments.insert(0, {"type": "reply", "data": reply_data})
+            existing = next((segment for segment in segments if segment.get("type") == "reply"), None)
+            if existing is None:
+                segments.insert(0, {"type": "reply", "data": reply_data})
+            else:
+                for key, value in reply_data.items():
+                    existing["data"].setdefault(key, value)
 
     raw_message = "".join(text_parts).strip()
     if not raw_message:
@@ -51,7 +59,7 @@ def onebot_to_internal(event: Any, self_id: int | str) -> MessageEvent:
         platform="onebot.v11",
         message_id=getattr(event, "message_id", ""),
         group_id=group_id,
-        user_id=int(getattr(event, "user_id")),
+        user_id=int(event.user_id),
         raw_message=raw_message,
         platform_raw_message=platform_raw_message,
         segments=tuple(segments),

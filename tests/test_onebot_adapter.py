@@ -77,3 +77,17 @@ def test_onebot_event_conversion_keeps_event_reply_message():
         },
     }
     assert converted.platform_raw_message == str(event.message)
+
+
+def test_onebot_event_conversion_adds_reply_sender_to_existing_segment():
+    event = FakeEvent([FakeSegment("reply", {"id": "123456"})])
+    event.reply = FakeReply([FakeSegment("image", {"file": "classic.jpg"})])
+    event.reply.user_id = 99999
+
+    converted = onebot_to_internal(event, self_id=99999)
+
+    assert converted.segments[0]["data"] == {
+        "id": "123456",
+        "user_id": 99999,
+        "message": [{"type": "image", "data": {"file": "classic.jpg"}}],
+    }

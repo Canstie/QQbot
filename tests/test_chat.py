@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -102,6 +103,86 @@ async def test_roast_command_uses_mentioned_target_in_same_group(monkeypatch):
     assert generate.call_args.kwargs["group_id"] == 123
     assert generate.call_args.kwargs["target_user_id"] == 789
     assert finish.call_args.args[3] == "你说早起，结果又睡过头。"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason,handler", [("ok", "mention"), ("no_trigger", None)])
+async def test_quoting_bot_feature_image_does_not_call_ai(monkeypatch, reason, handler):
+    internal = MessageEvent(
+        platform="onebot.v11",
+        group_id=123,
+        user_id=456,
+        message_id=1,
+        raw_message="哈哈",
+        is_at_bot=True,
+        segments=(
+            {"type": "reply", "data": {
+                "id": 9,
+                "user_id": 999,
+                "message": [{"type": "image", "data": {"file": "classic.jpg"}}],
+            }},
+            {"type": "text", "data": {"text": "哈哈"}},
+        ),
+    )
+    monkeypatch.setattr(chat, "onebot_to_internal", lambda event, self_id: internal)
+    monkeypatch.setattr(chat, "_record_group_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(chat, "extract_miniapp_image_source", lambda segments: None)
+    monkeypatch.setattr(chat, "pending_lua_command", lambda event: None)
+    monkeypatch.setattr(chat, "handle_custom_flow", lambda event: None)
+    monkeypatch.setattr(
+        chat,
+        "get_policy_engine",
+        lambda: SimpleNamespace(
+            evaluate=lambda event, self_id: PolicyDecision(
+                reason == "ok", reason, handler=handler, normalized_message="哈哈"
+            )
+        ),
+    )
+    lua = AsyncMock(return_value=SimpleNamespace(reply=None, stop=False))
+    mention = AsyncMock()
+    random = AsyncMock()
+    monkeypatch.setattr(chat, "run_lua_message", lua)
+    monkeypatch.setattr(chat, "generate_mention_reply", mention)
+    monkeypatch.setattr(chat, "generate_random_group_reply", random)
+
+    await chat._dispatch_onebot_message(
+        SimpleNamespace(), SimpleNamespace(self_id=999), SimpleNamespace()
+    )
+
+    mention.assert_not_awaited()
+    random.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_explicit_at_can_ask_about_quoted_bot_image():
+    bot = SimpleNamespace(self_id=999)
+    quoted_image = {"type": "reply", "data": {
+        "user_id": 999,
+        "message": [{"type": "image", "data": {"file": "classic.jpg"}}],
+    }}
+    event = SimpleNamespace(segments=(quoted_image, {"type": "at", "data": {"qq": "999"}}))
+    assert await chat._is_passive_bot_image_reply(bot, event) is False
+    other_user_image = {"type": "reply", "data": {
+        "user_id": 456,
+        "message": [{"type": "image", "data": {"file": "user.jpg"}}],
+    }}
+    assert await chat._is_passive_bot_image_reply(
+        bot, SimpleNamespace(segments=(other_user_image,))
+    ) is False
+
+
+@pytest.mark.asyncio
+async def test_quoted_bot_image_can_be_identified_via_get_msg():
+    bot = SimpleNamespace(
+        self_id=999,
+        call_api=AsyncMock(return_value={
+            "user_id": 999,
+            "message": [{"type": "image", "data": {"file": "classic.jpg"}}],
+        }),
+    )
+    event = SimpleNamespace(segments=({"type": "reply", "data": {"id": 9}},))
+    assert await chat._is_passive_bot_image_reply(bot, event) is True
+    bot.call_api.assert_awaited_once_with("get_msg", message_id=9)
 
 
 @pytest.mark.asyncio

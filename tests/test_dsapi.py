@@ -132,9 +132,16 @@ def test_roast_quote_selection_deduplicates_without_limiting_saved_rows():
     rows = [{"content": f"第 {index} 条不同的话"} for index in range(100)]
     rows.insert(1, {"content": rows[0]["content"]})
     selected = select_roast_quotes(rows)
-    assert len(selected) == 8
-    assert len(set(selected)) == 8
+    assert len(selected) == 36
+    assert len(set(selected)) == 36
+    assert selected[0] == rows[-1]["content"]
     assert selected[-1] == rows[0]["content"]
+
+
+def test_roast_quote_selection_preserves_longer_remarks():
+    long_remark = "今天又立 flag 了，" * 40
+    selected = select_roast_quotes([{"content": long_remark}])
+    assert selected == [" ".join(long_remark.split())]
 
 
 @pytest.mark.asyncio

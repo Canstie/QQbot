@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 from collections import deque
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -74,6 +75,61 @@ def _roast_target_ids(event: Any, *, self_id: int | str) -> list[int]:
         if user_id > 0 and str(user_id) != str(self_id) and user_id not in targets:
             targets.append(user_id)
     return targets
+
+
+def _message_has_image(message: Any) -> bool:
+    if isinstance(message, str):
+        return "[CQ:image," in message
+    if isinstance(message, Mapping):
+        if message.get("type") == "image":
+            return True
+        nested = message.get("message")
+        if nested is None and isinstance(message.get("data"), Mapping):
+            nested = message["data"].get("message")
+        return _message_has_image(nested)
+    if isinstance(message, Sequence):
+        return any(_message_has_image(segment) for segment in message)
+    return False
+
+
+async def _is_passive_bot_image_reply(bot: Bot, event: Any) -> bool:
+    if any(
+        segment.get("type") == "at"
+        and str((segment.get("data") or {}).get("qq")) == str(bot.self_id)
+        for segment in event.segments
+    ):
+        return False
+    reply = next(
+        (segment for segment in event.segments if segment.get("type") == "reply"),
+        None,
+    )
+    if reply is None:
+        return False
+    reply_data = reply.get("data") or {}
+    quoted_message = reply_data.get("message")
+    if quoted_message is not None and not _message_has_image(quoted_message):
+        return False
+    quoted_user_id = reply_data.get("user_id")
+    if quoted_user_id is None or quoted_message is None:
+        reply_id = reply_data.get("id")
+        if reply_id is None:
+            return False
+        try:
+            payload = await bot.call_api("get_msg", message_id=reply_id)
+        except Exception as exc:  # noqa: BLE001 - OneBot adapters raise varied lookup errors
+            logger.debug("Could not inspect quoted image %s: %s", reply_id, exc)
+            return False
+        if not isinstance(payload, Mapping):
+            return False
+        quoted = payload.get("data", payload)
+        if not isinstance(quoted, Mapping):
+            return False
+        quoted_user_id = quoted.get("user_id", quoted_user_id)
+        if quoted_user_id is None and isinstance(quoted.get("sender"), Mapping):
+            quoted_user_id = quoted["sender"].get("user_id")
+        if quoted_message is None:
+            quoted_message = quoted.get("message")
+    return str(quoted_user_id) == str(bot.self_id) and _message_has_image(quoted_message)
 
 
 def _build_default_response(content: str, *, direct: bool = False) -> str:
@@ -378,6 +434,8 @@ async def _dispatch_onebot_message(
                 explicit_group_send=explicit_group_send,
             )
         if decision.reason == "no_trigger":
+            if await _is_passive_bot_image_reply(bot, internal_event):
+                return
             if not (
                 get_store().is_feature_enabled("ai.master")
                 and get_store().is_feature_enabled("ai.random")
@@ -608,6 +666,8 @@ async def _dispatch_onebot_message(
         return
 
     if decision.handler == "mention":
+        if await _is_passive_bot_image_reply(bot, internal_event):
+            return
         if not (
             get_store().is_feature_enabled("ai.master")
             and get_store().is_feature_enabled("ai.mention")

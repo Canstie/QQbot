@@ -469,9 +469,9 @@ def test_quote_memory_is_group_scoped_unlimited_and_clearable(tmp_path):
         [{**records[0], "group_id": 789, "message_id": 999}]
     ) == 0
     assert len(store.get_group_quotes(123, 456)) == 250
-    assert "第 1 条发言" in {
-        item["content"] for item in store.get_group_quote_evidence(123, 456)
-    }
+    evidence = {item["content"] for item in store.get_group_quote_evidence(123, 456)}
+    assert len(evidence) > 200
+    assert {"第 1 条发言", "第 250 条发言"} <= evidence
     assert store.get_group_quotes(789, 456) == []
     assert store.get_quote_memory_config()["message_count"] == 250
     store.set_quote_memory_groups([], actor_id=1)

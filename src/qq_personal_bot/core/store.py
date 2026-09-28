@@ -2209,7 +2209,7 @@ class PolicyStore:
         with self._connect() as conn:
             recent = conn.execute(
                 "SELECT id, content, created_at FROM group_quote_messages "
-                "WHERE group_id = ? AND user_id = ? ORDER BY id DESC LIMIT 100",
+                "WHERE group_id = ? AND user_id = ? ORDER BY id DESC LIMIT 240",
                 params,
             ).fetchall()
             if not recent:
@@ -2229,8 +2229,8 @@ class PolicyStore:
             if oldest is not None:
                 selected[first_id] = oldest
             if first_id < last_id:
-                for step in range(1, 17):
-                    pivot = first_id + (last_id - first_id) * step // 17
+                for step in range(1, 97):
+                    pivot = first_id + (last_id - first_id) * step // 97
                     row = conn.execute(
                         "SELECT id, content, created_at FROM group_quote_messages "
                         "WHERE group_id = ? AND user_id = ? AND id <= ? "
