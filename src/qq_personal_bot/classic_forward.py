@@ -60,7 +60,9 @@ async def send_all_classics(
         return
     _active_groups.add(group_id)
     try:
-        records = get_store().list_classic_images(group_id, limit=None)
+        store = get_store()
+        archive_group_id = getattr(store, "resolve_classic_group", lambda value: value)(group_id)
+        records = store.list_classic_images(archive_group_id, limit=None)
         if not records:
             await send_notice("这个群还没有存过典，先发送 ~存典 存一张吧。")
             return
@@ -96,7 +98,7 @@ async def send_all_classics(
                     if len(paths) >= MAX_BATCH_IMAGES:
                         await send_batch()
                     try:
-                        path = await _cache_image_async(storage, group_id, record, Path(directory))
+                        path = await _cache_image_async(storage, archive_group_id, record, Path(directory))
                     except Exception:
                         logger.exception("Classic forward read failed: group=%s image=%s", group_id, record["id"])
                         failed += 1

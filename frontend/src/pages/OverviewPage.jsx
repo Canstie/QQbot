@@ -6,6 +6,7 @@ export default function OverviewPage({ summary, onNavigate }) {
   const policy = summary?.policy;
   const ai = summary?.ai;
   const groups = summary?.classics?.groups || [];
+  const uniqueArchives = groups.filter((group) => (group.owner_group_id ?? group.group_id) === group.group_id);
 
   return (
     <>
@@ -51,7 +52,7 @@ export default function OverviewPage({ summary, onNavigate }) {
         <Panel title="内容库存" eyebrow="Content stores">
           <div className="asset-tally">
             <button onClick={() => onNavigate("menus")}><ChefHat /><span><strong>{summary?.menus?.menus?.length ?? 0}</strong>菜单条目</span></button>
-            <button onClick={() => onNavigate("classics")}><Archive /><span><strong>{groups.reduce((sum, group) => sum + group.count, 0)}</strong>群典图片</span></button>
+            <button onClick={() => onNavigate("classics")}><Archive /><span><strong>{uniqueArchives.reduce((sum, group) => sum + group.count, 0)}</strong>群典图片</span></button>
           </div>
           <div className="recent-archive">
             <div className="section-caption"><span>最近更新的典藏群</span><button onClick={() => onNavigate("classics")}>查看全部</button></div>

@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
 
+from qq_personal_bot import classic_sharing
 from qq_personal_bot import web as web_module
 from qq_personal_bot.miniapp import CachedMiniAppImages
 from qq_personal_bot.runtime import get_store, reset_runtime
@@ -66,6 +67,12 @@ class _FakeClassicStorage:
 
     def get_image(self, group_id: int, object_key: str):
         return _FakeMinioResponse(self.objects[(int(group_id), object_key)])
+
+    def read_image(self, group_id: int, object_key: str):
+        return self.objects[(int(group_id), object_key)]
+
+    def put_image(self, group_id, object_key, body, content_type, metadata):
+        self.objects[(int(group_id), object_key)] = body
 
     def remove_image(self, group_id: int, object_key: str, *, missing_ok: bool = False):
         key = (int(group_id), object_key)
@@ -1008,6 +1015,51 @@ def test_classics_api_returns_empty_groups_when_directory_missing(tmp_path, monk
 
     assert response.status_code == 200
     assert response.json()["groups"] == []
+
+
+def test_classics_api_binds_and_dissolves_shared_archive(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("QQBOT_WEB_TOKEN", raising=False)
+    monkeypatch.setenv("QQBOT_DB_PATH", str(tmp_path / "policy.sqlite3"))
+    reset_runtime()
+    store = get_store()
+    objects = {}
+    for group_id, body in ((123, b"GIF89a-main"), (456, b"GIF89a-member")):
+        digest = hashlib.sha256(body).hexdigest()
+        key = f"{digest}.gif"
+        store.record_classic_image(
+            group_id=group_id, sha256=digest, object_key=key,
+            content_type="image/gif", size_bytes=len(body),
+        )
+        objects[(group_id, key)] = body
+    storage = _FakeClassicStorage(objects)
+    monkeypatch.setattr(web_module, "get_classic_storage", lambda: storage)
+    monkeypatch.setattr(classic_sharing, "get_classic_storage", lambda: storage)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/classics/bindings", json={"master_group_id": 123, "group_id": 456}
+    )
+    assert response.status_code == 200
+    assert response.json()["merged_count"] == 1
+    assert client.get("/api/classics/bindings").json()["bindings"] == [
+        {"master_group_id": 123, "group_ids": [456]}
+    ]
+    detail = client.get("/api/classics/groups/456").json()
+    assert detail["owner_group_id"] == 123
+    assert detail["count"] == 2
+    group_list = client.get("/api/classics/groups?search=456").json()["groups"]
+    assert len(group_list) == 1
+    assert group_list[0]["owner_group_id"] == 123
+    assert group_list[0]["count"] == 2
+    assert client.delete("/api/classics/groups/123").status_code == 409
+    assert client.delete("/api/classics/groups/456").status_code == 409
+
+    response = client.delete("/api/classics/bindings/123")
+    assert response.status_code == 200
+    assert response.json()["copied_count"] == 2
+    assert client.get("/api/classics/groups/456").json()["count"] == 2
+    assert store.resolve_classic_group(456) == 456
 
 
 def test_download_gallery_lists_streams_and_deletes_images(tmp_path, monkeypatch):

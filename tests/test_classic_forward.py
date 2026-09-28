@@ -83,6 +83,18 @@ async def test_private_or_empty_never_reads_minio(archive, group_id):
 
 
 @pytest.mark.asyncio
+async def test_bound_group_forwards_master_archive(archive):
+    store, storage, _ = archive
+    store.resolve_classic_group = Mock(return_value=123)
+    sent = AsyncMock()
+    await forward.send_all_classics(456, "789", sent, AsyncMock())
+    store.resolve_classic_group.assert_called_once_with(456)
+    store.list_classic_images.assert_called_once_with(123, limit=None)
+    assert all(call.args[0] == 123 for call in storage.read_image.call_args_list)
+    sent.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("count,expected", [(1, [1]), (62, [62]), (99, [99]),
                                           (100, [100]), (101, [100, 1]),
                                           (200, [100, 100]), (201, [100, 100, 1])])

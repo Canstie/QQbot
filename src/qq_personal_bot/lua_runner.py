@@ -257,9 +257,21 @@ class LuaApi:
         image_source: str,
         image_id: str | None = None,
     ) -> str:
+        from qq_personal_bot.classic_sharing import classic_lock
+
+        with classic_lock:
+            return self._save_classic_image(group_id, image_source, image_id)
+
+    def _save_classic_image(
+        self,
+        group_id: int,
+        image_source: str,
+        image_id: str | None = None,
+    ) -> str:
         group_id = int(group_id)
         if group_id <= 0:
             raise ValueError("group_id must be positive")
+        group_id = get_store().resolve_classic_group(group_id)
         try:
             body, suffix, content_type = read_classic_image_source(image_source)
         except (OSError, ValueError) as exc:
@@ -331,19 +343,29 @@ class LuaApi:
         return self.save_classic_image(group_id, image_source, image_id)
 
     def pick_classic_image(self, group_id: int, seed: int) -> str | None:
-        group_id = int(group_id)
-        picked = get_store().pick_classic_image(group_id, int(seed))
-        if picked is None:
-            return None
-        return f"{group_id}/{picked['id']}"
+        from qq_personal_bot.classic_sharing import classic_lock
+
+        with classic_lock:
+            group_id = get_store().resolve_classic_group(int(group_id))
+            picked = get_store().pick_classic_image(group_id, int(seed))
+            if picked is None:
+                return None
+            return f"{group_id}/{picked['sha256']}"
 
     def classic_image(self, relpath: str) -> str | None:
         token = str(relpath or "").strip()
-        match = re.fullmatch(r"(\d+)/(\d+)", token)
+        match = re.fullmatch(r"(\d+)/([0-9a-f]{64}|\d+)", token)
         if match is None:
             return None
-        group_id = int(match.group(1))
-        record = get_store().get_classic_image(int(match.group(2)))
+        original_group_id = int(match.group(1))
+        image_token = match.group(2)
+        store = get_store()
+        if len(image_token) == 64:
+            group_id = store.resolve_classic_group(original_group_id)
+            record = store.get_classic_image_by_hash(group_id, image_token)
+        else:
+            group_id = original_group_id
+            record = store.get_classic_image(int(image_token))
         if record is None or record["group_id"] != group_id:
             return None
         try:

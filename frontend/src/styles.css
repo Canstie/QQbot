@@ -297,3 +297,9 @@ textarea { min-height: 110px; resize: vertical; line-height: 1.55; }
 @media (max-width: 580px) { .feature-switch { grid-template-columns: 8px minmax(0,1fr); }.feature-switch code { grid-column: 2; }.steam-metrics { grid-template-columns: 1fr 1fr; }.steam-player-add { grid-template-columns: 1fr; }.steam-session-list > div { grid-template-columns: 9px 1fr; }.steam-session-list code,.steam-session-list small { grid-column: 2; }.steam-group-switches { grid-template-columns: 1fr; } }
 .steam-group-switches .button { grid-column: 1 / -1; }
 @media (max-width: 580px) { .steam-binding-bar { grid-template-columns: 20px 1fr; }.steam-binding-bar input,.steam-binding-bar .button { grid-column: 2; } }
+.classics-binding-panel { margin-bottom: 18px; }
+.classics-binding-actions { margin: 14px 0; }
+.classics-binding-list { display: grid; gap: 8px; color: var(--ink-soft); font-size: 11px; }
+.classics-binding-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid var(--line); padding-top: 8px; }
+.classics-binding-row > span { overflow-wrap: anywhere; }
+@media (max-width: 580px) { .classics-binding-row { align-items: stretch; flex-direction: column; } }

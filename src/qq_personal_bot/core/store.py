@@ -329,6 +329,16 @@ class PolicyStore:
             CREATE INDEX IF NOT EXISTS idx_classic_images_group_created
             ON classic_images(group_id, created_at DESC, id DESC);
 
+            CREATE TABLE IF NOT EXISTS classic_group_bindings (
+                group_id INTEGER PRIMARY KEY,
+                master_group_id INTEGER NOT NULL,
+                created_at REAL NOT NULL,
+                CHECK (group_id != master_group_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_classic_group_bindings_master
+            ON classic_group_bindings(master_group_id);
+
             CREATE TABLE IF NOT EXISTS feature_flags (
                 feature_id TEXT PRIMARY KEY,
                 enabled INTEGER NOT NULL DEFAULT 1,
@@ -4652,6 +4662,132 @@ class PolicyStore:
             if (public := self._public_group_stat(item)) is not None
         ]
 
+    def resolve_classic_group(self, group_id: int) -> int:
+        normalized = int(group_id)
+        if normalized <= 0:
+            raise ValueError("group_id must be positive")
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT master_group_id FROM classic_group_bindings WHERE group_id = ?",
+                (normalized,),
+            ).fetchone()
+        return int(row["master_group_id"]) if row is not None else normalized
+
+    def list_classic_bindings(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT group_id, master_group_id FROM classic_group_bindings "
+                "ORDER BY master_group_id, group_id"
+            ).fetchall()
+        families: dict[int, list[int]] = {}
+        for row in rows:
+            families.setdefault(int(row["master_group_id"]), []).append(int(row["group_id"]))
+        return [
+            {"master_group_id": master, "group_ids": members}
+            for master, members in families.items()
+        ]
+
+    def bind_classic_group(
+        self, master_group_id: int, group_id: int, source_images: list[dict[str, Any]]
+    ) -> int:
+        master, member = int(master_group_id), int(group_id)
+        if master <= 0 or member <= 0 or master == member:
+            raise ValueError("主群和副群必须是不同的正整数群号")
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if conn.execute(
+                "SELECT 1 FROM classic_group_bindings WHERE group_id IN (?, ?)",
+                (master, member),
+            ).fetchone() is not None:
+                raise ValueError("主群或副群已绑定其他典藏")
+            if conn.execute(
+                "SELECT 1 FROM classic_group_bindings WHERE master_group_id = ?",
+                (member,),
+            ).fetchone() is not None:
+                raise ValueError("已有副群的主群不能作为副群")
+            current = conn.execute(
+                "SELECT id, sha256 FROM classic_images WHERE group_id = ?", (member,)
+            ).fetchall()
+            if {(int(row["id"]), str(row["sha256"])) for row in current} != {
+                (int(image["id"]), str(image["sha256"])) for image in source_images
+            }:
+                raise RuntimeError("副群典藏在复制过程中发生变化，请重试")
+            minimum = conn.execute(
+                "SELECT COALESCE(MIN(blast_count), 0) FROM classic_images WHERE group_id = ?",
+                (master,),
+            ).fetchone()[0]
+            merged = 0
+            for image in source_images:
+                cursor = conn.execute(
+                    """
+                    INSERT OR IGNORE INTO classic_images(
+                        group_id, sha256, object_key, content_type, size_bytes,
+                        created_at, blast_count, last_blast_at, fair_order
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+                    """,
+                    (
+                        master, image["sha256"], image["object_key"], image["content_type"],
+                        image["size_bytes"], image["created_at"], int(minimum),
+                        self._classic_fair_order(image["sha256"]),
+                    ),
+                )
+                merged += cursor.rowcount
+                if conn.execute(
+                    "SELECT 1 FROM classic_images WHERE group_id = ? AND sha256 = ?",
+                    (master, image["sha256"]),
+                ).fetchone() is None:
+                    raise RuntimeError("主群存在冲突的典图文件名，绑定已取消")
+            conn.execute("DELETE FROM classic_images WHERE group_id = ?", (member,))
+            conn.execute(
+                "INSERT INTO classic_group_bindings(group_id, master_group_id, created_at) "
+                "VALUES (?, ?, ?)",
+                (member, master, time.time()),
+            )
+        return merged
+
+    def dissolve_classic_group(
+        self, master_group_id: int, source_images: list[dict[str, Any]]
+    ) -> list[int]:
+        master = int(master_group_id)
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            members = [int(row["group_id"]) for row in conn.execute(
+                "SELECT group_id FROM classic_group_bindings WHERE master_group_id = ? ORDER BY group_id",
+                (master,),
+            ).fetchall()]
+            if not members:
+                raise ValueError("这个主群没有绑定的副群")
+            current = conn.execute(
+                "SELECT id, sha256 FROM classic_images WHERE group_id = ?", (master,)
+            ).fetchall()
+            if {(int(row["id"]), str(row["sha256"])) for row in current} != {
+                (int(image["id"]), str(image["sha256"])) for image in source_images
+            }:
+                raise RuntimeError("共享典藏在复制过程中发生变化，请重试")
+            for member in members:
+                if conn.execute(
+                    "SELECT 1 FROM classic_images WHERE group_id = ? LIMIT 1", (member,)
+                ).fetchone() is not None:
+                    raise RuntimeError("副群存在未预期的典图记录，解散已取消")
+                for image in source_images:
+                    conn.execute(
+                        """
+                        INSERT INTO classic_images(
+                            group_id, sha256, object_key, content_type, size_bytes,
+                            created_at, blast_count, last_blast_at, fair_order
+                        ) VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?)
+                        """,
+                        (
+                            member, image["sha256"], image["object_key"],
+                            image["content_type"], image["size_bytes"], image["created_at"],
+                            self._classic_fair_order(image["sha256"]),
+                        ),
+                    )
+            conn.execute(
+                "DELETE FROM classic_group_bindings WHERE master_group_id = ?", (master,)
+            )
+        return members
+
     def record_classic_image(
         self,
         *,
@@ -4803,6 +4939,32 @@ class PolicyStore:
             }
             for row in rows
         ]
+
+    def get_classic_group_stat(self, group_id: int) -> dict[str, Any] | None:
+        normalized = int(group_id)
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS count, COALESCE(SUM(size_bytes), 0) AS total_bytes,
+                       MAX(created_at) AS updated_at
+                FROM classic_images WHERE group_id = ?
+                """,
+                (normalized,),
+            ).fetchone()
+            if row is None or not row["count"]:
+                return None
+            cover = conn.execute(
+                "SELECT id FROM classic_images WHERE group_id = ? "
+                "ORDER BY created_at DESC, id DESC LIMIT 1",
+                (normalized,),
+            ).fetchone()
+        return {
+            "group_id": normalized,
+            "count": int(row["count"]),
+            "total_bytes": int(row["total_bytes"]),
+            "updated_at": float(row["updated_at"]),
+            "cover_id": int(cover["id"]),
+        }
 
     def pick_classic_image(self, group_id: int, seed: int) -> dict[str, Any] | None:
         with self._connect() as conn:

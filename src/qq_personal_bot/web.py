@@ -29,6 +29,11 @@ from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 from qq_personal_bot.ai_models import public_dsapi_model_options
+from qq_personal_bot.classic_sharing import (
+    bind_classic_group,
+    classic_lock,
+    dissolve_classic_group,
+)
 from qq_personal_bot.classic_storage import ClassicStorageError, get_classic_storage
 from qq_personal_bot.download_storage import DownloadStorageError, get_download_storage
 from qq_personal_bot.dsapi import DSAPIError, fetch_dsapi_models
@@ -152,6 +157,11 @@ class RestaurantPayload(BaseModel):
     group_id: int
     created_by: int = 0
     enabled: bool = True
+
+
+class ClassicBindingPayload(BaseModel):
+    master_group_id: int
+    group_id: int
 
 
 class FeatureTogglePayload(BaseModel):
@@ -843,6 +853,32 @@ def create_app():
             "groups": _list_classic_groups(search=search, limit=limit),
             "storage": "minio",
         }
+
+    @app.get("/api/classics/bindings")
+    async def get_classic_bindings() -> dict:
+        return {"bindings": get_store().list_classic_bindings()}
+
+    @app.post("/api/classics/bindings")
+    async def create_classic_binding(payload: ClassicBindingPayload, request: Request) -> dict:
+        require_token(request)
+        try:
+            return await asyncio.to_thread(
+                bind_classic_group, payload.master_group_id, payload.group_id
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (ClassicStorageError, RuntimeError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.delete("/api/classics/bindings/{master_group_id}")
+    async def delete_classic_binding(master_group_id: int, request: Request) -> dict:
+        require_token(request)
+        try:
+            return await asyncio.to_thread(dissolve_classic_group, master_group_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (ClassicStorageError, RuntimeError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     @app.get("/api/classics/groups/{group_id}")
     async def get_classic_group(group_id: int, limit: int = 500) -> dict:
@@ -1770,24 +1806,55 @@ def _resolve_sticker(filename: str) -> Path:
 
 
 def _list_classic_groups(search: str = "", limit: int = 200) -> list[dict[str, Any]]:
-    groups = get_store().list_classic_groups(search=search, limit=limit)
+    store = get_store()
+    normalized_search = str(search).strip()
+    groups = {
+        group["group_id"]: group
+        for group in store.list_classic_groups(search=normalized_search, limit=500)
+    }
+    owners: dict[int, int] = {}
+    for family in store.list_classic_bindings():
+        master = family["master_group_id"]
+        master_group = store.get_classic_group_stat(master) or {
+            "group_id": master, "count": 0, "total_bytes": 0,
+            "updated_at": None, "cover_id": None,
+        }
+        if not normalized_search or normalized_search in str(master):
+            groups[master] = master_group
+        for member in family["group_ids"]:
+            if not normalized_search or normalized_search in str(member):
+                owners[member] = master
+                groups[member] = {**master_group, "group_id": member}
+    selected = list(groups.values())
+    selected.sort(key=lambda group: (group["updated_at"] or 0, group["group_id"]), reverse=True)
     return [
         {
             **group,
-            "updated_at": datetime.fromtimestamp(group["updated_at"], UTC).isoformat(),
-            "cover_url": f"./api/classic-images/{group['group_id']}/{quote(_classic_cover_key(group['cover_id']))}",
+            "owner_group_id": owners.get(group["group_id"], group["group_id"]),
+            "updated_at": (
+                datetime.fromtimestamp(group["updated_at"], UTC).isoformat()
+                if group["updated_at"] is not None else None
+            ),
+            "cover_url": (
+                f"./api/classic-images/{owners.get(group['group_id'], group['group_id'])}/"
+                f"{quote(_classic_cover_key(group['cover_id']))}"
+                if group["cover_id"] is not None else None
+            ),
         }
-        for group in groups
+        for group in selected[: max(1, min(int(limit), 500))]
     ]
 
 
 def _classic_group_detail(group_id: int, limit: int = 500) -> dict[str, Any]:
     group_id = _validate_group_id(group_id)
-    all_images = get_store().list_classic_images(group_id, limit=100_000)
+    store = get_store()
+    owner_group_id = store.resolve_classic_group(group_id)
+    all_images = store.list_classic_images(owner_group_id, limit=None)
     images = all_images[: max(1, min(int(limit), 1000))]
 
     return {
         "group_id": group_id,
+        "owner_group_id": owner_group_id,
         "exists": bool(all_images),
         "count": len(all_images),
         "images": [_classic_image_for_api(image) for image in images],
@@ -1814,43 +1881,55 @@ def _classic_image_for_api(record: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _delete_classic_group(group_id: int) -> dict[str, Any]:
+    return await asyncio.to_thread(_delete_classic_group_sync, group_id)
+
+
+def _delete_classic_group_sync(group_id: int) -> dict[str, Any]:
     group_id = _validate_group_id(group_id)
-    images = get_store().list_classic_images(group_id, limit=100_000)
-    if not images:
-        return {"deleted": False, "group_id": group_id, "deleted_count": 0}
-    try:
-        await asyncio.to_thread(
-            get_classic_storage().remove_group_bucket,
-            group_id,
-            [image["object_key"] for image in images],
-        )
-    except ClassicStorageError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    deleted_count = get_store().delete_classic_group(group_id)
-    return {"deleted": True, "group_id": group_id, "deleted_count": deleted_count}
+    with classic_lock:
+        store = get_store()
+        if store.resolve_classic_group(group_id) != group_id or any(
+            item["master_group_id"] == group_id for item in store.list_classic_bindings()
+        ):
+            raise HTTPException(status_code=409, detail="共享典藏请先解散，再删除整群典图")
+        images = store.list_classic_images(group_id, limit=None)
+        if not images:
+            return {"deleted": False, "group_id": group_id, "deleted_count": 0}
+        try:
+            get_classic_storage().remove_group_bucket(
+                group_id, [image["object_key"] for image in images]
+            )
+        except ClassicStorageError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        deleted_count = store.delete_classic_group(group_id)
+        return {"deleted": True, "group_id": group_id, "deleted_count": deleted_count}
 
 
 async def _delete_classic_image(group_id: int, filename: str) -> dict[str, Any]:
+    return await asyncio.to_thread(_delete_classic_image_sync, group_id, filename)
+
+
+def _delete_classic_image_sync(group_id: int, filename: str) -> dict[str, Any]:
     group_id = _validate_group_id(group_id)
-    record = get_store().get_classic_image_by_key(group_id, filename)
-    if record is None:
-        raise HTTPException(status_code=404, detail="classic image not found")
-    try:
-        await asyncio.to_thread(
-            get_classic_storage().remove_image,
-            group_id,
-            record["object_key"],
-            missing_ok=True,
-        )
-    except ClassicStorageError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    get_store().delete_classic_image(record["id"])
-    return {
-        "deleted": True,
-        "group_id": group_id,
-        "filename": record["object_key"],
-        "group": _classic_group_detail(group_id),
-    }
+    with classic_lock:
+        store = get_store()
+        owner_group_id = store.resolve_classic_group(group_id)
+        record = store.get_classic_image_by_key(owner_group_id, filename)
+        if record is None:
+            raise HTTPException(status_code=404, detail="classic image not found")
+        try:
+            get_classic_storage().remove_image(
+                owner_group_id, record["object_key"], missing_ok=True
+            )
+        except ClassicStorageError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        store.delete_classic_image(record["id"])
+        return {
+            "deleted": True,
+            "group_id": group_id,
+            "filename": record["object_key"],
+            "group": _classic_group_detail(group_id),
+        }
 
 
 def _validate_group_id(group_id: int) -> int:
