@@ -142,6 +142,7 @@ async def test_aion_enables_explicit_group(monkeypatch):
 
     assert matcher.messages == ["AI enabled for group 12345."]
     assert store.ai_enabled == [(12345, 10000)]
+    assert store.ai_master == []
 
 
 @pytest.mark.asyncio
@@ -196,6 +197,7 @@ async def test_aioff_disables_explicit_group(monkeypatch):
 
     assert matcher.messages == ["AI disabled for group 67890."]
     assert store.ai_disabled == [(67890, 10000)]
+    assert store.ai_master == []
 
 
 @pytest.mark.asyncio

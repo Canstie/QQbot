@@ -2500,15 +2500,6 @@ class PolicyStore:
             if normalized_group_id not in enabled_groups:
                 enabled_groups.append(normalized_group_id)
 
-            self.set_setting("dsapi_enabled", "true", conn=conn)
-            conn.execute(
-                """
-                INSERT INTO feature_flags(feature_id, enabled, updated_at)
-                VALUES ('ai.master', 1, ?)
-                ON CONFLICT(feature_id) DO UPDATE SET enabled = 1, updated_at = excluded.updated_at
-                """,
-                (time.time(),),
-            )
             self.set_setting(
                 "dsapi_enabled_groups",
                 json.dumps(enabled_groups),
