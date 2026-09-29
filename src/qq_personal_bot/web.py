@@ -86,6 +86,8 @@ class CoreConfigPayload(BaseModel):
 
 class DSAPIConfigPayload(BaseModel):
     enabled: bool = True
+    all_groups: bool = False
+    disabled_groups: list[int] = Field(default_factory=list)
     knowledge_enabled: bool = False
     knowledge_prompt: str | None = None
     active_knowledge_id: int | None = None
@@ -428,6 +430,8 @@ def create_app():
         try:
             get_store().set_dsapi_config(
                 enabled=payload.enabled,
+                all_groups=payload.all_groups,
+                disabled_groups=payload.disabled_groups,
                 knowledge_enabled=payload.knowledge_enabled,
                 knowledge_prompt=payload.knowledge_prompt,
                 active_knowledge_id=payload.active_knowledge_id,

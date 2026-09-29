@@ -16,9 +16,11 @@ LLOneBot 或 NapCat Framework 使用。桌面 QQ 客户端可以正常使用，�
   - `/rm <SHA-256>`（按完整内容哈希删除图库中的唯一图片）
   - `/bot on [group_id]`
   - `/bot off [group_id]`
-  - `/bot aion [group_id]`（开启指定群的 AI；群聊内省略群号则开启当前群）
-  - `/bot aioff`（关闭当前群 AI）
-  - `/bot aioff all`（关闭全部群 AI）
+  - `/bot aion`（开启 AI 总开关，覆盖策略 `enabled_groups` 中的群；启动默认如此）
+  - `/bot aioff`（关闭 AI 总开关）
+  - `/bot aion <group_id>`（单独允许指定群使用 AI）
+  - `/bot aioff <group_id>`（从已启用群中单独排除指定群的 AI）
+  - `/bot aioff all`（兼容旧命令，等同于 `/bot aioff`）
   - `/bot ai rs`（清空全部 AI 短期上下文）
   - `/bot aim list|flash|pro`（查看或切换当前知识库使用的 AI 模型；Flash 支持识图）
   - `/bot aik list|<序号>`（查看知识库，并按列表序号切换）

@@ -332,6 +332,7 @@ def test_dsapi_config_api_roundtrip_and_clear_history(tmp_path, monkeypatch):
     assert data["api_configured"] is True
     assert data["enabled"] is False
     assert data["enabled_groups"] == [123, 456]
+    assert data["all_groups"] is False
     assert data["history_turns"] == 8
     assert data["random_reply_percent"] == 7.5
     assert data["random_sticker_percent"] == 35
@@ -343,6 +344,20 @@ def test_dsapi_config_api_roundtrip_and_clear_history(tmp_path, monkeypatch):
     ]
     assert data["model_options"][0]["id"] == "deepseek-flash"
     assert data["model_options"][0]["vision"] is True
+
+    response = client.post(
+        "/api/dsapi",
+        json={
+            "enabled": True,
+            "all_groups": True,
+            "disabled_groups": [456],
+            "enabled_groups": [123, 456],
+            "clear_history": False,
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["all_groups"] is True
+    assert response.json()["disabled_groups"] == [456]
 
     invalid = client.post(
         "/api/dsapi",

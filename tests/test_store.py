@@ -425,6 +425,7 @@ def test_enable_dsapi_group_enables_master_switch_and_is_idempotent(tmp_path):
     store = PolicyStore(db_path)
     store.initialize(AppSettings(db_path=db_path, admins=()))
     store.set_setting("dsapi_enabled", "false")
+    store.set_setting("dsapi_all_groups", "false")
     store.set_setting("dsapi_enabled_groups", "[123]")
 
     assert store.enable_dsapi_group(456, actor_id=10000) == [123, 456]
@@ -438,12 +439,43 @@ def test_disable_dsapi_group_removes_one_or_all_groups(tmp_path):
     db_path = tmp_path / "policy.sqlite3"
     store = PolicyStore(db_path)
     store.initialize(AppSettings(db_path=db_path, admins=()))
+    store.set_setting("dsapi_all_groups", "false")
     store.set_setting("dsapi_enabled_groups", "[123, 456]")
 
     assert store.disable_dsapi_group(123, actor_id=10000) == [456]
     assert store.disable_dsapi_group(123, actor_id=10000) == [456]
-    assert store.disable_dsapi_group(None, actor_id=10000) == []
-    assert store.get_dsapi_config()["enabled_groups"] == []
+    assert store.disable_dsapi_group(None, actor_id=10000) == [456]
+    assert store.get_dsapi_config()["enabled"] is False
+
+
+def test_dsapi_all_groups_default_and_group_exceptions_persist(tmp_path):
+    db_path = tmp_path / "policy.sqlite3"
+    store = PolicyStore(db_path)
+    settings = AppSettings(db_path=db_path, admins=())
+    store.initialize(settings)
+
+    assert store.get_dsapi_config()["all_groups"] is True
+    store.disable_dsapi_group(123, actor_id=10000)
+    assert store.get_dsapi_config()["disabled_groups"] == [123]
+
+    reopened = PolicyStore(db_path)
+    reopened.initialize(settings)
+    assert reopened.get_dsapi_config()["disabled_groups"] == [123]
+    reopened.enable_dsapi_group(123, actor_id=10000)
+    assert reopened.get_dsapi_config()["disabled_groups"] == []
+
+    reopened.set_dsapi_all_groups(False, actor_id=10000)
+    assert reopened.get_dsapi_config()["enabled"] is False
+    assert reopened.is_feature_enabled("ai.master") is False
+    reopened.set_dsapi_all_groups(True, actor_id=10000)
+    assert reopened.get_dsapi_config()["enabled"] is True
+    assert reopened.get_dsapi_config()["disabled_groups"] == []
+    assert reopened.is_feature_enabled("ai.master") is True
+
+    reopened.set_dsapi_all_groups(False, actor_id=10000)
+    reopened.enable_dsapi_group(123, actor_id=10000)
+    assert reopened.get_dsapi_config()["all_groups"] is False
+    assert reopened.get_dsapi_config()["enabled_groups"] == [123]
 
 
 def test_quote_memory_is_group_scoped_unlimited_and_clearable(tmp_path):

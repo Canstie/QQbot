@@ -120,6 +120,16 @@ def fetch_dsapi_models(settings: AppSettings) -> list[dict[str, Any]]:
     return models
 
 
+def dsapi_group_enabled(config: dict[str, Any], group_id: int | None) -> bool:
+    if group_id is None:
+        return False
+    if group_id not in config.get("policy_enabled_groups", config["enabled_groups"]):
+        return False
+    if config.get("all_groups", False):
+        return group_id not in config.get("disabled_groups", [])
+    return group_id in config["enabled_groups"]
+
+
 async def generate_mention_reply(
     bot: Any,
     event: MessageEvent,
@@ -132,7 +142,7 @@ async def generate_mention_reply(
     config = store.get_dsapi_config()
     if not config["enabled"]:
         return None
-    if event.group_id is None or event.group_id not in config["enabled_groups"]:
+    if not dsapi_group_enabled(config, event.group_id):
         return None
 
     active_knowledge = config.get("active_knowledge") or {}
@@ -182,7 +192,7 @@ async def generate_random_group_reply(
     config = store.get_dsapi_config()
     if not config["enabled"]:
         return None
-    if event.group_id is None or event.group_id not in config["enabled_groups"]:
+    if not dsapi_group_enabled(config, event.group_id):
         return None
     if event.is_at_bot or not event.raw_message.strip():
         return None

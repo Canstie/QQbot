@@ -17,6 +17,7 @@ from qq_personal_bot.dsapi import (
     _refresh_relationship_memory,
     _request_chat_completion,
     build_mention_prompt,
+    dsapi_group_enabled,
     fetch_dsapi_models,
     generate_mention_reply,
     generate_random_group_reply,
@@ -72,6 +73,8 @@ def make_store(
     settings = make_settings(tmp_path)
     store = PolicyStore(settings.db_path)
     store.initialize(settings)
+    for group_id in enabled_groups:
+        store.set_group_enabled(group_id, True, actor_id=0)
     store.set_dsapi_config(
         enabled=enabled,
         knowledge_enabled=bool(knowledge_prompt),
@@ -84,6 +87,21 @@ def make_store(
         random_sticker_percent=random_sticker_percent,
     )
     return store
+
+
+def test_ai_group_scope_allows_new_groups_and_honors_exclusions(tmp_path):
+    settings = make_settings(tmp_path)
+    store = PolicyStore(settings.db_path)
+    store.initialize(settings)
+
+    assert dsapi_group_enabled(store.get_dsapi_config(), 999) is False
+    store.set_group_enabled(999, True, actor_id=0)
+    store.set_group_enabled(123, True, actor_id=0)
+    assert dsapi_group_enabled(store.get_dsapi_config(), 999) is True
+    store.disable_dsapi_group(999, actor_id=0)
+    assert dsapi_group_enabled(store.get_dsapi_config(), 999) is False
+    assert dsapi_group_enabled(store.get_dsapi_config(), 123) is True
+    assert dsapi_group_enabled(store.get_dsapi_config(), None) is False
 
 
 @pytest.mark.asyncio

@@ -33,7 +33,7 @@ export default function OverviewPage({ summary, onNavigate }) {
 
         <div className="overview-metrics">
           <Metric label="启用群" value={policy?.enabled_groups?.length ?? "-"} suffix="GROUPS" />
-          <Metric label="AI 群" value={ai?.enabled_groups?.length ?? "-"} suffix="GROUPS" tone="mint" />
+          <Metric label="AI 群" value={ai?.all_groups ? (ai?.policy_enabled_groups?.length ?? 0) - (ai?.disabled_groups || []).filter((id) => ai?.policy_enabled_groups?.includes(id)).length : ai?.enabled_groups?.length ?? "-"} suffix="GROUPS" tone="mint" />
           <Metric label="短期消息" value={ai?.history_messages ?? "-"} suffix="MESSAGES" tone="orange" />
           <Metric label="典藏群" value={groups.length || "-"} suffix="ARCHIVES" tone="ink" />
         </div>

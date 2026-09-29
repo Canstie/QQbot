@@ -91,7 +91,7 @@ export default function PolicyPage({ refreshVersion, onChanged }) {
             <Field label="触发前缀" hint="使用英文逗号分隔。">
               <input value={form.prefixes} onChange={(e) => update("prefixes", e.target.value)} />
             </Field>
-            <Switch checked={form.mention} onChange={(value) => update("mention", value)} label="允许 @bot 触发" description="AI 群仍需在 AI 页面单独启用" />
+            <Switch checked={form.mention} onChange={(value) => update("mention", value)} label="允许 @bot 触发" description="AI 范围可在 AI 页面设置" />
             <Field label="免前缀触发概率"><div className="input-suffix"><input type="number" min="0" max="100" value={form.directPercent} onChange={(e) => update("directPercent", e.target.value)} /><span>%</span></div></Field>
             <Field label="群冷却时间"><div className="input-suffix"><input type="number" min="0" step="0.5" value={form.groupSeconds} onChange={(e) => update("groupSeconds", e.target.value)} /><span>秒</span></div></Field>
             <Field label="单用户每分钟上限"><div className="input-suffix"><input type="number" min="0" value={form.userMinute} onChange={(e) => update("userMinute", e.target.value)} /><span>次</span></div></Field>

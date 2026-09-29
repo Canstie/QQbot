@@ -204,37 +204,40 @@ async def _handle_bot_command(
                     "Usage: /bot aion [group_id]",
                     explicit_group_send=explicit_group_send,
                 )
-            group_id = _parse_group_id(parts, event)
-            store.enable_dsapi_group(group_id, actor_id=actor_id)
+            if len(parts) == 1:
+                store.set_dsapi_all_groups(True, actor_id=actor_id)
+                message = "AI enabled for all policy-enabled groups."
+            else:
+                group_id = int(parts[1])
+                store.enable_dsapi_group(group_id, actor_id=actor_id)
+                message = f"AI enabled for group {group_id}."
             await _send_control_response(
                 matcher,
                 bot,
                 event,
-                f"AI enabled for group {group_id}.",
+                message,
                 explicit_group_send=explicit_group_send,
             )
 
         if command == "aioff":
-            if len(parts) == 2 and parts[1].lower() == "all":
-                store.disable_dsapi_group(None, actor_id=actor_id)
+            if len(parts) == 1 or (len(parts) == 2 and parts[1].lower() == "all"):
+                store.set_dsapi_all_groups(False, actor_id=actor_id)
                 await _send_control_response(
                     matcher,
                     bot,
                     event,
-                    "AI disabled for all groups.",
+                    "AI disabled for all policy-enabled groups.",
                     explicit_group_send=explicit_group_send,
                 )
-            if len(parts) != 1:
+            if len(parts) != 2:
                 await _send_control_response(
                     matcher,
                     bot,
                     event,
-                    "Usage: /bot aioff [all]",
+                    "Usage: /bot aioff [group_id]",
                     explicit_group_send=explicit_group_send,
                 )
-            group_id = _current_group_id(event)
-            if group_id is None:
-                raise ValueError("group_id is required outside a group chat")
+            group_id = int(parts[1])
             store.disable_dsapi_group(group_id, actor_id=actor_id)
             await _send_control_response(
                 matcher,
@@ -400,7 +403,7 @@ async def _handle_bot_command(
             event,
             (
                 "Usage: /bot status | on [group_id] | off [group_id] | "
-                "aion [group_id] | aioff [all] | ai rs | "
+                "aion [group_id] | aioff [group_id] | ai rs | "
                 "aim list|flash|pro | "
                 "aik list|<index> | "
                 "mode allowlist|blocklist | admin add <user_id> | "

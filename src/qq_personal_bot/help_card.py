@@ -161,7 +161,7 @@ def build_help_sections(
                 (True, "/check  查看服务器 CPU、内存和磁盘"),
                 (True, "/bot status  查看当前群策略"),
                 (True, "/bot on|off [群号]  启用或停用群"),
-                (True, "/bot aion|aioff [群号]  开关群 AI"),
+                (True, "/bot aion|aioff  全群 AI 总开关；加群号单独设置"),
                 (True, "/bot aim list|<模型>  查看或切换模型"),
                 (True, "/bot aik list|<序号>  查看或切换知识库"),
                 (True, "/bot prefix list|add|remove  管理前缀"),

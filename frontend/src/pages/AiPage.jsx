@@ -80,7 +80,7 @@ const knowledgePayload = (draft) => {
 
 export default function AiPage({ refreshVersion, onChanged }) {
   const [data, setData] = useState(null);
-  const [form, setForm] = useState({ enabledGroups: "", randomPercent: 2, stickerPercent: 20, aiEnabled: true, knowledgeEnabled: false, clear: true });
+  const [form, setForm] = useState({ enabledGroups: "", disabledGroups: "", allGroups: true, randomPercent: 2, stickerPercent: 20, aiEnabled: true, knowledgeEnabled: false, clear: true });
   const [selectedKnowledgeId, setSelectedKnowledgeId] = useState(null);
   const [knowledgeDraft, setKnowledgeDraft] = useState(knowledgeDraftFrom());
   const [createDraft, setCreateDraft] = useState(knowledgeDraftFrom());
@@ -100,7 +100,7 @@ export default function AiPage({ refreshVersion, onChanged }) {
 
   const applyConfig = (result, preferredId = null) => {
     setData(result);
-    setForm((current) => ({ enabledGroups: formatIds(result.enabled_groups), randomPercent: result.random_reply_percent ?? 2, stickerPercent: result.random_sticker_percent ?? 20, aiEnabled: result.enabled ?? true, knowledgeEnabled: result.knowledge_enabled, clear: current.clear ?? true }));
+    setForm((current) => ({ enabledGroups: formatIds(result.enabled_groups), disabledGroups: formatIds(result.disabled_groups), allGroups: result.all_groups ?? false, randomPercent: result.random_reply_percent ?? 2, stickerPercent: result.random_sticker_percent ?? 20, aiEnabled: result.enabled ?? true, knowledgeEnabled: result.knowledge_enabled, clear: current.clear ?? true }));
     const bases = result.knowledge_bases || [];
     const nextId = preferredId ?? result.active_knowledge_id ?? bases[0]?.id ?? null;
     const selected = bases.find((item) => item.id === nextId) || bases[0] || null;
@@ -211,7 +211,7 @@ export default function AiPage({ refreshVersion, onChanged }) {
   const save = async () => {
     try {
       if (selectedKnowledgeId) await saveAndActivateKnowledge(form.clear);
-      const result = await post("/dsapi", { enabled: form.aiEnabled, enabled_groups: parseIds(form.enabledGroups), history_turns: Number(knowledgeDraft.history_turns), random_reply_percent: Number(form.randomPercent), random_sticker_percent: Number(form.stickerPercent), knowledge_enabled: form.knowledgeEnabled, active_knowledge_id: selectedKnowledgeId, clear_history: false });
+      const result = await post("/dsapi", { enabled: form.aiEnabled, all_groups: form.allGroups, enabled_groups: parseIds(form.enabledGroups), disabled_groups: parseIds(form.disabledGroups), history_turns: Number(knowledgeDraft.history_turns), random_reply_percent: Number(form.randomPercent), random_sticker_percent: Number(form.stickerPercent), knowledge_enabled: form.knowledgeEnabled, active_knowledge_id: selectedKnowledgeId, clear_history: false });
       applyConfig(result, selectedKnowledgeId);
       setNotice("AI 配置已保存，选中的知识库已生效");
       setForm((current) => ({ ...current, clear: false }));
@@ -312,7 +312,7 @@ export default function AiPage({ refreshVersion, onChanged }) {
       <PageHeader eyebrow="Model memory" title="AI 角色与知识" description="维护多个角色知识库，随时切换当前设定，并控制每个群的短期对话。" actions={<Button icon={Save} onClick={save}>保存并生效</Button>} />
       <div className="ai-status-strip">
         <div className="ai-status-strip__model"><BrainCircuit /><div><span>当前模型</span><strong>{data?.model || "读取中"}</strong><small>{data?.thinking_enabled ? "Thinking" : "Non-thinking"} · {data?.base_url || "-"}</small></div></div>
-        <Metric label="AI 启用群" value={data?.enabled_groups?.length ?? "-"} tone="blue" />
+        <Metric label="AI 启用群" value={data?.all_groups ? (data?.policy_enabled_groups?.length ?? 0) - (data?.disabled_groups || []).filter((id) => data?.policy_enabled_groups?.includes(id)).length : data?.enabled_groups?.length ?? "-"} tone="blue" />
         <Metric label="上下文消息" value={data?.history_messages ?? "-"} tone="mint" />
         <Metric label="涉及群" value={data?.history_groups ?? "-"} tone="orange" />
         <Status tone={!data?.api_configured ? "error" : data?.enabled ? "ok" : "neutral"}>AI {!data?.api_configured ? "缺少密钥" : data?.enabled ? "已启用" : "已关闭"}</Status>
@@ -371,7 +371,8 @@ export default function AiPage({ refreshVersion, onChanged }) {
         <div className="stack span-4">
           <Panel title="启用范围" eyebrow="AI groups">
             <Switch checked={form.aiEnabled} onChange={(value) => update("aiEnabled", value)} label="启用 AI 功能" description="关闭后停止 @bot、随机文字和随机表情包回复" />
-            <Field label="允许调用 AI 的群" hint="独立于总体 Bot 启用群，一行一个群号。"><textarea value={form.enabledGroups} onChange={(e) => update("enabledGroups", e.target.value)} /></Field>
+            <Switch checked={form.allGroups} onChange={(value) => update("allGroups", value)} label="策略启用群全部开启 AI" description="只覆盖群策略中的启用群；可单独排除群。" />
+            {form.allGroups ? <Field label="排除 AI 的群" hint="一行一个群号。"><textarea value={form.disabledGroups} onChange={(e) => update("disabledGroups", e.target.value)} /></Field> : <Field label="允许调用 AI 的群" hint="一行一个群号。"><textarea value={form.enabledGroups} onChange={(e) => update("enabledGroups", e.target.value)} /></Field>}
           </Panel>
           <Panel title="短期记忆" eyebrow="Context window">
             <p className="quiet-note">AI 对话轮数和群聊消息窗口已绑定到各知识库，请在左侧分别设置。</p>

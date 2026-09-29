@@ -482,6 +482,8 @@ class PolicyStore:
             "dsapi_random_reply_percent": "2",
             "dsapi_random_sticker_percent": "20",
             "dsapi_enabled_groups": "[]",
+            "dsapi_all_groups": "true",
+            "dsapi_disabled_groups": "[]",
             "quote_memory_enabled_groups": "[]",
         }
         for key, value in defaults.items():
@@ -504,6 +506,8 @@ class PolicyStore:
             "dsapi_history_turns": "2",
             "dsapi_random_reply_percent": "2",
             "dsapi_random_sticker_percent": "20",
+            "dsapi_all_groups": "true",
+            "dsapi_disabled_groups": "[]",
             "quote_memory_enabled_groups": "[]",
         }
         for key, value in defaults.items():
@@ -2271,6 +2275,13 @@ class PolicyStore:
             )
         except (TypeError, ValueError, json.JSONDecodeError):
             enabled_groups = []
+        try:
+            disabled_groups = self._normalize_int_ids(
+                json.loads(self.get_setting("dsapi_disabled_groups", "[]")),
+                "disabled_groups",
+            )
+        except (TypeError, ValueError, json.JSONDecodeError):
+            disabled_groups = []
         with self._connect() as conn:
             chat_stats = conn.execute(
                 """
@@ -2318,6 +2329,10 @@ class PolicyStore:
             "random_reply_percent": random_reply_percent,
             "random_sticker_percent": random_sticker_percent,
             "enabled_groups": enabled_groups,
+            "policy_enabled_groups": self.enabled_groups(),
+            "all_groups": self.get_setting("dsapi_all_groups", "true").lower()
+            in {"1", "true", "yes", "on"},
+            "disabled_groups": disabled_groups,
             "history_messages": int(chat_stats["message_count"])
             + int(context_stats["message_count"]),
             "history_groups": int(all_group_stats["group_count"]),
@@ -2336,6 +2351,8 @@ class PolicyStore:
         random_reply_percent: float = 2.0,
         random_sticker_percent: float = 20.0,
         enabled: bool = True,
+        all_groups: bool = False,
+        disabled_groups: list[int] | None = None,
     ) -> dict[str, Any]:
         prompt = (
             self._normalize_knowledge_prompt(knowledge_prompt)
@@ -2354,6 +2371,9 @@ class PolicyStore:
         if sticker_percent < 0 or sticker_percent > 100:
             raise ValueError("random_sticker_percent must be between 0 and 100")
         normalized_enabled_groups = self._normalize_int_ids(enabled_groups, "enabled_groups")
+        normalized_disabled_groups = self._normalize_int_ids(
+            disabled_groups or [], "disabled_groups"
+        )
 
         with self._connect() as conn:
             selected_id = self._active_knowledge_id(conn)
@@ -2442,6 +2462,14 @@ class PolicyStore:
                 json.dumps(normalized_enabled_groups),
                 conn=conn,
             )
+            self.set_setting(
+                "dsapi_all_groups", "true" if all_groups else "false", conn=conn
+            )
+            self.set_setting(
+                "dsapi_disabled_groups",
+                json.dumps(normalized_disabled_groups),
+                conn=conn,
+            )
             cleared = 0
             if clear_history:
                 cleared = self._clear_dsapi_history(conn, selected_id)
@@ -2458,11 +2486,38 @@ class PolicyStore:
                     "random_reply_percent": percent,
                     "random_sticker_percent": sticker_percent,
                     "enabled_groups": normalized_enabled_groups,
+                    "all_groups": bool(all_groups),
+                    "disabled_groups": normalized_disabled_groups,
                     "history_messages_cleared": cleared,
                 },
                 conn=conn,
             )
         return self.get_dsapi_config()
+
+    def set_dsapi_all_groups(self, enabled: bool, *, actor_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self.set_setting("dsapi_enabled", "true" if enabled else "false", conn=conn)
+            if enabled:
+                self.set_setting("dsapi_all_groups", "true", conn=conn)
+                self.set_setting("dsapi_disabled_groups", "[]", conn=conn)
+            conn.execute(
+                """
+                INSERT INTO feature_flags(feature_id, enabled, updated_at)
+                VALUES ('ai.master', ?, ?)
+                ON CONFLICT(feature_id) DO UPDATE SET
+                    enabled = excluded.enabled, updated_at = excluded.updated_at
+                """,
+                (int(enabled), time.time()),
+            )
+            self.audit(
+                actor_id,
+                "set_dsapi_all_groups",
+                "all",
+                {"enabled": enabled},
+                conn=conn,
+            )
+        self._invalidate_runtime_cache()
 
     def enable_dsapi_group(self, group_id: int, *, actor_id: int) -> list[int]:
         normalized_group_id = int(group_id)
@@ -2471,6 +2526,35 @@ class PolicyStore:
 
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            mode_row = conn.execute(
+                "SELECT value FROM settings WHERE key = 'dsapi_all_groups'"
+            ).fetchone()
+            all_groups = str(mode_row["value"] if mode_row else "true").lower() in {
+                "1", "true", "yes", "on"
+            }
+            enabled_row = conn.execute(
+                "SELECT value FROM settings WHERE key = 'dsapi_enabled'"
+            ).fetchone()
+            globally_enabled = str(
+                enabled_row["value"] if enabled_row else "true"
+            ).lower() in {"1", "true", "yes", "on"}
+            if all_groups and not globally_enabled:
+                all_groups = False
+                self.set_setting("dsapi_all_groups", "false", conn=conn)
+                self.set_setting("dsapi_enabled_groups", "[]", conn=conn)
+            if all_groups:
+                row = conn.execute(
+                    "SELECT value FROM settings WHERE key = 'dsapi_disabled_groups'"
+                ).fetchone()
+                disabled_groups = self._normalize_int_ids(
+                    json.loads(str(row["value"])) if row else [], "disabled_groups"
+                )
+                disabled_groups = [
+                    item for item in disabled_groups if item != normalized_group_id
+                ]
+                self.set_setting(
+                    "dsapi_disabled_groups", json.dumps(disabled_groups), conn=conn
+                )
             row = conn.execute(
                 "SELECT value FROM settings WHERE key = 'dsapi_enabled_groups'"
             ).fetchone()
@@ -2481,7 +2565,7 @@ class PolicyStore:
                 )
             except (TypeError, ValueError, json.JSONDecodeError):
                 enabled_groups = []
-            if normalized_group_id not in enabled_groups:
+            if not all_groups and normalized_group_id not in enabled_groups:
                 enabled_groups.append(normalized_group_id)
 
             self.set_setting("dsapi_enabled", "true", conn=conn)
@@ -2502,9 +2586,10 @@ class PolicyStore:
                 actor_id,
                 "enable_dsapi_group",
                 str(normalized_group_id),
-                {"enabled_groups": enabled_groups},
+                {"enabled_groups": enabled_groups, "all_groups": all_groups},
                 conn=conn,
             )
+        self._invalidate_runtime_cache()
         return enabled_groups
 
     def disable_dsapi_group(
@@ -2519,6 +2604,12 @@ class PolicyStore:
 
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            mode_row = conn.execute(
+                "SELECT value FROM settings WHERE key = 'dsapi_all_groups'"
+            ).fetchone()
+            all_groups = str(mode_row["value"] if mode_row else "true").lower() in {
+                "1", "true", "yes", "on"
+            }
             row = conn.execute(
                 "SELECT value FROM settings WHERE key = 'dsapi_enabled_groups'"
             ).fetchone()
@@ -2530,8 +2621,25 @@ class PolicyStore:
             except (TypeError, ValueError, json.JSONDecodeError):
                 enabled_groups = []
             if normalized_group_id is None:
-                enabled_groups = []
                 target = "all"
+                self.set_setting("dsapi_enabled", "false", conn=conn)
+                conn.execute(
+                    "UPDATE feature_flags SET enabled = 0, updated_at = ? WHERE feature_id = 'ai.master'",
+                    (time.time(),),
+                )
+            elif all_groups:
+                row = conn.execute(
+                    "SELECT value FROM settings WHERE key = 'dsapi_disabled_groups'"
+                ).fetchone()
+                disabled_groups = self._normalize_int_ids(
+                    json.loads(str(row["value"])) if row else [], "disabled_groups"
+                )
+                if normalized_group_id not in disabled_groups:
+                    disabled_groups.append(normalized_group_id)
+                self.set_setting(
+                    "dsapi_disabled_groups", json.dumps(disabled_groups), conn=conn
+                )
+                target = str(normalized_group_id)
             else:
                 enabled_groups = [
                     item for item in enabled_groups if item != normalized_group_id
@@ -2547,9 +2655,10 @@ class PolicyStore:
                 actor_id,
                 "disable_dsapi_group",
                 target,
-                {"enabled_groups": enabled_groups},
+                {"enabled_groups": enabled_groups, "all_groups": all_groups},
                 conn=conn,
             )
+        self._invalidate_runtime_cache()
         return enabled_groups
 
     def get_dsapi_chat_history(
