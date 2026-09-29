@@ -205,8 +205,8 @@ async def _handle_bot_command(
                     explicit_group_send=explicit_group_send,
                 )
             if len(parts) == 1:
-                store.set_dsapi_all_groups(True, actor_id=actor_id)
-                message = "AI enabled for all policy-enabled groups."
+                store.set_dsapi_enabled(True, actor_id=actor_id)
+                message = "AI 总开关已开启，AI 群名单保持不变。"
             else:
                 group_id = int(parts[1])
                 store.enable_dsapi_group(group_id, actor_id=actor_id)
@@ -221,12 +221,12 @@ async def _handle_bot_command(
 
         if command == "aioff":
             if len(parts) == 1 or (len(parts) == 2 and parts[1].lower() == "all"):
-                store.set_dsapi_all_groups(False, actor_id=actor_id)
+                store.set_dsapi_enabled(False, actor_id=actor_id)
                 await _send_control_response(
                     matcher,
                     bot,
                     event,
-                    "AI disabled for all policy-enabled groups.",
+                    "AI 总开关已关闭，AI 群名单保持不变。",
                     explicit_group_send=explicit_group_send,
                 )
             if len(parts) != 2:

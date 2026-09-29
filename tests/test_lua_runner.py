@@ -1704,7 +1704,7 @@ async def test_builtin_help_appends_admin_features_for_admin(tmp_path, monkeypat
     assert "/rm <SHA-256>  删除下载图库中的图片" in help_text
     assert "/dimg  将引用图片加入 AI 表情包库" in help_text
     assert "/bot status  查看当前群策略" in help_text
-    assert "/bot aion|aioff  全群 AI 总开关；加群号单独设置" in help_text
+    assert "/bot aion|aioff  AI 总开关；加群号增删 AI 群" in help_text
     assert "/bot aim list|<模型>  查看或切换模型" in help_text
     assert "/bot aik list|<序号>  查看或切换知识库" in help_text
     assert "/bot prefix list|add|remove  管理前缀" in help_text

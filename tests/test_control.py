@@ -28,7 +28,7 @@ class FakeStore:
         self.removed: list[int] = []
         self.ai_enabled: list[tuple[int, int]] = []
         self.ai_disabled: list[tuple[int | None, int]] = []
-        self.ai_all_groups: list[tuple[bool, int]] = []
+        self.ai_master: list[tuple[bool, int]] = []
         self.model = "deepseek-flash"
         self.model_changes: list[tuple[str, int]] = []
         self.knowledge_bases = [
@@ -55,8 +55,8 @@ class FakeStore:
     ) -> None:
         self.ai_disabled.append((group_id, actor_id))
 
-    def set_dsapi_all_groups(self, enabled: bool, *, actor_id: int) -> None:
-        self.ai_all_groups.append((enabled, actor_id))
+    def set_dsapi_enabled(self, enabled: bool, *, actor_id: int) -> None:
+        self.ai_master.append((enabled, actor_id))
 
     def get_dsapi_config(self):
         return {"active_knowledge": {"model": self.model}}
@@ -145,7 +145,7 @@ async def test_aion_enables_explicit_group(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_aion_enables_all_groups_when_group_id_is_omitted(monkeypatch):
+async def test_aion_enables_master_without_changing_ai_groups(monkeypatch):
     store = FakeStore()
     matcher = FakeMatcher()
     monkeypatch.setattr(control, "get_store", lambda: store)
@@ -157,13 +157,14 @@ async def test_aion_enables_all_groups_when_group_id_is_omitted(monkeypatch):
             ["aion"],
         )
 
-    assert matcher.messages == ["AI enabled for all policy-enabled groups."]
-    assert store.ai_all_groups == [(True, 10000)]
+    assert matcher.messages == ["AI 总开关已开启，AI 群名单保持不变。"]
+    assert store.ai_master == [(True, 10000)]
     assert store.ai_enabled == []
+    assert store.ai_disabled == []
 
 
 @pytest.mark.asyncio
-async def test_aioff_disables_all_groups_when_group_id_is_omitted(monkeypatch):
+async def test_aioff_disables_master_without_changing_ai_groups(monkeypatch):
     store = FakeStore()
     matcher = FakeMatcher()
     monkeypatch.setattr(control, "get_store", lambda: store)
@@ -175,8 +176,9 @@ async def test_aioff_disables_all_groups_when_group_id_is_omitted(monkeypatch):
             ["aioff"],
         )
 
-    assert matcher.messages == ["AI disabled for all policy-enabled groups."]
-    assert store.ai_all_groups == [(False, 10000)]
+    assert matcher.messages == ["AI 总开关已关闭，AI 群名单保持不变。"]
+    assert store.ai_master == [(False, 10000)]
+    assert store.ai_disabled == []
 
 
 @pytest.mark.asyncio
@@ -209,8 +211,8 @@ async def test_aioff_all_disables_every_group(monkeypatch):
             ["aioff", "all"],
         )
 
-    assert matcher.messages == ["AI disabled for all policy-enabled groups."]
-    assert store.ai_all_groups == [(False, 10000)]
+    assert matcher.messages == ["AI 总开关已关闭，AI 群名单保持不变。"]
+    assert store.ai_master == [(False, 10000)]
 
 
 @pytest.mark.asyncio

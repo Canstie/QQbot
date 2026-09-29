@@ -21,7 +21,6 @@ from qq_personal_bot.core.models import PolicyDecision
 from qq_personal_bot.dsapi import (
     DSAPIError,
     DSAPILengthError,
-    dsapi_group_enabled,
     generate_mention_reply,
     generate_random_group_reply,
     generate_roast_reply,
@@ -477,7 +476,7 @@ async def _dispatch_onebot_message(
                 store.is_feature_enabled("ai.master")
                 and store.is_feature_enabled("ai.roast")
                 and config["enabled"]
-                and dsapi_group_enabled(config, internal_event.group_id)
+                and internal_event.group_id in config["enabled_groups"]
                 and store.is_quote_memory_group_enabled(internal_event.group_id)
             ):
                 response = "本群尚未开启语录锐评。"
