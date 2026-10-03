@@ -477,9 +477,9 @@ async def _dispatch_onebot_message(
                 and store.is_feature_enabled("ai.roast")
                 and config["enabled"]
                 and internal_event.group_id in config["enabled_groups"]
-                and store.is_quote_memory_group_enabled(internal_event.group_id)
+                and store.is_memory_group_enabled(internal_event.group_id)
             ):
-                response = "本群尚未开启语录锐评。"
+                response = "本群尚未开启人物图谱锐评。"
             else:
                 await flush_group_activity()
                 try:
@@ -494,7 +494,7 @@ async def _dispatch_onebot_message(
                     logger.warning("DSAPI roast reply failed: %s", exc)
                     response = "这次锐评没生成完整，稍后再试一次。"
                 if response is None:
-                    response = "这位群友在本群的有效语录还不足 3 条，暂时锐评不了。"
+                    response = "这位群友在本群的图谱还在整理或证据不足，等积累更多有内容的聊天后再试。"
         await _finish_with_response(
             matcher,
             bot,
@@ -749,11 +749,11 @@ def _record_group_activity(event: Any, *, self_id: int | str) -> None:
         return
 
     record_activity = store.is_feature_enabled("activity.record")
-    record_quote = (
+    record_memory = (
         store.is_feature_enabled("ai.roast")
-        and store.is_quote_memory_group_enabled(event.group_id)
+        and store.is_memory_group_enabled(event.group_id)
     )
-    if not record_activity and not record_quote:
+    if not record_activity and not record_memory:
         return
 
     get_activity_recorder(store).enqueue(
@@ -765,7 +765,9 @@ def _record_group_activity(event: Any, *, self_id: int | str) -> None:
             segments=tuple(event.segments),
             message_id=event.message_id,
             record_activity=record_activity,
-            record_quote=record_quote,
+            record_memory=record_memory,
+            platform_raw_message=getattr(event, "platform_raw_message", ""),
+            display_name=getattr(event, "display_name", ""),
         )
     )
 

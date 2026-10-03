@@ -30,7 +30,7 @@ async def test_quote_capture_still_runs_when_daily_activity_is_off(tmp_path, mon
     store.initialize(AppSettings(db_path=db_path, admins=()))
     store.set_group_enabled(123, True, actor_id=0)
     store.set_feature_enabled("activity.record", False)
-    store.set_quote_memory_groups([123], actor_id=0)
+    store.set_memory_groups([123], actor_id=0)
     monkeypatch.setattr(chat, "get_store", lambda: store)
 
     for message_id in range(1, 4):
@@ -47,7 +47,7 @@ async def test_quote_capture_still_runs_when_daily_activity_is_off(tmp_path, mon
             self_id=999,
         )
     await close_group_activity()
-    assert len(store.get_group_quotes(123, 456)) == 3
+    assert len(store.get_memory_messages(123, 456)) == 3
 
 
 @pytest.mark.asyncio
@@ -69,7 +69,7 @@ async def test_roast_command_uses_mentioned_target_in_same_group(monkeypatch):
     store = SimpleNamespace(
         is_feature_enabled=lambda feature_id: True,
         get_dsapi_config=lambda: {"enabled": True, "enabled_groups": [123]},
-        is_quote_memory_group_enabled=lambda group_id: group_id == 123,
+        is_memory_group_enabled=lambda group_id: group_id == 123,
     )
     monkeypatch.setattr(chat, "onebot_to_internal", lambda event, self_id: internal)
     monkeypatch.setattr(chat, "_record_group_activity", lambda *args, **kwargs: None)

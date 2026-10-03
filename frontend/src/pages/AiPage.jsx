@@ -95,6 +95,7 @@ export default function AiPage({ refreshVersion, onChanged }) {
   const [quoteGroups, setQuoteGroups] = useState("");
   const [quoteClearGroup, setQuoteClearGroup] = useState("");
   const [quoteClearUser, setQuoteClearUser] = useState("");
+  const [personGraph, setPersonGraph] = useState(null);
   const modelOptions = liveModelOptions || data?.model_options || DEFAULT_MODEL_OPTIONS;
   const visionEnabled = Boolean(modelOptions.find((item) => item.id === data?.model)?.vision);
 
@@ -114,17 +115,17 @@ export default function AiPage({ refreshVersion, onChanged }) {
   const loadStickers = () => get("/stickers").then((result) => {
     setStickers(result.stickers || []);
   }).catch((error) => setNotice(error.message));
-  const loadQuotes = () => get("/dsapi/quotes").then((result) => {
+  const loadQuotes = () => get("/dsapi/memory").then((result) => {
     setQuoteData(result);
     setQuoteGroups(formatIds(result.enabled_groups));
   }).catch((error) => setNotice(error.message));
 
   const saveQuotes = async () => {
     try {
-      const result = await put("/dsapi/quotes", { enabled_groups: parseIds(quoteGroups) });
+      const result = await put("/dsapi/memory", { enabled_groups: parseIds(quoteGroups) });
       setQuoteData(result);
       setQuoteGroups(formatIds(result.enabled_groups));
-      setNotice("自动语录库启用群已保存；仅记录之后的新消息");
+      setNotice("人物知识图谱启用群已保存；仅记录之后的新消息");
       onChanged();
     } catch (error) { setNotice(error.message); }
   };
@@ -136,11 +137,26 @@ export default function AiPage({ refreshVersion, onChanged }) {
       setNotice("请填写有效群号；QQ 号留空表示清空整个群");
       return;
     }
-    if (!window.confirm(userId ? `清空群 ${groupId} 中 QQ ${userId} 的语录？` : `清空群 ${groupId} 的全部语录？`)) return;
+    if (!window.confirm(userId ? `清空群 ${groupId} 中 QQ ${userId} 的消息和图谱？` : `清空群 ${groupId} 的全部消息和图谱？`)) return;
     try {
-      const result = await remove(`/dsapi/quotes/${groupId}${userId ? `?user_id=${userId}` : ""}`);
+      const result = await remove(`/dsapi/memory/${groupId}${userId ? `?user_id=${userId}` : ""}`);
       setQuoteData(result);
-      setNotice(`已删除 ${result.deleted} 条语录`);
+      setPersonGraph(null);
+      setNotice(`已删除 ${result.deleted} 条消息及关联记忆`);
+    } catch (error) { setNotice(error.message); }
+  };
+
+  const inspectMemory = async () => {
+    const groupId = Number(quoteClearGroup), userId = Number(quoteClearUser);
+    setPersonGraph(null);
+    if (!Number.isSafeInteger(groupId) || groupId <= 0 || !Number.isSafeInteger(userId) || userId <= 0) {
+      setNotice("查看人物记忆需要同时填写群号和 QQ 号");
+      return;
+    }
+    try {
+      const result = await get(`/dsapi/memory/${groupId}/${userId}`);
+      setPersonGraph(result);
+      setNotice(result.edges.length ? `已读取 ${result.edges.length} 条有来源的记忆` : "尚无可用人物记忆，需积累有内容的聊天");
     } catch (error) { setNotice(error.message); }
   };
 
@@ -381,16 +397,29 @@ export default function AiPage({ refreshVersion, onChanged }) {
             <p className="quiet-note">当前知识库会读取最多 {knowledgeDraft.context_messages || 10} 句群聊；连续 {Math.round((data?.history_idle_seconds || 1200) / 60)} 分钟无人对话后自动清空。</p>
             <Button tone="danger" icon={Eraser} onClick={clearHistory}>立即清空全部上下文</Button>
           </Panel>
-          <Panel title="自动语录库" eyebrow="Group quotes">
-            <p className="quiet-note">仅记录指定群的新文字消息，按群和 QQ 隔离；消息条数与保存时间均不设上限。使用 @我 锐评 @群友 或 ~锐评 @群友。</p>
+          <Panel title="人物知识图谱" eyebrow="Personal memory">
+            <p className="quiet-note">保存指定群的新消息及回复关系，按群和 QQ 整理有来源的经历、偏好、计划。AI 开启时自动提取，供自然交流和 ~锐评 @群友 使用。</p>
             <Field label="启用记录的群" hint="一行一个群号；锐评还需要本群已开启 AI。"><textarea value={quoteGroups} onChange={(event) => setQuoteGroups(event.target.value)} /></Field>
-            <Button icon={Save} onClick={saveQuotes}>保存语录库群设置</Button>
-            <p className="quiet-note">已保存 {quoteData?.message_count ?? 0} 条；关闭某群后旧语录仍保留，可在下方清空。</p>
+            <Button icon={Save} onClick={saveQuotes}>保存图谱群设置</Button>
+            <p className="quiet-note">已保存 {quoteData?.message_count ?? 0} 条消息、{quoteData?.edge_count ?? 0} 条图谱关系，待整理 {quoteData?.pending_messages ?? 0} 条。关闭采集后已有数据保留，可在下方清空。</p>
             <div className="form-grid form-grid--2">
-              <Field label="清空群号"><input value={quoteClearGroup} onChange={(event) => setQuoteClearGroup(event.target.value)} placeholder="群号" /></Field>
+              <Field label="群号"><input value={quoteClearGroup} onChange={(event) => setQuoteClearGroup(event.target.value)} placeholder="群号" /></Field>
               <Field label="指定 QQ（可留空）"><input value={quoteClearUser} onChange={(event) => setQuoteClearUser(event.target.value)} placeholder="留空清空整个群" /></Field>
             </div>
-            <Button tone="danger" icon={Eraser} onClick={clearQuotes}>清空语录</Button>
+            <div className="button-cluster">
+              <Button tone="secondary" icon={BookOpen} onClick={inspectMemory}>查看此人记忆</Button>
+              <Button tone="secondary" icon={RefreshCw} onClick={loadQuotes}>刷新统计</Button>
+              <Button tone="danger" icon={Eraser} onClick={clearQuotes}>清空人物记忆</Button>
+            </div>
+            {quoteData?.progress?.some((item) => item.last_error) && <p className="quiet-note">部分群提取失败，系统会自动重试；原始消息仍保留。</p>}
+            {personGraph && <div aria-label="人物记忆证据">
+              {!personGraph.edges.length && <p className="quiet-note">尚无可靠记忆。</p>}
+              {personGraph.edges.map((edge) => <details key={edge.id}>
+                <summary>{edge.statement} · {edge.certainty === "tentative" ? "待确认" : edge.certainty === "observed" ? "表达观察" : "本人陈述"}</summary>
+                <p className="quiet-note">{edge.object_label} · {new Date(edge.last_seen * 1000).toLocaleString("zh-CN")}</p>
+                {edge.evidence.map((item) => <blockquote key={item.id}>QQ {item.user_id} · {new Date(item.created_at * 1000).toLocaleString("zh-CN")}<br />{item.content}</blockquote>)}
+              </details>)}
+            </div>}
           </Panel>
         </div>
         <Panel title="随机表情包库" eyebrow="Sticker pool" className="span-12" actions={<Button icon={Upload} onClick={uploadSticker}>上传表情包</Button>}>

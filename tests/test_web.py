@@ -375,7 +375,7 @@ def test_quote_memory_config_and_scoped_deletion_api(tmp_path, monkeypatch):
     assert response.status_code == 200
     assert response.json()["enabled_groups"] == [123]
     store = get_store()
-    store.record_group_quote_messages(
+    store.record_memory_messages(
         [
             {"group_id": 123, "user_id": 456, "message_id": 1, "raw_message": "第一句"},
             {"group_id": 123, "user_id": 789, "message_id": 2, "raw_message": "第二句"},

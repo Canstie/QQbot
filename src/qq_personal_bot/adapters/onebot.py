@@ -55,6 +55,10 @@ def onebot_to_internal(event: Any, self_id: int | str) -> MessageEvent:
     if group_id is not None:
         group_id = int(group_id)
 
+    sender = getattr(event, "sender", None)
+    display_name = (sender.get("card") or sender.get("nickname") or "") if isinstance(sender, dict) else (
+        getattr(sender, "card", None) or getattr(sender, "nickname", None) or ""
+    )
     return MessageEvent(
         platform="onebot.v11",
         message_id=getattr(event, "message_id", ""),
@@ -65,6 +69,7 @@ def onebot_to_internal(event: Any, self_id: int | str) -> MessageEvent:
         segments=tuple(segments),
         is_at_bot=is_at_bot,
         timestamp=float(getattr(event, "time", time.time())),
+        display_name=str(display_name),
     )
 
 

@@ -443,18 +443,21 @@ def create_app():
         return await get_dsapi_config()
 
     @app.get("/api/dsapi/quotes")
-    async def get_quote_memory_config() -> dict:
-        return get_store().get_quote_memory_config()
+    @app.get("/api/dsapi/memory")
+    async def get_memory_config() -> dict:
+        return get_store().get_memory_config()
 
     @app.put("/api/dsapi/quotes")
+    @app.put("/api/dsapi/memory")
     async def save_quote_memory_config(payload: QuoteMemoryPayload, request: Request) -> dict:
         require_token(request)
         try:
-            return get_store().set_quote_memory_groups(payload.enabled_groups, actor_id=0)
+            return get_store().set_memory_groups(payload.enabled_groups, actor_id=0)
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.delete("/api/dsapi/quotes/{group_id}")
+    @app.delete("/api/dsapi/memory/{group_id}")
     async def clear_quote_memory(
         group_id: int,
         request: Request,
@@ -462,14 +465,21 @@ def create_app():
     ) -> dict:
         require_token(request)
         try:
-            deleted = get_store().clear_quote_messages(
+            deleted = get_store().clear_memory(
                 group_id,
                 user_id=user_id,
                 actor_id=0,
             )
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"deleted": deleted, **get_store().get_quote_memory_config()}
+        return {"deleted": deleted, **get_store().get_memory_config()}
+
+    @app.get("/api/dsapi/memory/{group_id}/{user_id}")
+    async def get_person_memory(group_id: int, user_id: int, request: Request) -> dict:
+        require_token(request)
+        if group_id <= 0 or user_id <= 0:
+            raise HTTPException(status_code=400, detail="群号和 QQ 号必须为正整数")
+        return get_store().get_person_graph(group_id, user_id, limit=40)
 
     @app.post("/api/dsapi/models/refresh")
     async def refresh_dsapi_models(request: Request) -> dict:

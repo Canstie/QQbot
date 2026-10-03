@@ -15,6 +15,7 @@ class MessageEvent:
     segments: Sequence[Mapping[str, Any]] = field(default_factory=tuple)
     is_at_bot: bool = False
     timestamp: float = 0.0
+    display_name: str = ""
 
 
 @dataclass(frozen=True)

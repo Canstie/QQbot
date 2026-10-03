@@ -16,7 +16,7 @@ class RecordingStore:
         self.batches.append(activities)
         return len(activities)
 
-    def record_group_quote_messages(self, activities: list[dict[str, Any]]) -> int:
+    def record_memory_messages(self, activities: list[dict[str, Any]]) -> int:
         self.quote_batches.append(activities)
         return len(activities)
 
@@ -58,7 +58,7 @@ async def test_quote_recording_does_not_require_daily_activity() -> None:
             segments=({"type": "text", "data": {"text": "我说过的话"}},),
             message_id=9,
             record_activity=False,
-            record_quote=True,
+            record_memory=True,
         )
     )
     await recorder.close()

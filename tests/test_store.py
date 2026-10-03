@@ -467,11 +467,11 @@ def test_dsapi_master_switch_preserves_independent_ai_groups(tmp_path):
     assert reopened.is_feature_enabled("ai.master") is True
 
 
-def test_quote_memory_is_group_scoped_unlimited_and_clearable(tmp_path):
+def test_memory_archive_is_group_scoped_unlimited_and_clearable(tmp_path):
     db_path = tmp_path / "policy.sqlite3"
     store = PolicyStore(db_path)
     store.initialize(AppSettings(db_path=db_path, admins=()))
-    assert store.set_quote_memory_groups([123], actor_id=1)["enabled_groups"] == [123]
+    assert store.set_memory_groups([123], actor_id=1)["enabled_groups"] == [123]
 
     records = [
         {
@@ -484,40 +484,40 @@ def test_quote_memory_is_group_scoped_unlimited_and_clearable(tmp_path):
         }
         for index in range(1, 251)
     ]
-    assert store.record_group_quote_messages(records) == 250
-    assert store.record_group_quote_messages(records[:1]) == 0
-    assert store.record_group_quote_messages(
+    assert store.record_memory_messages(records) == 250
+    assert store.record_memory_messages(records[:1]) == 0
+    assert store.record_memory_messages(
         [{**records[0], "group_id": 789, "message_id": 999}]
     ) == 0
-    assert len(store.get_group_quotes(123, 456)) == 250
-    evidence = {item["content"] for item in store.get_group_quote_evidence(123, 456)}
-    assert len(evidence) > 200
-    assert {"第 1 条发言", "第 250 条发言"} <= evidence
-    assert store.get_group_quotes(789, 456) == []
-    assert store.get_quote_memory_config()["message_count"] == 250
-    store.set_quote_memory_groups([], actor_id=1)
-    assert store.record_group_quote_messages([{**records[0], "message_id": 251}]) == 0
-    assert store.get_quote_memory_config()["message_count"] == 250
+    assert len(store.get_memory_messages(123, 456)) == 250
+    assert store.get_memory_messages(789, 456) == []
+    assert store.get_memory_config()["message_count"] == 250
+    store.set_memory_groups([], actor_id=1)
+    assert store.record_memory_messages([{**records[0], "message_id": 251}]) == 0
+    assert store.get_memory_config()["message_count"] == 250
 
     reopened = PolicyStore(db_path)
     reopened.initialize(AppSettings(db_path=db_path, admins=()))
-    assert not reopened.is_quote_memory_group_enabled(123)
-    assert reopened.clear_quote_messages(123, user_id=456, actor_id=1) == 250
-    assert reopened.get_group_quotes(123, 456) == []
+    assert not reopened.is_memory_group_enabled(123)
+    assert reopened.clear_memory(123, user_id=456, actor_id=1) == 250
+    assert reopened.get_memory_messages(123, 456) == []
 
 
-def test_quote_memory_stores_only_speaker_text(tmp_path):
+def test_memory_archive_preserves_media_replies_and_commands(tmp_path):
     db_path = tmp_path / "policy.sqlite3"
     store = PolicyStore(db_path)
     store.initialize(AppSettings(db_path=db_path, admins=()))
-    store.set_quote_memory_groups([123], actor_id=1)
+    store.set_memory_groups([123], actor_id=1)
     rows = [
         {"group_id": 123, "user_id": 456, "message_id": 1, "raw_message": "看图", "segments": ({"type": "image", "data": {"file": "a.jpg"}},)},
         {"group_id": 123, "user_id": 456, "message_id": 2, "raw_message": "~锐评 @某人", "segments": ()},
         {"group_id": 123, "user_id": 456, "message_id": 3, "raw_message": "原话", "segments": ({"type": "reply", "data": {"id": 9}}, {"type": "text", "data": {"text": "原话"}})},
     ]
-    assert store.record_group_quote_messages(rows) == 1
-    assert store.get_group_quotes(123, 456)[0]["content"] == "原话"
+    assert store.record_memory_messages(rows) == 3
+    saved = store.get_memory_messages(123, 456)
+    assert saved[0]["content"] == "[回复]原话"
+    assert saved[0]["reply_to"] == "9"
+    assert saved[-1]["segments"] == list(rows[0]["segments"])
 
 
 def test_legacy_flash_models_migrate_to_current_flash(tmp_path):

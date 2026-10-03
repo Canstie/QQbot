@@ -79,6 +79,16 @@ def test_onebot_event_conversion_keeps_event_reply_message():
     assert converted.platform_raw_message == str(event.message)
 
 
+def test_onebot_event_conversion_preserves_display_name_snapshot():
+    from types import SimpleNamespace
+
+    event = FakeEvent([FakeSegment("text", {"text": "你好"})])
+    event.sender = SimpleNamespace(card="群名片", nickname="昵称")
+    assert onebot_to_internal(event, self_id=99999).display_name == "群名片"
+    event.sender = {"card": "", "nickname": "改名后"}
+    assert onebot_to_internal(event, self_id=99999).display_name == "改名后"
+
+
 def test_onebot_event_conversion_adds_reply_sender_to_existing_segment():
     event = FakeEvent([FakeSegment("reply", {"id": "123456"})])
     event.reply = FakeReply([FakeSegment("image", {"file": "classic.jpg"})])

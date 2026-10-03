@@ -19,7 +19,9 @@ class GroupActivityRecord:
     segments: tuple[Any, ...]
     message_id: int | str = ""
     record_activity: bool = True
-    record_quote: bool = False
+    record_memory: bool = False
+    platform_raw_message: str = ""
+    display_name: str = ""
 
 
 class GroupActivityRecorder:
@@ -89,6 +91,8 @@ class GroupActivityRecorder:
                     "raw_message": record.raw_message,
                     "segments": record.segments,
                     "message_id": record.message_id,
+                    "platform_raw_message": record.platform_raw_message,
+                    "display_name": record.display_name,
                 }
                 for record in batch
             ]
@@ -99,11 +103,11 @@ class GroupActivityRecorder:
             except Exception as exc:  # noqa: BLE001 - keep the writer alive
                 logger.exception(f"Failed to persist group activity batch: {exc}")
             try:
-                quote_batch = [item for item, record in zip(activities, batch, strict=True) if record.record_quote]
-                if quote_batch:
-                    await asyncio.to_thread(self.store.record_group_quote_messages, quote_batch)
+                memory_batch = [item for item, record in zip(activities, batch, strict=True) if record.record_memory]
+                if memory_batch:
+                    await asyncio.to_thread(self.store.record_memory_messages, memory_batch)
             except Exception as exc:  # noqa: BLE001 - keep the writer alive
-                logger.exception(f"Failed to persist group quote batch: {exc}")
+                logger.exception(f"Failed to persist group memory batch: {exc}")
             finally:
                 for _ in batch:
                     self.queue.task_done()
