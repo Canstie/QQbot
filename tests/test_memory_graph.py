@@ -10,6 +10,7 @@ from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.dsapi import generate_mention_reply, generate_roast_reply
 from qq_personal_bot.memory_graph import (
     build_graph_guidance,
+    get_memory_status,
     parse_claims,
     refresh_memory_graph,
 )
@@ -247,6 +248,8 @@ def test_graph_api_requires_login_and_returns_sources_and_scoped_clear(memory, m
     with TestClient(web.create_app()) as client:
         assert client.get("/api/dsapi/memory/123/456").status_code == 401
         client.post("/login", data={"password": "admin-test"})
+        status = client.get("/api/dsapi/memory").json()
+        assert status["extraction_status"][0]["state"] == "idle"
         response = client.get("/api/dsapi/memory/123/456")
         assert response.status_code == 200
         assert len(response.json()["edges"]) == 2
@@ -254,6 +257,10 @@ def test_graph_api_requires_login_and_returns_sources_and_scoped_clear(memory, m
         assert client.delete("/api/dsapi/memory/123?user_id=456").json()["deleted"] == 3
         assert client.get("/api/dsapi/memory/123/456").json()["edges"] == []
         assert len(client.get("/api/dsapi/memory/789/456").json()["edges"]) == 2
+        store.set_feature_enabled("ai.master", False)
+        status = client.get("/api/dsapi/memory").json()
+        assert status["extraction_status"][0]["state"] == "paused"
+        assert status["extraction_status"][0]["detail"] == "AI 总开关已关闭"
 
 
 def test_retrieval_finds_older_relevant_memories_and_cjk_substrings(memory):
@@ -287,3 +294,74 @@ def test_batch_includes_explicit_old_reply_beyond_recent_context(memory):
                                               {"type":"text","data":{"text":"已经去了"}}]}])
     batch = store.claim_memory_batch(123, force=True)
     assert any(m["message_id"] == "3" for m in batch["messages"])
+
+
+@pytest.mark.asyncio
+async def test_memory_only_group_extracts_without_enabling_chat_or_roast(memory, monkeypatch):
+    store, settings = memory
+    store.set_dsapi_config(enabled=True, enabled_groups=[], knowledge_enabled=False,
+                           knowledge_prompt="", history_turns=2, clear_history=False, actor_id=0)
+    record(store)
+    calls = []
+
+    def provider(settings, messages, **kwargs):
+        calls.append(messages)
+        data = json.loads(messages[1]["content"])
+        return json.dumps({"claims": claims_for(data)})
+
+    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion_with_fallback", provider)
+    assert get_memory_status(store, settings)["extraction_status"][0]["state"] == "queued"
+    assert await refresh_memory_graph(store, settings, 123)
+    assert len(store.get_person_graph(123, 456)["edges"]) == 2
+    assert store.get_dsapi_config()["enabled_groups"] == []
+    assert await generate_roast_reply(group_id=123, target_user_id=456, settings=settings, store=store) is None
+    event = MessageEvent(platform="onebot.v11", group_id=123, user_id=456, message_id=99,
+                         raw_message="你好", is_at_bot=True)
+    assert await generate_mention_reply(None, event, settings, store) is None
+    assert len(calls) == 1
+    assert get_memory_status(store, settings)["extraction_status"][0]["state"] == "idle"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("gate,reason", [
+    ("ai.master", "AI 总开关已关闭"), ("ai.roast", "人物记忆与锐评功能已关闭"),
+    ("config", "AI 总开关已关闭"), ("key", "未配置模型 API Key"),
+    ("policy", "本群未通过群策略"), ("collection", "本群未开启图谱采集"),
+])
+async def test_paused_extraction_explains_gate_and_keeps_backlog(memory, monkeypatch, gate, reason):
+    from dataclasses import replace
+
+    store, settings = memory
+    record(store)
+    if gate in {"ai.master", "ai.roast"}:
+        store.set_feature_enabled(gate, False)
+    elif gate == "config":
+        store.set_setting("dsapi_enabled", "0")
+    elif gate == "key":
+        settings = replace(settings, dsapi_api_key="")
+    elif gate == "policy":
+        store.set_group_enabled(123, False, actor_id=0)
+    elif gate == "collection":
+        store.set_memory_groups([], actor_id=0)
+
+    def unexpected_call(*args, **kwargs):
+        pytest.fail("Paused group must not call the model")
+
+    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion_with_fallback", unexpected_call)
+    assert not await refresh_memory_graph(store, settings, 123)
+    status = get_memory_status(store, settings)
+    assert status["pending_messages"] == 3
+    assert status["extraction_status"][0]["state"] == "paused"
+    assert reason in status["extraction_status"][0]["detail"]
+    assert status["progress"][0]["cursor"] == 0
+
+
+def test_memory_status_distinguishes_batching_running_and_retry(memory):
+    store, settings = memory
+    store.record_memory_messages([{"group_id":123, "user_id":456, "message_id":1,
+                                   "raw_message":"最近一条消息"}])
+    assert get_memory_status(store, settings)["extraction_status"][0]["state"] == "waiting"
+    batch = store.claim_memory_batch(123, force=True)
+    assert get_memory_status(store, settings)["extraction_status"][0]["state"] == "processing"
+    store.fail_memory_batch(batch)
+    assert get_memory_status(store, settings)["extraction_status"][0]["state"] == "retrying"

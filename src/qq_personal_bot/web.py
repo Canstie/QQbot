@@ -46,6 +46,7 @@ from qq_personal_bot.lua_runner import (
     validate_lua_command,
     validate_lua_script,
 )
+from qq_personal_bot.memory_graph import get_memory_status
 from qq_personal_bot.menu_recipes import is_supported_image_file
 from qq_personal_bot.miniapp import (
     XiaoheiheCaptchaRequired,
@@ -445,16 +446,18 @@ def create_app():
     @app.get("/api/dsapi/quotes")
     @app.get("/api/dsapi/memory")
     async def get_memory_config() -> dict:
-        return get_store().get_memory_config()
+        return await asyncio.to_thread(get_memory_status, get_store(), get_settings())
 
     @app.put("/api/dsapi/quotes")
     @app.put("/api/dsapi/memory")
     async def save_quote_memory_config(payload: QuoteMemoryPayload, request: Request) -> dict:
         require_token(request)
         try:
-            return get_store().set_memory_groups(payload.enabled_groups, actor_id=0)
+            get_store().set_memory_groups(payload.enabled_groups, actor_id=0)
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        return await get_memory_config()
 
     @app.delete("/api/dsapi/quotes/{group_id}")
     @app.delete("/api/dsapi/memory/{group_id}")
@@ -472,7 +475,7 @@ def create_app():
             )
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"deleted": deleted, **get_store().get_memory_config()}
+        return {"deleted": deleted, **await get_memory_config()}
 
     @app.get("/api/dsapi/memory/{group_id}/{user_id}")
     async def get_person_memory(group_id: int, user_id: int, request: Request) -> dict:

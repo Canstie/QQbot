@@ -103,7 +103,12 @@ class MemoryGraphStore:
                 "ON p.group_id=m.group_id WHERE m.id>p.cursor"
             ).fetchone()[0]
             progress = [dict(r) for r in conn.execute(
-                "SELECT group_id, cursor, failures, last_error, updated_at FROM memory_progress"
+                "SELECT p.group_id, p.cursor, p.failures, p.last_error, p.updated_at, "
+                "p.lease_until, p.retry_after, "
+                "(SELECT COUNT(*) FROM memory_messages m WHERE m.group_id=p.group_id "
+                "AND m.id>p.cursor) AS pending_messages, "
+                "(SELECT MIN(m.created_at) FROM memory_messages m WHERE m.group_id=p.group_id "
+                "AND m.id>p.cursor) AS oldest_pending_at FROM memory_progress p"
             )]
         return {"enabled_groups": self.memory_enabled_groups(), "group_counts": counts,
                 "message_count": sum(counts.values()), "edge_count": edges,

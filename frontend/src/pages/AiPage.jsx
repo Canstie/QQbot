@@ -180,6 +180,20 @@ export default function AiPage({ refreshVersion, onChanged }) {
     void loadQuotes();
   }, [refreshVersion]);
   useEffect(() => {
+    let active = true;
+    let pending = false;
+    const timer = window.setInterval(async () => {
+      if (pending) return;
+      pending = true;
+      try {
+        const result = await get("/dsapi/memory");
+        if (active) setQuoteData(result);
+      } catch { /* Manual refresh still reports connection errors. */ }
+      finally { pending = false; }
+    }, 15000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, []);
+  useEffect(() => {
     if (!createOpen) return undefined;
     const closeOnEscape = (event) => {
       if (event.key === "Escape") setCreateOpen(false);
@@ -398,10 +412,15 @@ export default function AiPage({ refreshVersion, onChanged }) {
             <Button tone="danger" icon={Eraser} onClick={clearHistory}>立即清空全部上下文</Button>
           </Panel>
           <Panel title="人物知识图谱" eyebrow="Personal memory">
-            <p className="quiet-note">保存指定群的新消息及回复关系，按群和 QQ 整理有来源的经历、偏好、计划。AI 开启时自动提取，供自然交流和 ~锐评 @群友 使用。</p>
-            <Field label="启用记录的群" hint="一行一个群号；锐评还需要本群已开启 AI。"><textarea value={quoteGroups} onChange={(event) => setQuoteGroups(event.target.value)} /></Field>
+            <p className="quiet-note">保存指定群的新消息及回复关系，按群和 QQ 整理有来源的经历、偏好、计划。AI 总开关开启时后台自动提取，供自然交流和 ~锐评 @群友 使用。</p>
+            <Field label="启用记录的群" hint="一行一个群号。后台整理按此名单运行；群内 AI 回复和锐评另由 AI 聊天群名单控制。"><textarea value={quoteGroups} onChange={(event) => setQuoteGroups(event.target.value)} /></Field>
             <Button icon={Save} onClick={saveQuotes}>保存图谱群设置</Button>
             <p className="quiet-note">已保存 {quoteData?.message_count ?? 0} 条消息、{quoteData?.edge_count ?? 0} 条图谱关系，待整理 {quoteData?.pending_messages ?? 0} 条。关闭采集后已有数据保留，可在下方清空。</p>
+            <div role="status" aria-live="polite">
+              {quoteData?.extraction_status?.map((item) => <p className="quiet-note" key={item.group_id}>
+                群 {item.group_id}：{item.detail}（待整理 {item.pending_messages} 条）
+              </p>)}
+            </div>
             <div className="form-grid form-grid--2">
               <Field label="群号"><input value={quoteClearGroup} onChange={(event) => setQuoteClearGroup(event.target.value)} placeholder="群号" /></Field>
               <Field label="指定 QQ（可留空）"><input value={quoteClearUser} onChange={(event) => setQuoteClearUser(event.target.value)} placeholder="留空清空整个群" /></Field>

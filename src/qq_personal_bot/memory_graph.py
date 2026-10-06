@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -86,19 +87,63 @@ def parse_claims(response: str, batch: dict[str, Any]) -> list[dict[str, Any]]:
     return result
 
 
-def graph_enabled(store: PolicyStore, settings: AppSettings, group_id: int) -> bool:
+def memory_pause_reason(store: PolicyStore, settings: AppSettings, group_id: int) -> str:
+    """Collection opts a group into extraction; conversational AI has a separate allowlist."""
+    if not store.is_memory_group_enabled(group_id):
+        return "本群未开启图谱采集"
+    if not settings.dsapi_api_key:
+        return "未配置模型 API Key"
+    if not store.is_feature_enabled("ai.master", settings.dsapi_enabled):
+        return "AI 总开关已关闭"
+    if not store.is_feature_enabled("ai.roast"):
+        return "人物记忆与锐评功能已关闭"
     config = store.get_dsapi_config()
+    if not config["enabled"]:
+        return "AI 总开关已关闭"
     policy_allows = (store.is_group_enabled(group_id) if store.get_mode() == "allowlist"
                      else not store.is_group_blocked(group_id))
-    return bool(settings.dsapi_api_key and policy_allows
-                and store.is_feature_enabled("ai.master", settings.dsapi_enabled)
-                and store.is_feature_enabled("ai.roast") and config["enabled"]
-                and group_id in config["enabled_groups"] and store.is_memory_group_enabled(group_id))
+    if not policy_allows:
+        return "本群未通过群策略，请检查启用群或屏蔽群设置"
+    return ""
+
+
+def graph_enabled(store: PolicyStore, settings: AppSettings, group_id: int) -> bool:
+    """Sending a roast still requires the independent conversational AI group switch."""
+    return (not memory_pause_reason(store, settings, group_id)
+            and group_id in store.get_dsapi_config()["enabled_groups"])
+
+
+def get_memory_status(store: PolicyStore, settings: AppSettings) -> dict[str, Any]:
+    result = store.get_memory_config()
+    progress = {p["group_id"]: p for p in result["progress"]}
+    groups = set(result["enabled_groups"]) | {int(g) for g in result["group_counts"]}
+    statuses = []
+    now = time.time()
+    for group_id in sorted(groups):
+        item = progress.get(group_id, {})
+        pending = item.get("pending_messages", 0)
+        reason = memory_pause_reason(store, settings, group_id)
+        if reason:
+            state, detail = "paused", reason
+        elif item.get("lease_until", 0) > now:
+            state, detail = "processing", "正在整理消息"
+        elif item.get("retry_after", 0) > now:
+            state, detail = "retrying", "提取失败，等待自动重试"
+        elif pending >= 12 or (pending and item.get("oldest_pending_at", now) <= now - 600):
+            state, detail = "queued", "等待后台整理"
+        elif pending:
+            state, detail = "waiting", "等待积累 12 条消息或最早待处理消息满 10 分钟"
+        else:
+            state, detail = "idle", "暂无待整理消息"
+        statuses.append({"group_id": group_id, "state": state, "detail": detail,
+                         "pending_messages": pending, "updated_at": item.get("updated_at", 0)})
+    result["extraction_status"] = statuses
+    return result
 
 
 async def refresh_memory_graph(store: PolicyStore, settings: AppSettings, group_id: int,
                                *, force: bool = False) -> bool:
-    if not await asyncio.to_thread(graph_enabled, store, settings, group_id):
+    if await asyncio.to_thread(memory_pause_reason, store, settings, group_id):
         return False
     batch = await asyncio.to_thread(store.claim_memory_batch, group_id, force=force)
     if batch is None:
