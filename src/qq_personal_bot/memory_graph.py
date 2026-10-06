@@ -28,9 +28,59 @@ EXTRACTION_PROMPT = """你是群聊人物记忆整理器，将消息整理为有
 object_type（topic/event/person）、object_key（简短规范主题；person 必须是消息中出现的QQ）、
 object_label（对象名称）、statement（不超过180字的准确记忆）、certainty（stated/tentative/observed）、
 source_ids（输入消息的 id 整数数组，至少一条为本人的原话，必须包含一条 new_ids 中的消息）。
+source_ids 只能使用消息的内部 id，禁止填 QQ 号或平台消息编号；reply_to_id 是引用消息的内部 id。
 stated 只表示本人说过，不表示客观核实；愿望和计划用 tentative，表达习惯用 observed。
 需要上下文的结论必须引用相关上下文消息。
 优先同一话题合并来源，保留本人否认、纠正、变化。不要为了有结果而填充。"""
+
+
+def _identifier(value: Any) -> int | None:
+    if type(value) is int:
+        return value
+    if isinstance(value, str) and re.fullmatch(r"[0-9]{1,20}", value.strip()):
+        return int(value.strip())
+    return None
+
+
+def _parse_claim(item: Any, messages: dict[int, dict[str, Any]], new_ids: set[int]) -> dict[str, Any]:
+    if not isinstance(item, dict):
+        raise ValueError("invalid claim")  # noqa: TRY004 - invalid model JSON schema
+    user_id = _identifier(item.get("user_id"))
+    raw_sources = item.get("source_ids")
+    if not isinstance(raw_sources, list) or not 1 <= len(raw_sources) <= 12:
+        raise ValueError("invalid source list")
+    sources = [_identifier(s) for s in raw_sources]
+    if (user_id is None or any(s is None or s not in messages for s in sources)
+            or not set(sources).intersection(new_ids)
+            or not any(messages[s]["user_id"] == user_id for s in sources)):
+        raise ValueError("claim lacks attributable evidence")
+    for key, allowed in (("predicate", PREDICATES), ("object_type", {"topic", "event", "person"}),
+                         ("certainty", {"stated", "tentative", "observed"})):
+        if not isinstance(item.get(key), str) or item[key] not in allowed:
+            raise ValueError(f"invalid {key}")
+    cleaned = {k: item[k] for k in ("predicate", "object_type", "certainty")}
+    cleaned["user_id"] = user_id
+    for key, length in (("object_key", 100), ("object_label", 100), ("statement", 180)):
+        text = item.get(key)
+        if key == "object_key" and cleaned["object_type"] == "person" and type(text) is int:
+            text = str(text)
+        if not isinstance(text, str) or not text.strip() or len(text) > length:
+            raise ValueError("invalid claim text")
+        cleaned[key] = text.strip()
+    if cleaned["object_type"] == "person":
+        target_id = _identifier(cleaned["object_key"])
+        cited_people = {messages[s]["user_id"] for s in sources}
+        for source_id in sources:
+            cited_people.update(messages[source_id]["mentions"])
+        if target_id is None or target_id not in cited_people or target_id == user_id:
+            raise ValueError("unidentified person")
+        cleaned["object_key"] = str(target_id)
+    if cleaned["predicate"] == "plan":
+        cleaned["certainty"] = "tentative"
+    elif cleaned["predicate"] == "expression":
+        cleaned["certainty"] = "observed"
+    cleaned["source_ids"] = sorted(set(sources))
+    return cleaned
 
 
 def parse_claims(response: str, batch: dict[str, Any]) -> list[dict[str, Any]]:
@@ -40,50 +90,19 @@ def parse_claims(response: str, batch: dict[str, Any]) -> list[dict[str, Any]]:
     payload = json.loads(value)
     if not isinstance(payload, dict) or not isinstance(payload.get("claims"), list):
         raise ValueError("missing claims array")  # noqa: TRY004 - invalid JSON schema
-    if len(payload["claims"]) > 12:
-        raise ValueError("too many claims")
     messages = {m["id"]: m for m in batch["messages"]}
-    people = {m["user_id"] for m in messages.values()}
-    for m in messages.values():
-        people.update(m["mentions"])
+    new_ids = set(batch["new_ids"])
     result = []
-    for item in payload["claims"]:
-        if not isinstance(item, dict):
-            raise ValueError("invalid claim")  # noqa: TRY004 - invalid JSON schema
-        user_id = item.get("user_id")
-        sources = item.get("source_ids")
-        if (type(user_id) is not int or user_id not in people
-                or not isinstance(sources, list) or not 1 <= len(sources) <= 12
-                or any(type(s) is not int or s not in messages for s in sources)
-                or not set(sources).intersection(batch["new_ids"])
-                or not any(messages[s]["user_id"] == user_id for s in sources)):
-            raise ValueError("claim lacks attributable evidence")
-        if item.get("predicate") not in PREDICATES:
-            raise ValueError("invalid predicate")
-        if item.get("object_type") not in {"topic", "event", "person"}:
-            raise ValueError("invalid object type")
-        if item.get("certainty") not in {"stated", "tentative", "observed"}:
-            raise ValueError("invalid certainty")
-        cleaned = {k: item[k] for k in ("user_id", "predicate", "object_type", "certainty")}
-        for key, length in (("object_key", 100), ("object_label", 100), ("statement", 180)):
-            text = item.get(key)
-            if not isinstance(text, str) or not text.strip() or len(text) > length:
-                raise ValueError("invalid claim text")
-            cleaned[key] = text.strip()
-        if cleaned["object_type"] == "person":
-            key = cleaned["object_key"]
-            cited_people = {messages[s]["user_id"] for s in sources}
-            for s in sources:
-                cited_people.update(messages[s]["mentions"])
-            if not key.isdigit() or int(key) not in cited_people or int(key) == user_id:
-                raise ValueError("unidentified person")
-            cleaned["object_key"] = str(int(key))
-        if cleaned["predicate"] == "plan":
-            cleaned["certainty"] = "tentative"
-        elif cleaned["predicate"] == "expression":
-            cleaned["certainty"] = "observed"
-        cleaned["source_ids"] = sorted(set(sources))
-        result.append(cleaned)
+    # One malformed/unattributed claim must not discard the other valid evidence or block the queue.
+    for index, item in enumerate(payload["claims"][:48]):
+        try:
+            result.append(_parse_claim(item, messages, new_ids))
+        except ValueError as exc:
+            # Only our fixed validation messages, never model output or personal data, enter logs.
+            logger.warning("Memory graph rejected claim group=%s index=%s reason=%s",
+                           batch["group_id"], index, exc)
+        if len(result) >= 12:
+            break
     return result
 
 
@@ -128,7 +147,7 @@ def get_memory_status(store: PolicyStore, settings: AppSettings) -> dict[str, An
         elif item.get("lease_until", 0) > now:
             state, detail = "processing", "正在整理消息"
         elif item.get("retry_after", 0) > now:
-            state, detail = "retrying", "提取失败，等待自动重试"
+            state, detail = "retrying", item.get("last_error") or "提取失败，等待自动重试"
         elif pending >= 12 or (pending and item.get("oldest_pending_at", now) <= now - 600):
             state, detail = "queued", "等待后台整理"
         elif pending:
@@ -153,9 +172,10 @@ async def refresh_memory_graph(store: PolicyStore, settings: AppSettings, group_
         from qq_personal_bot.dsapi import _request_chat_completion_with_fallback
 
         zone = timezone(timedelta(hours=8))
-        messages = [{"id": m["id"], "message_id": m["message_id"], "user_id": m["user_id"],
+        source_by_message_id = {m["message_id"]: m["id"] for m in batch["messages"] if m["message_id"]}
+        messages = [{"id": m["id"], "user_id": m["user_id"],
                      "name": m["display_name"][:60], "content": m["content"][:600],
-                     "reply_to": m["reply_to"], "mentions": m["mentions"],
+                     "reply_to_id": source_by_message_id.get(m["reply_to"]), "mentions": m["mentions"],
                      "time": datetime.fromtimestamp(m["created_at"], zone).isoformat()}
                     for m in sorted(batch["messages"], key=lambda m: (m["created_at"], m["id"]))]
         config = store.get_dsapi_config()
@@ -174,7 +194,10 @@ async def refresh_memory_graph(store: PolicyStore, settings: AppSettings, group_
         await asyncio.to_thread(store.fail_memory_batch, batch)
         raise
     except Exception as exc:  # noqa: BLE001 - keep malformed/network responses retryable
-        await asyncio.to_thread(store.fail_memory_batch, batch)
+        reasons = {"JSONDecodeError": "模型返回的 JSON 无法解析", "ValueError": "模型返回的记忆结构不合规范",
+                   "DSAPILengthError": "模型返回内容被截断", "DSAPIError": "模型服务请求失败"}
+        reason = reasons.get(type(exc).__name__, "图谱提取遇到内部错误")
+        await asyncio.to_thread(store.fail_memory_batch, batch, reason=reason + "，等待自动重试")
         logger.warning("Memory graph extraction failed group=%s error_type=%s", group_id, type(exc).__name__)
         return False
 

@@ -273,13 +273,13 @@ class MemoryGraphStore:
             )
         return True
 
-    def fail_memory_batch(self, batch: Mapping[str, Any]) -> None:
+    def fail_memory_batch(self, batch: Mapping[str, Any], *, reason: str = "提取失败，等待自动重试") -> None:
         with self._connect() as conn:
             conn.execute(
                 "UPDATE memory_progress SET lease='',lease_until=0,failures=failures+1,"
                 "retry_after=?+MIN(3600,60*(1<<MIN(failures,6))),last_error=? "
                 "WHERE group_id=? AND lease=?",
-                (time.time(), "提取失败，等待自动重试", batch["group_id"], batch["lease"]),
+                (time.time(), reason[:120], batch["group_id"], batch["lease"]),
             )
 
     def get_person_graph(self, group_id: int, user_id: int, *, topic: str = "", limit: int = 20):

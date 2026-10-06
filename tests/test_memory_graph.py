@@ -103,8 +103,7 @@ def test_extractor_rejects_unattributed_or_invalid_claims(memory, field, value):
     batch = store.claim_memory_batch(123, force=True)
     claim = claims_for(batch)[0]
     claim[field] = value
-    with pytest.raises(ValueError):
-        parse_claims(json.dumps({"claims": [claim]}), batch)
+    assert parse_claims(json.dumps({"claims": [claim]}), batch) == []
 
 
 def test_plans_are_always_tentative_and_unknown_people_rejected(memory):
@@ -115,8 +114,7 @@ def test_plans_are_always_tentative_and_unknown_people_rejected(memory):
     claim["certainty"] = "stated"
     assert parse_claims(json.dumps({"claims":[claim]}), batch)[0]["certainty"] == "tentative"
     claim.update(object_type="person", object_key="789")
-    with pytest.raises(ValueError):
-        parse_claims(json.dumps({"claims":[claim]}), batch)
+    assert parse_claims(json.dumps({"claims":[claim]}), batch) == []
 
 
 def test_atomic_lease_retry_and_restart(memory):
@@ -365,3 +363,81 @@ def test_memory_status_distinguishes_batching_running_and_retry(memory):
     assert get_memory_status(store, settings)["extraction_status"][0]["state"] == "processing"
     store.fail_memory_batch(batch)
     assert get_memory_status(store, settings)["extraction_status"][0]["state"] == "retrying"
+
+
+@pytest.mark.asyncio
+async def test_invalid_claim_does_not_block_valid_claims_or_next_batch(memory, monkeypatch, caplog):
+    store, settings = memory
+    record(store)
+
+    def provider(settings, messages, **kwargs):
+        data = json.loads(messages[1]["content"])
+        good = claims_for(data)
+        bad = {**good[0], "source_ids": [987654321]}
+        return json.dumps({"claims": [bad, None, {**bad, "predicate": []}, *good]})
+
+    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion_with_fallback", provider)
+    assert await refresh_memory_graph(store, settings, 123)
+    state = store.get_memory_config()
+    assert state["pending_messages"] == 0 and state["edge_count"] == 2
+    assert state["progress"][0]["failures"] == 0
+    assert len(store.get_memory_messages(123, 456)) == 3
+    assert "claim lacks attributable evidence" in caplog.text
+    assert "我喜欢舞萌" not in caplog.text
+    record(store, start=4)
+    assert await refresh_memory_graph(store, settings, 123)
+    assert store.get_memory_config()["progress"][0]["cursor"] == 6
+
+
+def test_string_ids_are_normalized_but_boolean_float_and_foreign_evidence_rejected(memory):
+    store, _ = memory
+    record(store)
+    batch = store.claim_memory_batch(123, force=True)
+    good = claims_for(batch)[0]
+    quoted_ids = {**good, "user_id": "456", "source_ids": [str(s) for s in good["source_ids"]]}
+    assert parse_claims(json.dumps({"claims": [quoted_ids]}), batch) == [good]
+    for value in (True, 1.5, "99999999", {"id": 1}):
+        assert parse_claims(json.dumps({"claims": [{**good, "source_ids": [value]}]}), batch) == []
+
+
+def test_surplus_candidates_are_capped_instead_of_failing_batch(memory):
+    store, _ = memory
+    record(store)
+    batch = store.claim_memory_batch(123, force=True)
+    good = claims_for(batch)[0]
+    result = parse_claims(json.dumps({"claims": [good] * 13}), batch)
+    assert len(result) == 12
+
+
+@pytest.mark.asyncio
+async def test_all_unattributable_claims_advance_without_creating_facts_or_deleting_sources(memory, monkeypatch):
+    store, settings = memory
+    record(store)
+    def provider(settings, messages, **kwargs):
+        data = json.loads(messages[1]["content"])
+        claim = {**claims_for(data)[0], "source_ids": [999999]}
+        return json.dumps({"claims": [claim]})
+    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion_with_fallback", provider)
+    assert await refresh_memory_graph(store, settings, 123)
+    state = store.get_memory_config()
+    assert state["pending_messages"] == 0 and state["edge_count"] == 0
+    assert state["message_count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_extraction_uses_internal_reply_ids_and_reports_json_failure(memory, monkeypatch):
+    store, settings = memory
+    record(store, start=987654)
+    store.record_memory_messages([{"group_id":123,"user_id":456,"message_id":987660,
+                                  "segments":[{"type":"reply","data":{"id":987654}},
+                                              {"type":"text","data":{"text":"已经去了"}}]}])
+    def provider(settings, messages, **kwargs):
+        data = json.loads(messages[1]["content"])
+        assert all("message_id" not in m and "reply_to" not in m for m in data["messages"])
+        assert data["messages"][-1]["reply_to_id"] == 1
+        return "错误 JSON"
+    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion_with_fallback", provider)
+    assert not await refresh_memory_graph(store, settings, 123, force=True)
+    state = get_memory_status(store, settings)
+    assert state["pending_messages"] == 4
+    assert "JSON 无法解析" in state["extraction_status"][0]["detail"]
