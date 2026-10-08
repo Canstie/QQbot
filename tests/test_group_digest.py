@@ -258,8 +258,9 @@ def test_digest_prompt_names_target_date():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("chunked", [False, True])
 @pytest.mark.parametrize("needs_repair", [False, True])
+@pytest.mark.parametrize("configured_timeout,expected_timeout", [(30, 300), (600, 600)])
 async def test_digest_uses_full_model_budget_through_notes_report_and_repair(
-    tmp_path, monkeypatch, chunked, needs_repair
+    tmp_path, monkeypatch, chunked, needs_repair, configured_timeout, expected_timeout
 ):
     transcript_path = tmp_path / "chat.txt"
     transcript_path.write_text("Alpha: morning\nBeta: hello\n", encoding="utf-8")
@@ -286,6 +287,7 @@ async def test_digest_uses_full_model_budget_through_notes_report_and_repair(
         nonlocal final_requests
         body = json.loads(request.data.decode("utf-8"))
         requests.append(body)
+        assert timeout == expected_timeout
         assert body["max_tokens"] == 393_216
         assert body["thinking"] == {"type": "disabled"}
         prompt = body["messages"][-1]["content"]
@@ -297,9 +299,15 @@ async def test_digest_uses_full_model_budget_through_notes_report_and_repair(
         return FakeResponse(json.dumps({"overview": "The report is complete."}))
 
     monkeypatch.setattr("qq_personal_bot.dsapi.urlopen", fake_urlopen)
+    settings = AppSettings(
+        db_path=tmp_path / "db.sqlite3",
+        admins=(),
+        dsapi_api_key="test",
+        dsapi_timeout_seconds=configured_timeout,
+    )
     result = await group_digest._summarize_transcript(
         transcript_path,
-        settings=AppSettings(db_path=tmp_path / "db.sqlite3", admins=(), dsapi_api_key="test"),
+        settings=settings,
         model="deepseek-flash",
         group_name="Test group",
         target_date="2026-10-08",
@@ -310,3 +318,4 @@ async def test_digest_uses_full_model_budget_through_notes_report_and_repair(
     assert result["overview"] == "The report is complete."
     assert len(requests) == (2 if chunked else 0) + 1 + int(needs_repair)
     assert all(body["model"] == "deepseek-flash" for body in requests)
+    assert settings.dsapi_timeout_seconds == configured_timeout

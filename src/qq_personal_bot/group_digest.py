@@ -4,7 +4,7 @@ import asyncio
 import json
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -23,6 +23,7 @@ _TRANSCRIPT_CHUNK_CHARS = 100_000
 # DeepSeek's maximum accepted output budget; omitting it defaults to only 8K.
 # https://api-docs.deepseek.com/api/list-models/
 _DIGEST_MAX_TOKENS = 393_216
+_DIGEST_REQUEST_TIMEOUT_SECONDS = 300.0
 _HISTORY_PAGE_SIZE = 100
 _HISTORY_MAX_PAGES = 60
 
@@ -328,9 +329,16 @@ async def _complete(
     system: str,
     prompt: str,
 ) -> str:
+    # Digest notes can exceed ordinary chat's 30-second request timeout.
+    request_settings = replace(
+        settings,
+        dsapi_timeout_seconds=max(
+            settings.dsapi_timeout_seconds, _DIGEST_REQUEST_TIMEOUT_SECONDS
+        ),
+    )
     return await asyncio.to_thread(
         _request_chat_completion_with_fallback,
-        settings,
+        request_settings,
         [
             {"role": "system", "content": system},
             {"role": "user", "content": prompt},
