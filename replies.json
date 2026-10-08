@@ -80,11 +80,6 @@
     },
     {
       "type": "contains",
-      "pattern": "锁",
-      "reply": "欧耶~丝丝的锁~"
-    },
-    {
-      "type": "contains",
       "pattern": "巧乐兹",
       "reply": "欧耶~雪雪的峰~"
     },
