@@ -6,6 +6,10 @@ from collections import defaultdict, deque
 from collections.abc import Callable
 
 from qq_personal_bot.core.models import MessageEvent, PolicyDecision
+from qq_personal_bot.core.person_evaluation import (
+    evaluation_target_ids,
+    is_person_evaluation_request,
+)
 from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.replies import direct_lua_command, has_direct_reply
 
@@ -76,7 +80,7 @@ class PolicyEngine:
         trigger = (
             self._extract_self_trigger_text(event)
             if is_self_message
-            else self._extract_trigger_text(event)
+            else self._extract_trigger_text(event, self_id=self_id)
         )
         if trigger is None:
             reason = "self_message" if is_self_message else "no_trigger"
@@ -137,7 +141,9 @@ class PolicyEngine:
 
         return None
 
-    def _extract_trigger_text(self, event: MessageEvent) -> tuple[str, str] | None:
+    def _extract_trigger_text(
+        self, event: MessageEvent, *, self_id: int | str
+    ) -> tuple[str, str] | None:
         raw_message = event.raw_message.strip()
         if raw_message.startswith("/bot"):
             return None
@@ -152,6 +158,11 @@ class PolicyEngine:
         lua_command = direct_lua_command(raw_message)
         if lua_command is not None:
             return lua_command, "lua"
+
+        if is_person_evaluation_request(raw_message) and evaluation_target_ids(
+            event, self_id=self_id
+        ):
+            return raw_message, "person_evaluation"
 
         if has_direct_reply(raw_message):
             return raw_message, "direct"

@@ -8,6 +8,7 @@ import pytest
 
 from qq_personal_bot.activity import close_group_activity
 from qq_personal_bot.core.models import MessageEvent, PolicyDecision
+from qq_personal_bot.core.policy import PolicyEngine
 from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.miniapp import (
     CachedMiniAppImages,
@@ -51,25 +52,35 @@ async def test_quote_capture_still_runs_when_daily_activity_is_off(tmp_path, mon
 
 
 @pytest.mark.asyncio
-async def test_roast_command_uses_mentioned_target_in_same_group(monkeypatch):
+@pytest.mark.parametrize("text,handler", [
+    ("锐评", "mention"), ("锐评一下", "default"),
+    ("评价一下他的游戏习惯", "person_evaluation"),
+    ("批判一下", "default"), ("你怎么看", "mention"),
+])
+@pytest.mark.parametrize("gate", [None, "ai.master", "ai.roast", "api", "chat_group", "memory_group"])
+async def test_roast_command_uses_mentioned_target_in_same_group(monkeypatch, text, handler, gate):
     from unittest.mock import AsyncMock
 
     internal = SimpleNamespace(
         group_id=123,
         user_id=456,
         message_id=99,
-        raw_message="锐评",
-        is_at_bot=True,
+        raw_message=text,
+        is_at_bot=handler == "mention",
         segments=(
             {"type": "at", "data": {"qq": "999"}},
-            {"type": "text", "data": {"text": "锐评"}},
+            {"type": "text", "data": {"text": text}},
             {"type": "at", "data": {"qq": "789"}},
+            {"type": "at", "data": {"qq": "789"}},
+            {"type": "at", "data": {"qq": "all"}},
         ),
     )
     store = SimpleNamespace(
-        is_feature_enabled=lambda feature_id: True,
-        get_dsapi_config=lambda: {"enabled": True, "enabled_groups": [123]},
-        is_memory_group_enabled=lambda group_id: group_id == 123,
+        is_feature_enabled=lambda feature_id: feature_id != gate,
+        get_dsapi_config=lambda: {
+            "enabled": gate != "api", "enabled_groups": [] if gate == "chat_group" else [123],
+        },
+        is_memory_group_enabled=lambda group_id: gate != "memory_group" and group_id == 123,
     )
     monkeypatch.setattr(chat, "onebot_to_internal", lambda event, self_id: internal)
     monkeypatch.setattr(chat, "_record_group_activity", lambda *args, **kwargs: None)
@@ -83,12 +94,12 @@ async def test_roast_command_uses_mentioned_target_in_same_group(monkeypatch):
         "get_policy_engine",
         lambda: SimpleNamespace(
             evaluate=lambda event, self_id: PolicyDecision(
-                True, "ok", handler="mention", normalized_message="锐评"
+                True, "ok", handler=handler, normalized_message=text
             )
         ),
     )
     flush = AsyncMock()
-    generate = AsyncMock(return_value="你说早起，结果又睡过头。")
+    generate = AsyncMock(return_value="从现有聊天看，他对游戏有持续兴趣；生活情况资料不足。")
     finish = AsyncMock()
     monkeypatch.setattr(chat, "flush_group_activity", flush)
     monkeypatch.setattr(chat, "generate_roast_reply", generate)
@@ -98,11 +109,66 @@ async def test_roast_command_uses_mentioned_target_in_same_group(monkeypatch):
         SimpleNamespace(), SimpleNamespace(self_id=999), SimpleNamespace()
     )
 
+    if gate is not None:
+        flush.assert_not_awaited()
+        generate.assert_not_awaited()
+        assert finish.call_args.args[3] == "本群尚未开启人物图谱评价。"
+        return
     flush.assert_awaited_once()
     generate.assert_awaited_once()
     assert generate.call_args.kwargs["group_id"] == 123
     assert generate.call_args.kwargs["target_user_id"] == 789
-    assert finish.call_args.args[3] == "你说早起，结果又睡过头。"
+    assert generate.call_args.kwargs["request_text"] == text
+    assert finish.call_args.args[3] == generate.return_value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("parts,target,request_text", [
+    (["评价一下他的游戏习惯", 789], 789, "评价一下他的游戏习惯"),
+    (["你对", 789, "有什么看法"], 789, "你对有什么看法"),
+    ([789, "~批判一下"], 789, "批判一下"),
+    (["评价一下", 789, 790], None, None),
+    (["~锐评"], None, None),
+])
+async def test_person_evaluation_routes_real_onebot_mentions(
+    tmp_path, monkeypatch, parts, target, request_text
+):
+    settings = AppSettings(db_path=tmp_path / "evaluation.sqlite3", admins=(), dsapi_api_key="test")
+    store = PolicyStore(settings.db_path)
+    store.initialize(settings)
+    store.set_group_enabled(123, True, actor_id=0)
+    store.set_memory_groups([123], actor_id=0)
+    store.set_dsapi_config(enabled=True, enabled_groups=[123], knowledge_enabled=False,
+                           knowledge_prompt="", history_turns=2, clear_history=False, actor_id=0)
+    event = SimpleNamespace(
+        group_id=123, user_id=456, message_id=99, time=1,
+        message=[
+            {"type": "at", "data": {"qq": str(part)}} if isinstance(part, int)
+            else {"type": "text", "data": {"text": part}}
+            for part in parts
+        ],
+    )
+    monkeypatch.setattr(chat, "get_store", lambda: store)
+    monkeypatch.setattr(chat, "get_settings", lambda: settings)
+    monkeypatch.setattr(chat, "get_policy_engine", lambda: PolicyEngine(store))
+    monkeypatch.setattr(chat, "_record_group_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(chat, "pending_lua_command", lambda event: None)
+    monkeypatch.setattr(chat, "handle_custom_flow", lambda event: None)
+    monkeypatch.setattr(chat, "flush_group_activity", AsyncMock())
+    generate = AsyncMock(return_value="有依据的评价")
+    finish = AsyncMock()
+    monkeypatch.setattr(chat, "generate_roast_reply", generate)
+    monkeypatch.setattr(chat, "_finish_with_response", finish)
+
+    await chat._dispatch_onebot_message(SimpleNamespace(), SimpleNamespace(self_id=999), event)
+
+    if target is None:
+        generate.assert_not_awaited()
+        assert "请一次 @一位群友" in finish.call_args.args[3]
+    else:
+        generate.assert_awaited_once_with(group_id=123, target_user_id=target, settings=settings,
+                                          store=store, request_text=request_text)
+        assert finish.call_args.args[3] == "有依据的评价"
 
 
 @pytest.mark.asyncio

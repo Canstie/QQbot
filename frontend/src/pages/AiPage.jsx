@@ -412,8 +412,8 @@ export default function AiPage({ refreshVersion, onChanged }) {
             <Button tone="danger" icon={Eraser} onClick={clearHistory}>立即清空全部上下文</Button>
           </Panel>
           <Panel title="人物知识图谱" eyebrow="Personal memory">
-            <p className="quiet-note">保存指定群的新消息及回复关系，按群和 QQ 整理有来源的经历、偏好、计划。AI 总开关开启时后台自动提取，供自然交流和 ~锐评 @群友 使用。</p>
-            <Field label="启用记录的群" hint="一行一个群号。后台整理按此名单运行；群内 AI 回复和锐评另由 AI 聊天群名单控制。"><textarea value={quoteGroups} onChange={(event) => setQuoteGroups(event.target.value)} /></Field>
+            <p className="quiet-note">保存指定群的新消息及回复关系，按群和 QQ 整理有来源的经历、偏好、计划。AI 总开关开启时后台自动提取。发送“评价一下 @群友”“你怎么看 @群友”等请求，会结合相关图谱给出中立评价；也支持 ~锐评 @群友。</p>
+            <Field label="启用记录的群" hint="一行一个群号。后台整理按此名单运行；群内 AI 回复和人物评价另由 AI 聊天群名单控制。"><textarea value={quoteGroups} onChange={(event) => setQuoteGroups(event.target.value)} /></Field>
             <Button icon={Save} onClick={saveQuotes}>保存图谱群设置</Button>
             <p className="quiet-note">已保存 {quoteData?.message_count ?? 0} 条消息、{quoteData?.edge_count ?? 0} 条图谱关系，待整理 {quoteData?.pending_messages ?? 0} 条。关闭采集后已有数据保留，可在下方清空。</p>
             <div role="status" aria-live="polite">

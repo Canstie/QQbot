@@ -18,6 +18,10 @@ from qq_personal_bot.activity import (
 from qq_personal_bot.adapters.onebot import onebot_to_internal
 from qq_personal_bot.classic_forward import send_all_classics
 from qq_personal_bot.core.models import PolicyDecision
+from qq_personal_bot.core.person_evaluation import (
+    evaluation_target_ids,
+    is_person_evaluation_request,
+)
 from qq_personal_bot.dsapi import (
     DSAPIError,
     DSAPILengthError,
@@ -60,21 +64,6 @@ chat = on_message(priority=50, block=False)
 self_sent = on("message_sent", priority=50, block=False)
 _RECENT_BOT_OUTPUT_TTL_SECONDS = 5.0
 _recent_bot_outputs: deque[tuple[float, int | None, str]] = deque()
-
-
-def _roast_target_ids(event: Any, *, self_id: int | str) -> list[int]:
-    targets: list[int] = []
-    for segment in event.segments:
-        if segment.get("type") != "at":
-            continue
-        value = (segment.get("data") or {}).get("qq")
-        try:
-            user_id = int(value)
-        except (TypeError, ValueError):
-            continue
-        if user_id > 0 and str(user_id) != str(self_id) and user_id not in targets:
-            targets.append(user_id)
-    return targets
 
 
 def _message_has_image(message: Any) -> bool:
@@ -462,13 +451,15 @@ async def _dispatch_onebot_message(
                 )
         return
 
+    evaluation_text = decision.normalized_message.strip()
+    targets = evaluation_target_ids(internal_event, self_id=bot.self_id)
     if (
-        decision.handler in {"mention", "default"}
-        and decision.normalized_message.strip() in {"锐评", "锐评一下"}
+        decision.handler in {"mention", "default", "person_evaluation"}
+        and is_person_evaluation_request(evaluation_text)
+        and (targets or evaluation_text in {"锐评", "锐评一下"})
     ):
-        targets = _roast_target_ids(internal_event, self_id=bot.self_id)
         if len(targets) != 1:
-            response = "用法：@我 锐评 @一位群友，或 ~锐评 @一位群友。"
+            response = "请一次 @一位群友，例如：评价一下 @群友、批判一下 @群友，或 ~锐评 @群友。"
         else:
             store = get_store()
             config = store.get_dsapi_config()
@@ -479,7 +470,7 @@ async def _dispatch_onebot_message(
                 and internal_event.group_id in config["enabled_groups"]
                 and store.is_memory_group_enabled(internal_event.group_id)
             ):
-                response = "本群尚未开启人物图谱锐评。"
+                response = "本群尚未开启人物图谱评价。"
             else:
                 await flush_group_activity()
                 try:
@@ -489,10 +480,11 @@ async def _dispatch_onebot_message(
                             target_user_id=targets[0],
                             settings=get_settings(),
                             store=store,
+                            request_text=evaluation_text,
                         )
                 except DSAPIError as exc:
                     logger.warning("DSAPI roast reply failed: %s", exc)
-                    response = "这次锐评没生成完整，稍后再试一次。"
+                    response = "这次评价没生成完整，稍后再试一次。"
                 if response is None:
                     response = "这位群友在本群的图谱还在整理或证据不足，等积累更多有内容的聊天后再试。"
         await _finish_with_response(

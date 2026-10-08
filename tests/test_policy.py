@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from qq_personal_bot.core.models import MessageEvent
 from qq_personal_bot.core.policy import PolicyEngine, RateLimiter
 from qq_personal_bot.core.store import PolicyStore
@@ -30,6 +32,7 @@ def make_event(
     user_id: int = 20000,
     raw_message: str = "~hello",
     is_at_bot: bool = False,
+    segments: tuple = (),
 ) -> MessageEvent:
     return MessageEvent(
         platform="onebot.v11",
@@ -38,6 +41,7 @@ def make_event(
         user_id=user_id,
         raw_message=raw_message,
         is_at_bot=is_at_bot,
+        segments=segments,
         timestamp=1,
     )
 
@@ -85,6 +89,65 @@ def test_no_trigger_is_rejected(tmp_path):
 
     assert not decision.allowed
     assert decision.reason == "no_trigger"
+
+
+@pytest.mark.parametrize("text", [
+    "评价一下", "锐评他的游戏习惯", "批判一下他的表达", "请客观点评一下",
+    "你怎么看", "你对 有什么看法", "你觉得 这个人怎么样", "如何评价",
+    "能不能分析一下", "帮我评一评", "请你中立地评价一下", "对 评价一下",
+])
+def test_person_evaluation_with_at_triggers_without_prefix(tmp_path, text):
+    store = make_store(tmp_path)
+    store.set_group_enabled(123, True, actor_id=10000)
+    store.set_direct_trigger_percent(0, actor_id=10000)
+    engine = PolicyEngine(store)
+    event = make_event(raw_message=text, segments=({"type": "at", "data": {"qq": "789"}},))
+
+    decision = engine.evaluate(event, self_id=99999)
+
+    assert decision.allowed
+    assert decision.handler == "person_evaluation"
+    assert decision.normalized_message == text
+
+
+@pytest.mark.parametrize("text,segments", [
+    ("评价一下 @789", ()),
+    ("评价一下", ({"type": "at", "data": {"qq": "all"}},)),
+    ("评价一下", ({"type": "at", "data": {"qq": "99999"}},)),
+    ("评价一下", ({"type": "reply", "data": {
+        "message": [{"type": "at", "data": {"qq": "789"}}],
+    }},)),
+    ("不要评价他", ({"type": "at", "data": {"qq": "789"}},)),
+    ("请不要批判", ({"type": "at", "data": {"qq": "789"}},)),
+    ("我昨天评价了他", ({"type": "at", "data": {"qq": "789"}},)),
+    ("评价过了", ({"type": "at", "data": {"qq": "789"}},)),
+    ("“评价一下”", ({"type": "at", "data": {"qq": "789"}},)),
+    ("评价是什么意思", ({"type": "at", "data": {"qq": "789"}},)),
+    ("你好", ({"type": "at", "data": {"qq": "789"}},)),
+])
+def test_person_evaluation_requires_request_and_actual_member_at(tmp_path, text, segments):
+    store = make_store(tmp_path)
+    store.set_group_enabled(123, True, actor_id=10000)
+    engine = PolicyEngine(store)
+    decision = engine.evaluate(make_event(raw_message=text, segments=segments), self_id=99999)
+    assert not decision.allowed
+    assert decision.reason == "no_trigger"
+
+
+def test_person_evaluation_still_obeys_group_policy_rate_limits_and_self_guard(tmp_path):
+    store = make_store(tmp_path)
+    engine = PolicyEngine(store, RateLimiter(5, 5, clock=lambda: 1000.0))
+    event = make_event(raw_message="评价一下", segments=({"type": "at", "data": {"qq": "789"}},))
+    assert engine.evaluate(event, self_id=99999).reason == "group_not_enabled"
+    store.set_group_enabled(123, True, actor_id=10000)
+    assert engine.evaluate(event, self_id=event.user_id).reason == "self_message"
+    assert engine.evaluate(event, self_id=99999).allowed
+    assert engine.evaluate(event, self_id=99999).reason == "group_rate_limited"
+    store.set_limits(0, 1, actor_id=10000)
+    assert engine.evaluate(event, self_id=99999).reason == "user_rate_limited"
+    store.set_mode("blocklist", actor_id=10000)
+    store.set_group_blocked(123, True, actor_id=10000)
+    assert engine.evaluate(event, self_id=99999).reason == "group_blocked"
 
 
 def test_direct_reply_rule_allows_without_prefix(tmp_path, monkeypatch):
