@@ -20,7 +20,9 @@ from qq_personal_bot.settings import AppSettings
 
 CHINA_TZ = timezone(timedelta(hours=8))
 _TRANSCRIPT_CHUNK_CHARS = 100_000
-_REPORT_MAX_TOKENS = 4096
+# DeepSeek's maximum accepted output budget; omitting it defaults to only 8K.
+# https://api-docs.deepseek.com/api/list-models/
+_DIGEST_MAX_TOKENS = 393_216
 _HISTORY_PAGE_SIZE = 100
 _HISTORY_MAX_PAGES = 60
 
@@ -287,7 +289,6 @@ async def _summarize_transcript(
                 model,
                 system=_analysis_system_prompt(),
                 prompt=prompt,
-                max_tokens=1800,
             )
             notes.append(f"--- 第 {index} 部分笔记 ---\n{note}")
         source = (
@@ -303,7 +304,6 @@ async def _summarize_transcript(
         model,
         system=_analysis_system_prompt(),
         prompt=prompt,
-        max_tokens=_REPORT_MAX_TOKENS,
     )
     try:
         return _normalize_digest(_parse_json_object(raw), names, transcript)
@@ -317,7 +317,6 @@ async def _summarize_transcript(
                 + _schema_text()
                 + f"\n<candidate>\n{raw}\n</candidate>"
             ),
-            max_tokens=_REPORT_MAX_TOKENS,
         )
         return _normalize_digest(_parse_json_object(repair), names, transcript)
 
@@ -328,7 +327,6 @@ async def _complete(
     *,
     system: str,
     prompt: str,
-    max_tokens: int,
 ) -> str:
     return await asyncio.to_thread(
         _request_chat_completion_with_fallback,
@@ -338,7 +336,7 @@ async def _complete(
             {"role": "user", "content": prompt},
         ],
         model=model,
-        max_tokens=max_tokens,
+        max_tokens=_DIGEST_MAX_TOKENS,
         thinking_enabled=False,
         temperature=0.2,
     )

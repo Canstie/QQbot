@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
 from PIL import Image
 
 import qq_personal_bot.group_digest_card as digest_card
+from qq_personal_bot import group_digest
 from qq_personal_bot.core.models import MessageEvent
 from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.group_digest import (
@@ -251,3 +253,60 @@ def test_digest_prompt_names_target_date():
 
     assert "2026-09-12（北京时间）" in prompt
     assert "今日群聊速报" not in prompt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chunked", [False, True])
+@pytest.mark.parametrize("needs_repair", [False, True])
+async def test_digest_uses_full_model_budget_through_notes_report_and_repair(
+    tmp_path, monkeypatch, chunked, needs_repair
+):
+    transcript_path = tmp_path / "chat.txt"
+    transcript_path.write_text("Alpha: morning\nBeta: hello\n", encoding="utf-8")
+    monkeypatch.setattr(group_digest, "_TRANSCRIPT_CHUNK_CHARS", 16 if chunked else 100_000)
+    requests = []
+    final_requests = 0
+
+    class FakeResponse:
+        def __init__(self, content):
+            self.content = content
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self):
+            return json.dumps(
+                {"choices": [{"finish_reason": "stop", "message": {"content": self.content}}]}
+            ).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        nonlocal final_requests
+        body = json.loads(request.data.decode("utf-8"))
+        requests.append(body)
+        assert body["max_tokens"] == 393_216
+        assert body["thinking"] == {"type": "disabled"}
+        prompt = body["messages"][-1]["content"]
+        if "<chat-log-part>" in prompt:
+            return FakeResponse("Detailed notes. " * 2000)
+        final_requests += 1
+        if needs_repair and final_requests == 1:
+            return FakeResponse("A candidate report that needs JSON repair.")
+        return FakeResponse(json.dumps({"overview": "The report is complete."}))
+
+    monkeypatch.setattr("qq_personal_bot.dsapi.urlopen", fake_urlopen)
+    result = await group_digest._summarize_transcript(
+        transcript_path,
+        settings=AppSettings(db_path=tmp_path / "db.sqlite3", admins=(), dsapi_api_key="test"),
+        model="deepseek-flash",
+        group_name="Test group",
+        target_date="2026-10-08",
+        summary={},
+        names={1: "Alpha", 2: "Beta"},
+    )
+
+    assert result["overview"] == "The report is complete."
+    assert len(requests) == (2 if chunked else 0) + 1 + int(needs_repair)
+    assert all(body["model"] == "deepseek-flash" for body in requests)
