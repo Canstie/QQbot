@@ -215,7 +215,9 @@ async def test_roast_uses_graph_and_exact_attributed_evidence(memory, monkeypatc
     monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion_with_fallback", provider)
     assert await generate_roast_reply(group_id=123,target_user_id=456,settings=settings,store=store,
                                       request_text="评价一下他的游戏习惯")
-    get_graph.assert_called_once_with(123, 456, topic="评价一下他的游戏习惯", limit=40)
+    get_graph.assert_called_once_with(
+        123, 456, topic="评价一下他的游戏习惯", limit=40, include_history=True,
+    )
     assert len(calls) == 1
     assert await generate_roast_reply(group_id=789,target_user_id=456,settings=settings,store=store) is None
     store.set_feature_enabled("ai.master", False)
@@ -287,6 +289,74 @@ def test_retrieval_finds_older_relevant_memories_and_cjk_substrings(memory):
             conn.execute("INSERT INTO memory_evidence VALUES (?,?)", (cur.lastrowid,source_id))
     graph = store.get_person_graph(123, 456, topic="喜欢玩舞萌", limit=2)
     assert any(edge["predicate"] == "preference" for edge in graph["edges"])
+
+
+@pytest.mark.asyncio
+async def test_evaluation_includes_backfilled_day_beyond_recent_400(memory, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    store, settings = memory
+    first_day = 1791302400  # 2026-10-07 00:00, Beijing time.
+    messages = [
+        {"group_id": 123, "user_id": 456, "message_id": i + 1,
+         "raw_message": f"本人经历{i}",
+         "timestamp": first_day + (1 if i < 203 else 2) * 86400 + i}
+        for i in range(406)
+    ]
+    # The oldest message is inserted last, as in a history backfill.
+    messages.append({"group_id": 123, "user_id": 456, "message_id": 407,
+                     "raw_message": "七号本人提过的经历", "timestamp": first_day + 10})
+    store.record_memory_messages(messages)
+    with store._connect() as conn:
+        for source in conn.execute("SELECT * FROM memory_messages").fetchall():
+            cur = conn.execute(
+                "INSERT INTO memory_edges(group_id,user_id,predicate,object_type,object_key,"
+                "object_label,statement,certainty,fingerprint,first_seen,last_seen) "
+                "VALUES (123,456,'experience','event',?,?,?,'stated',?,?,?)",
+                (str(source["id"]), source["content"], source["content"], str(source["id"]),
+                 source["created_at"], source["created_at"]),
+            )
+            conn.execute("INSERT INTO memory_evidence VALUES (?,?)", (cur.lastrowid, source["id"]))
+    recent = store.get_person_graph(123, 456, limit=40)
+    assert all(e["last_seen"] >= first_day + 2 * 86400 for e in recent["edges"])
+
+    captured = []
+    def provider(settings, messages, **kwargs):
+        graph = json.loads(messages[1]["content"])["graph"]
+        captured.append(graph)
+        return "综合七至九号的本人陈述。"
+    monkeypatch.setattr("qq_personal_bot.dsapi.refresh_memory_graph", AsyncMock())
+    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion_with_fallback", provider)
+    assert await generate_roast_reply(
+        group_id=123, target_user_id=456, settings=settings, store=store,
+    )
+    graph = captured[0]
+    assert len(graph["edges"]) == len({e["id"] for e in graph["edges"]}) == 40
+    assert {int((e["last_seen"] - first_day) // 86400) for e in graph["edges"]} == {0, 1, 2}
+    assert sum(e["last_seen"] >= first_day + 2 * 86400 for e in graph["edges"]) >= 20
+    assert any(m["content"] == "七号本人提过的经历"
+               for e in graph["edges"] for m in e["evidence"])
+    assert store.get_person_graph(789, 456, include_history=True)["edges"] == []
+
+
+def test_graph_evidence_uses_message_time_after_backfill(memory):
+    store, _ = memory
+    seed_graph(store)
+    store.record_memory_messages([
+        {"group_id": 123, "user_id": 456, "message_id": 100 + i,
+         "raw_message": f"较早的本人陈述{i}", "timestamp": i + 1}
+        for i in range(4)
+    ])
+    with store._connect() as conn:
+        edge_id = conn.execute("SELECT id FROM memory_edges WHERE predicate='preference'").fetchone()[0]
+        old_ids = [r[0] for r in conn.execute("SELECT id FROM memory_messages WHERE created_at<10")]
+        conn.executemany("INSERT INTO memory_evidence VALUES (?,?)", [(edge_id, i) for i in old_ids])
+    graph = store.get_person_graph(123, 456, include_history=True)
+    evidence = next(e["evidence"] for e in graph["edges"] if e["predicate"] == "preference")
+    assert [m["message_id"] for m in evidence] == ["2", "1", "103"]
+    assert [m["created_at"] for m in evidence] == sorted(
+        (m["created_at"] for m in evidence), reverse=True,
+    )
 
 
 def test_batch_includes_explicit_old_reply_beyond_recent_context(memory):

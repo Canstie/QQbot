@@ -6,6 +6,7 @@ import re
 import time
 import uuid
 from collections.abc import Mapping, Sequence
+from itertools import zip_longest
 from typing import Any
 
 
@@ -282,11 +283,16 @@ class MemoryGraphStore:
                 (time.time(), reason[:120], batch["group_id"], batch["lease"]),
             )
 
-    def get_person_graph(self, group_id: int, user_id: int, *, topic: str = "", limit: int = 20):
+    def get_person_graph(
+        self, group_id: int, user_id: int, *, topic: str = "", limit: int = 20,
+        include_history: bool = False,
+    ):
         limit = max(1, min(int(limit), 40))
         with self._connect() as conn:
+            recent_limit = "" if include_history else " LIMIT 400"
             rows = conn.execute(
-                "SELECT * FROM memory_edges WHERE group_id=? AND user_id=? ORDER BY last_seen DESC LIMIT 400",
+                "SELECT * FROM memory_edges WHERE group_id=? AND user_id=? "
+                "ORDER BY last_seen DESC, id DESC" + recent_limit,
                 (int(group_id), int(user_id)),
             ).fetchall()
             tokens = set(re.findall(r"[a-z0-9_]{2,}", topic.casefold()))
@@ -305,16 +311,33 @@ class MemoryGraphStore:
             ranked = sorted(pool.values(), key=lambda r: (
                 sum(t in (r["statement"] + r["object_label"]).casefold() for t in tokens),
                 r["last_seen"]), reverse=True)
+            if include_history:
+                # Reserve recent/relevant candidates, then rotate through Beijing calendar days.
+                # Backfilled older days must not disappear behind the latest 400/40 memories.
+                by_day = {}
+                for row in ranked:
+                    day = int((row["last_seen"] + 8 * 3600) // 86400)
+                    by_day.setdefault(day, []).append(row)
+                historical = (
+                    row for round_ in zip_longest(*(by_day[day] for day in sorted(by_day)))
+                    for row in round_ if row is not None
+                )
+                ranked = ranked[:max(1, limit // 2)] + list(historical)
             edges = []
             per_topic = {}
+            seen = set()
             for row in ranked:
+                if row["id"] in seen:
+                    continue
+                seen.add(row["id"])
                 topic_key = (row["predicate"], row["object_type"], row["object_key"])
                 if per_topic.get(topic_key, 0) >= 2:
                     continue
                 evidence = conn.execute(
                     "SELECT m.id,m.user_id,m.message_id,m.content,m.created_at,m.reply_to "
                     "FROM memory_messages m JOIN memory_evidence e ON e.message_row_id=m.id "
-                    "WHERE e.edge_id=? AND m.group_id=? ORDER BY m.id DESC LIMIT 3",
+                    "WHERE e.edge_id=? AND m.group_id=? "
+                    "ORDER BY m.created_at DESC,m.id DESC LIMIT 3",
                     (row["id"], int(group_id)),
                 ).fetchall()
                 if evidence:
