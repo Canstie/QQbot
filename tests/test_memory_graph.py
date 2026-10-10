@@ -56,6 +56,119 @@ def seed_graph(store):
     assert store.save_memory_batch(batch, parse_claims(json.dumps({"claims": claims_for(batch)}), batch))
 
 
+def mark_legacy_command(store, source_id):
+    with store._connect() as conn:
+        conn.execute("UPDATE memory_messages SET content='~总结',raw_message='~总结',segments_json='[]' "
+                     "WHERE id=?", (source_id,))
+
+
+def test_memory_collection_rejects_commands_even_for_history_import(memory):
+    store, _ = memory
+    assert store.record_memory_messages([
+        {"group_id": 123, "user_id": 456, "message_id": 1, "raw_message": "~总结", "bot_id": 999},
+        {"group_id": 123, "user_id": 456, "message_id": 2,
+         "raw_message": "[CQ:reply,id=1][CQ:at,qq=999]我想让你写段话"},
+        {"group_id": 123, "user_id": 456, "message_id": 3, "raw_message": "吃什么"},
+        {"group_id": 123, "user_id": 456, "message_id": 4,
+         "raw_message": "评价一下[CQ:at,qq=789]"},
+        {"group_id": 123, "user_id": 456, "message_id": 5,
+         "raw_message": "今天我去机厅出勤了"},
+    ]) == 1
+    assert store.memory_bot_ids() == [999]
+    assert store.get_memory_messages(123, 456)[0]["message_id"] == "5"
+
+
+def test_legacy_commands_are_excluded_from_new_context_and_quoted_evidence(memory):
+    store, _ = memory
+    record(store)
+    batch = store.claim_memory_batch(123, force=True)
+    assert store.save_memory_batch(batch, [])
+    mark_legacy_command(store, 1)
+    store.record_memory_messages([{"group_id": 123, "user_id": 456, "message_id": 4,
+                                  "raw_message": "后来我确实去了", "segments": [
+                                      {"type": "reply", "data": {"id": 1}},
+                                      {"type": "text", "data": {"text": "后来我确实去了"}},
+                                  ]}])
+    batch = store.claim_memory_batch(123, force=True)
+    assert 1 not in {m["id"] for m in batch["messages"]}
+    assert batch["new_ids"] == [4]
+
+
+@pytest.mark.asyncio
+async def test_all_command_legacy_batch_advances_without_model_call(memory, monkeypatch):
+    from unittest.mock import Mock
+
+    store, settings = memory
+    record(store)
+    for source_id in range(1, 4):
+        mark_legacy_command(store, source_id)
+    provider = Mock(side_effect=AssertionError("command batch must not call the model"))
+    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion_with_fallback", provider)
+    assert await refresh_memory_graph(store, settings, 123, force=True)
+    provider.assert_not_called()
+    assert store.get_memory_config()["pending_messages"] == 0
+
+
+def test_save_rechecks_command_sources_and_graph_hides_old_contamination(memory):
+    store, _ = memory
+    record(store)
+    batch = store.claim_memory_batch(123, force=True)
+    mark_legacy_command(store, 1)
+    assert store.save_memory_batch(batch, claims_for(batch))
+    assert [e["predicate"] for e in store.get_person_graph(123, 456)["edges"]] == ["plan"]
+    # Even already-existing claims must be hidden when any of their sources is a command.
+    with store._connect() as conn:
+        edge_id = conn.execute("SELECT id FROM memory_edges").fetchone()[0]
+        conn.execute("INSERT INTO memory_evidence VALUES (?,1)", (edge_id,))
+    assert store.get_person_graph(123, 456, include_history=True)["edges"] == []
+
+
+def test_command_cleanup_is_scoped_idempotent_and_invalidates_inflight_work(memory):
+    store, _ = memory
+    seed_graph(store)
+    store.set_memory_groups([123, 789], actor_id=0)
+    record(store, group_id=789)
+    foreign_batch = store.claim_memory_batch(789, force=True)
+    assert store.save_memory_batch(foreign_batch, claims_for(foreign_batch))
+    mark_legacy_command(store, 1)
+    record(store, start=10)
+    inflight = store.claim_memory_batch(123, force=True)
+    preview = store.purge_memory_commands(123, bot_ids=[999])
+    assert preview["command_messages"] == preview["dependent_edges"] == 1
+    assert len(store.get_memory_messages(123, 456)) == 6
+    with store._connect() as conn:
+        assert conn.execute("SELECT lease FROM memory_progress WHERE group_id=123").fetchone()[0] == inflight["lease"]
+    applied = store.purge_memory_commands(123, bot_ids=[999], dry_run=False)
+    assert applied["command_ids"] == preview["command_ids"]
+    assert applied["edge_ids"] == preview["edge_ids"]
+    assert not store.save_memory_batch(inflight, [])
+    assert len(store.get_memory_messages(123, 456)) == 5
+    assert len(store.get_person_graph(123, 456)["edges"]) == 1
+    assert len(store.get_person_graph(789, 456)["edges"]) == 2
+    assert store.purge_memory_commands(123)["command_messages"] == 0
+    with store._connect() as conn:
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_cleanup_tool_backs_up_original_data_before_deletion(memory, tmp_path):
+    import sqlite3
+
+    from tools.purge_memory_commands import run_cleanup
+
+    store, _ = memory
+    seed_graph(store)
+    mark_legacy_command(store, 1)
+    preview = run_cleanup(store.path, bot_ids=[999], group_ids=[123])
+    assert preview["backup"] is None and not preview["applied"]
+    result = run_cleanup(store.path, bot_ids=[999], group_ids=[123], apply=True,
+                         backup_dir=tmp_path / "backups")
+    with sqlite3.connect(result["backup"]) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM memory_messages").fetchone()[0] == 3
+        assert conn.execute("SELECT COUNT(*) FROM memory_edges").fetchone()[0] == 2
+        assert conn.execute("SELECT raw_message FROM memory_messages WHERE id=1").fetchone()[0] == "~总结"
+    assert len(store.get_memory_messages(123, 456)) == 2
+
+
 def test_migration_drops_all_legacy_quotes_and_preserves_configuration_and_new_data(memory):
     store, settings = memory
     with store._connect() as conn:

@@ -17,6 +17,7 @@ from qq_personal_bot.activity import (
 )
 from qq_personal_bot.adapters.onebot import onebot_to_internal
 from qq_personal_bot.classic_forward import send_all_classics
+from qq_personal_bot.core.memory_commands import is_memory_command
 from qq_personal_bot.core.models import PolicyDecision
 from qq_personal_bot.core.person_evaluation import (
     evaluation_target_ids,
@@ -45,7 +46,7 @@ from qq_personal_bot.performance import (
     latency_phase,
     reset_latency_trace,
 )
-from qq_personal_bot.plugins.custom_flows import handle_custom_flow
+from qq_personal_bot.plugins.custom_flows import handle_custom_flow, has_pending_custom_flow
 from qq_personal_bot.random_gallery import (
     MAX_FORWARD_IMAGES,
     send_random_gallery,
@@ -748,6 +749,18 @@ def _record_group_activity(event: Any, *, self_id: int | str) -> None:
     if not record_activity and not record_memory:
         return
 
+    is_bot_command = False
+    if record_memory:
+        is_bot_command = (
+            is_memory_command(
+                {"raw_message": event.raw_message, "segments": event.segments,
+                 "is_at_bot": event.is_at_bot},
+                prefixes=store.prefixes(), bot_ids=[self_id],
+            )
+            or pending_lua_command(event, store=store) is not None
+            or has_pending_custom_flow(event, store=store)
+        )
+
     get_activity_recorder(store).enqueue(
         GroupActivityRecord(
             group_id=event.group_id,
@@ -760,6 +773,9 @@ def _record_group_activity(event: Any, *, self_id: int | str) -> None:
             record_memory=record_memory,
             platform_raw_message=getattr(event, "platform_raw_message", ""),
             display_name=getattr(event, "display_name", ""),
+            bot_id=self_id,
+            is_at_bot=event.is_at_bot,
+            is_bot_command=is_bot_command,
         )
     )
 

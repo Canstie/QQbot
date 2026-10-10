@@ -9,6 +9,8 @@ from collections.abc import Mapping, Sequence
 from itertools import zip_longest
 from typing import Any
 
+from qq_personal_bot.core.memory_commands import is_memory_command
+
 
 class MemoryGraphStore:
     """SQLite property graph: QQ subjects, typed objects, claims and source messages.
@@ -115,18 +117,34 @@ class MemoryGraphStore:
                 "message_count": sum(counts.values()), "edge_count": edges,
                 "pending_messages": pending, "progress": progress}
 
+    def memory_bot_ids(self) -> list[int]:
+        try:
+            return self._normalize_int_ids(json.loads(self.get_setting("memory_bot_ids", "[]")),
+                                           "memory_bot_ids")
+        except (ValueError, TypeError):
+            return []
+
     def record_memory_messages(self, activities: Sequence[Mapping[str, Any]]) -> int:
         enabled = set(self.memory_enabled_groups())
+        prefixes = self.prefixes()
+        known_bots = self.memory_bot_ids()
+        bot_ids = sorted(set(known_bots) | {
+            int(item["bot_id"]) for item in activities
+            if str(item.get("bot_id", "")).isdigit() and int(item["bot_id"]) > 0
+        })
         inserted = 0
         with self._connect() as conn:
+            if bot_ids != known_bots:
+                self.set_setting("memory_bot_ids", json.dumps(bot_ids), conn=conn)
             for item in activities:
                 group_id, user_id = int(item["group_id"]), int(item["user_id"])
                 if group_id not in enabled or user_id <= 0:
                     continue
+                if is_memory_command(item, prefixes=prefixes, bot_ids=bot_ids):
+                    continue
                 segments = list(self._iter_segments(item.get("segments") or ()))
                 raw = str(item.get("platform_raw_message") or item.get("raw_message") or "")
                 content = self._message_transcript_content(raw, segments)
-                # Commands are retained as evidence/context, but the extractor ignores instructions.
                 reply_to = ""
                 mentions = []
                 for segment in segments:
@@ -197,6 +215,7 @@ class MemoryGraphStore:
         now = time.time() if now is None else now
         if not self.is_memory_group_enabled(group_id):
             return None
+        prefixes, bot_ids = self.prefixes(), self.memory_bot_ids()
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             state = conn.execute("SELECT * FROM memory_progress WHERE group_id=?", (group_id,)).fetchone()
@@ -213,7 +232,11 @@ class MemoryGraphStore:
                 "SELECT * FROM memory_messages WHERE group_id=? AND id<=? ORDER BY id DESC LIMIT 8",
                 (group_id, state["cursor"]),
             ).fetchall()
-            selected = {r["id"]: self._memory_message(r) for r in [*context, *rows]}
+            selected = {}
+            for row in [*context, *rows]:
+                message = self._memory_message(row)
+                if not is_memory_command(message, prefixes=prefixes, bot_ids=bot_ids):
+                    selected[row["id"]] = message
             for row in rows:
                 if row["reply_to"]:
                     quoted = conn.execute(
@@ -221,15 +244,19 @@ class MemoryGraphStore:
                         (group_id, row["reply_to"]),
                     ).fetchone()
                     if quoted:
-                        selected[quoted["id"]] = self._memory_message(quoted)
+                        message = self._memory_message(quoted)
+                        if not is_memory_command(message, prefixes=prefixes, bot_ids=bot_ids):
+                            selected[quoted["id"]] = message
             lease = uuid.uuid4().hex
             conn.execute("UPDATE memory_progress SET lease=?, lease_until=? WHERE group_id=?",
                          (lease, now + 600, group_id))
         return {"group_id": group_id, "lease": lease, "cursor": rows[-1]["id"],
-                "new_ids": [r["id"] for r in rows], "messages": list(selected.values())}
+                "new_ids": [r["id"] for r in rows if r["id"] in selected],
+                "messages": list(selected.values())}
 
     def save_memory_batch(self, batch: Mapping[str, Any], claims: list[dict[str, Any]]) -> bool:
         group_id = int(batch["group_id"])
+        prefixes, bot_ids = self.prefixes(), self.memory_bot_ids()
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             state = conn.execute("SELECT lease FROM memory_progress WHERE group_id=?", (group_id,)).fetchone()
@@ -239,9 +266,9 @@ class MemoryGraphStore:
             allowed = {m["id"] for m in batch["messages"]}
             placeholders = ",".join("?" for _ in allowed)
             sources = {r["id"]: r for r in conn.execute(
-                f"SELECT id,user_id,created_at FROM memory_messages WHERE group_id=? AND id IN ({placeholders})",
+                f"SELECT * FROM memory_messages WHERE group_id=? AND id IN ({placeholders})",
                 (group_id, *sorted(allowed)),
-            )}
+            ) if not is_memory_command(self._memory_message(r), prefixes=prefixes, bot_ids=bot_ids)}
             for claim in claims:
                 evidence = claim["source_ids"]
                 if not evidence or any(s not in allowed or s not in sources for s in evidence):
@@ -274,6 +301,46 @@ class MemoryGraphStore:
             )
         return True
 
+    def purge_memory_commands(
+        self, group_id: int, *, bot_ids: Sequence[int] = (), actor_id: int = 0,
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Remove command messages and every dependent claim, preserving ordinary source archives."""
+        group_id = int(group_id)
+        bots = sorted(set(self.memory_bot_ids()) | set(bot_ids))
+        prefixes = self.prefixes()
+        with self._connect() as conn:
+            if not dry_run:
+                conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute("SELECT * FROM memory_messages WHERE group_id=?", (group_id,))
+            command_ids = [r["id"] for r in rows
+                           if is_memory_command(self._memory_message(r), prefixes=prefixes, bot_ids=bots)]
+            conn.execute("CREATE TEMP TABLE memory_command_ids(id INTEGER PRIMARY KEY)")
+            conn.executemany("INSERT INTO memory_command_ids VALUES (?)", [(i,) for i in command_ids])
+            edge_ids = [r[0] for r in conn.execute(
+                "SELECT DISTINCT g.id FROM memory_edges g JOIN memory_evidence e ON e.edge_id=g.id "
+                "JOIN memory_command_ids c ON c.id=e.message_row_id WHERE g.group_id=? ORDER BY g.id",
+                (group_id,),
+            )]
+            result = {"group_id": group_id, "dry_run": dry_run, "command_ids": command_ids,
+                      "edge_ids": edge_ids, "command_messages": len(command_ids),
+                      "dependent_edges": len(edge_ids)}
+            if not dry_run:
+                self.set_setting("memory_bot_ids", json.dumps(bots), conn=conn)
+                conn.execute(
+                    "DELETE FROM memory_edges WHERE group_id=? AND id IN "
+                    "(SELECT edge_id FROM memory_evidence WHERE message_row_id IN "
+                    "(SELECT id FROM memory_command_ids))", (group_id,),
+                )
+                conn.execute("DELETE FROM memory_messages WHERE group_id=? AND id IN "
+                             "(SELECT id FROM memory_command_ids)", (group_id,))
+                if command_ids:
+                    # An extractor holding the previous lease must never write these claims back.
+                    conn.execute("UPDATE memory_progress SET lease='',lease_until=0,retry_after=0,"
+                                 "failures=0,last_error='' WHERE group_id=?", (group_id,))
+                self.audit(actor_id, "purge_memory_commands", str(group_id), result, conn=conn)
+        return result
+
     def fail_memory_batch(self, batch: Mapping[str, Any], *, reason: str = "提取失败，等待自动重试") -> None:
         with self._connect() as conn:
             conn.execute(
@@ -288,6 +355,7 @@ class MemoryGraphStore:
         include_history: bool = False,
     ):
         limit = max(1, min(int(limit), 40))
+        prefixes, bot_ids = self.prefixes(), self.memory_bot_ids()
         with self._connect() as conn:
             recent_limit = "" if include_history else " LIMIT 400"
             rows = conn.execute(
@@ -333,13 +401,18 @@ class MemoryGraphStore:
                 topic_key = (row["predicate"], row["object_type"], row["object_key"])
                 if per_topic.get(topic_key, 0) >= 2:
                     continue
-                evidence = conn.execute(
-                    "SELECT m.id,m.user_id,m.message_id,m.content,m.created_at,m.reply_to "
+                sources = conn.execute(
+                    "SELECT m.* "
                     "FROM memory_messages m JOIN memory_evidence e ON e.message_row_id=m.id "
                     "WHERE e.edge_id=? AND m.group_id=? "
-                    "ORDER BY m.created_at DESC,m.id DESC LIMIT 3",
+                    "ORDER BY m.created_at DESC,m.id DESC",
                     (row["id"], int(group_id)),
                 ).fetchall()
+                if any(is_memory_command(self._memory_message(r), prefixes=prefixes, bot_ids=bot_ids)
+                       for r in sources):
+                    continue
+                evidence = [{k: r[k] for k in ("id", "user_id", "message_id", "content", "created_at", "reply_to")}
+                            for r in sources[:3]]
                 if evidence:
                     edge = dict(row)
                     edge.pop("fingerprint")

@@ -22,6 +22,9 @@ class GroupActivityRecord:
     record_memory: bool = False
     platform_raw_message: str = ""
     display_name: str = ""
+    bot_id: int | str = ""
+    is_at_bot: bool = False
+    is_bot_command: bool = False
 
 
 class GroupActivityRecorder:
@@ -93,6 +96,9 @@ class GroupActivityRecorder:
                     "message_id": record.message_id,
                     "platform_raw_message": record.platform_raw_message,
                     "display_name": record.display_name,
+                    "bot_id": record.bot_id,
+                    "is_at_bot": record.is_at_bot,
+                    "is_bot_command": record.is_bot_command,
                 }
                 for record in batch
             ]

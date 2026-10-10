@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -49,6 +51,44 @@ async def test_quote_capture_still_runs_when_daily_activity_is_off(tmp_path, mon
         )
     await close_group_activity()
     assert len(store.get_memory_messages(123, 456)) == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["prefix", "mention", "evaluation", "lua_pending", "flow_pending"])
+async def test_bot_requests_do_not_enter_memory_but_remain_in_daily_archive(tmp_path, monkeypatch, kind):
+    db_path = tmp_path / "memory.sqlite3"
+    store = PolicyStore(db_path)
+    store.initialize(AppSettings(db_path=db_path, admins=()))
+    store.set_group_enabled(123, True, actor_id=0)
+    store.set_memory_groups([123], actor_id=0)
+    store.set_feature_enabled("activity.record", True)
+    monkeypatch.setattr(chat, "get_store", lambda: store)
+    raw = "~总结" if kind == "prefix" else "帮我看一下"
+    segments = ()
+    if kind == "evaluation":
+        raw = "评价一下"
+        segments = ({"type": "text", "data": {"text": raw}},
+                    {"type": "at", "data": {"qq": 789}})
+    if kind == "lua_pending":
+        store.set_lua_state("lua_pending_command", "123:456", "存典")
+    if kind == "flow_pending":
+        store.set_lua_state("custom_input_flow", "123:456",
+                            json.dumps({"type": "menu", "updated_at": time.time()}))
+    chat._record_group_activity(
+        MessageEvent(platform="onebot.v11", group_id=123, user_id=456, message_id=1,
+                     raw_message=raw, segments=segments, is_at_bot=kind == "mention",
+                     timestamp=time.time()), self_id=999,
+    )
+    # Ordinary conversations remain eligible, including words that trigger automatic replies.
+    chat._record_group_activity(
+        MessageEvent(platform="onebot.v11", group_id=123, user_id=789, message_id=2,
+                     raw_message="我今天去机厅出勤了", timestamp=time.time()), self_id=999,
+    )
+    await close_group_activity()
+    assert store.get_memory_messages(123, 456) == []
+    assert len(store.get_memory_messages(123, 789)) == 1
+    with store._connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM group_daily_messages WHERE group_id=123").fetchone()[0] == 2
 
 
 @pytest.mark.asyncio

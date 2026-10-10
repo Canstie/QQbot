@@ -168,6 +168,8 @@ async def refresh_memory_graph(store: PolicyStore, settings: AppSettings, group_
     if batch is None:
         return False
     try:
+        if not batch["new_ids"]:
+            return await asyncio.to_thread(store.save_memory_batch, batch, [])
         # Import lazily: dsapi also uses graph retrieval for ordinary conversation and roasts.
         from qq_personal_bot.dsapi import _request_chat_completion_with_fallback
 

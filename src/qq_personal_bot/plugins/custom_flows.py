@@ -5,10 +5,22 @@ import time
 from typing import Any
 
 from qq_personal_bot.core.models import MessageEvent
+from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.runtime import get_settings, get_store
 
 _FLOW_NAMESPACE = "custom_input_flow"
 _FLOW_TTL_SECONDS = 600
+
+
+def has_pending_custom_flow(event: MessageEvent, *, store: PolicyStore | None = None) -> bool:
+    if event.group_id is None:
+        return False
+    store = store if store is not None else get_store()
+    flow = _load_flow(_flow_key(event), store=store)
+    if flow is None:
+        return False
+    feature = {"menu": "flows.menu_add", "restaurant": "flows.restaurant_add"}.get(flow.get("type"))
+    return bool(feature and store.is_feature_enabled(feature))
 
 
 def handle_custom_flow(event: MessageEvent) -> str | None:
@@ -154,17 +166,18 @@ def _continue_restaurant_flow(key: str, flow: dict[str, Any], event: MessageEven
     return "饭店添加流程状态已重置，请重新发送 ~添加饭店。"
 
 
-def _load_flow(key: str) -> dict[str, Any] | None:
-    raw = get_store().get_lua_state(_FLOW_NAMESPACE, key)
+def _load_flow(key: str, *, store: PolicyStore | None = None) -> dict[str, Any] | None:
+    store = store if store is not None else get_store()
+    raw = store.get_lua_state(_FLOW_NAMESPACE, key)
     if raw is None:
         return None
     try:
         flow = json.loads(raw)
     except json.JSONDecodeError:
-        get_store().delete_lua_state(_FLOW_NAMESPACE, key)
+        store.delete_lua_state(_FLOW_NAMESPACE, key)
         return None
     if time.time() - float(flow.get("updated_at") or 0) > _FLOW_TTL_SECONDS:
-        get_store().delete_lua_state(_FLOW_NAMESPACE, key)
+        store.delete_lua_state(_FLOW_NAMESPACE, key)
         return None
     return flow if isinstance(flow, dict) else None
 

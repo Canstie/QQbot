@@ -25,6 +25,7 @@ from qq_personal_bot.classic_storage import (
     read_classic_image_source,
 )
 from qq_personal_bot.core.models import MessageEvent, PolicyDecision
+from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.help_card import render_help_card
 from qq_personal_bot.lunar import solar_to_lunar
 from qq_personal_bot.menu_recipes import (
@@ -651,20 +652,21 @@ def list_lua_command_scripts(lua_dir: Path | None = None) -> list[LuaCommandScri
     return scripts
 
 
-def pending_lua_command(event: MessageEvent) -> str | None:
+def pending_lua_command(event: MessageEvent, *, store: PolicyStore | None = None) -> str | None:
     if event.group_id is None:
         return None
-    command = get_store().get_lua_state(_PENDING_LUA_NAMESPACE, _pending_lua_key(event))
+    store = store if store is not None else get_store()
+    command = store.get_lua_state(_PENDING_LUA_NAMESPACE, _pending_lua_key(event))
     if not command:
         return None
     try:
         command = validate_lua_command(command)
         script_path = lua_command_path(command)
     except ValueError:
-        get_store().delete_lua_state(_PENDING_LUA_NAMESPACE, _pending_lua_key(event))
+        store.delete_lua_state(_PENDING_LUA_NAMESPACE, _pending_lua_key(event))
         return None
     if not script_path.is_file():
-        get_store().delete_lua_state(_PENDING_LUA_NAMESPACE, _pending_lua_key(event))
+        store.delete_lua_state(_PENDING_LUA_NAMESPACE, _pending_lua_key(event))
         return None
     return command
 
