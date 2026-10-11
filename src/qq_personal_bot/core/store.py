@@ -126,6 +126,11 @@ class PolicyStore(MemoryGraphStore):
                 created_at REAL NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS dsapi_blocked_users (
+                user_id INTEGER PRIMARY KEY,
+                created_at REAL NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS trigger_prefixes (
                 prefix TEXT PRIMARY KEY
             );
@@ -2087,6 +2092,41 @@ class PolicyStore(MemoryGraphStore):
 
     def is_bilibili_group_blocked(self, group_id: int) -> bool:
         return int(group_id) in self.get_bilibili_blocked_groups()
+
+    def get_dsapi_blocked_users(self) -> list[int]:
+        def load() -> tuple[int, ...]:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT user_id FROM dsapi_blocked_users ORDER BY user_id"
+                ).fetchall()
+                return tuple(int(row["user_id"]) for row in rows)
+
+        return list(self._cached_runtime_value(("dsapi_blocked_users",), load))
+
+    def is_dsapi_user_blocked(self, user_id: int) -> bool:
+        return int(user_id) in self.get_dsapi_blocked_users()
+
+    def set_dsapi_user_blocked(self, user_id: int, blocked: bool, *, actor_id: int) -> bool:
+        user_id = int(user_id)
+        if not 0 < user_id <= 2**63 - 1:
+            raise ValueError("QQ 号必须为有效的正整数")
+        with self._connect() as conn:
+            if blocked:
+                cursor = conn.execute(
+                    "INSERT OR IGNORE INTO dsapi_blocked_users(user_id, created_at) VALUES (?, ?)",
+                    (user_id, time.time()),
+                )
+            else:
+                cursor = conn.execute(
+                    "DELETE FROM dsapi_blocked_users WHERE user_id = ?", (user_id,)
+                )
+            changed = cursor.rowcount > 0
+            if changed:
+                self.audit(
+                    actor_id, "set_dsapi_user_blocked", str(user_id), {"blocked": blocked}, conn=conn
+                )
+        self._invalidate_runtime_cache()
+        return changed
 
     def get_dsapi_config(self) -> dict[str, Any]:
         try:

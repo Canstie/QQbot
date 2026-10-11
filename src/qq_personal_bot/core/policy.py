@@ -84,8 +84,21 @@ class PolicyEngine:
         )
         if trigger is None:
             reason = "self_message" if is_self_message else "no_trigger"
+            if reason == "no_trigger" and self.store.is_dsapi_user_blocked(event.user_id):
+                reason = "ai_user_blocked"
             return PolicyDecision(False, reason)
         trigger_text, handler = trigger
+
+        is_ai_request = handler == "mention" or (
+            handler in {"default", "person_evaluation"}
+            and is_person_evaluation_request(trigger_text)
+            and (
+                evaluation_target_ids(event, self_id=self_id)
+                or trigger_text in {"锐评", "锐评一下"}
+            )
+        )
+        if is_ai_request and self.store.is_dsapi_user_blocked(event.user_id):
+            return PolicyDecision(False, "ai_user_blocked")
 
         if handler == "direct" and not self._allow_direct_trigger(event):
             return PolicyDecision(False, "direct_trigger_skipped")

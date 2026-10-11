@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 
 from nonebot import on, on_command
@@ -60,6 +61,14 @@ def _parse_group_id(parts: list[str], event: Any) -> int:
     if group_id is None:
         raise ValueError("group_id is required outside a group chat")
     return group_id
+
+
+def _parse_ai_target_user_id(value: str) -> int:
+    mention = re.fullmatch(r"\[CQ:at,qq=([0-9]+)(?:,[^\]]*)?\]", value)
+    qq = mention.group(1) if mention else value
+    if not re.fullmatch(r"[0-9]{1,19}", qq) or not 0 < int(qq) <= 2**63 - 1:
+        raise ValueError("请填写有效的 QQ 号或 @一位成员")
+    return int(qq)
 
 
 def _format_ai_models(current_model: str) -> str:
@@ -137,6 +146,41 @@ async def _handle_bot_command(
     command = parts[0].lower()
 
     try:
+        if command in {"拉黑", "解黑"}:
+            if len(parts) != 2:
+                await _send_control_response(
+                    matcher, bot, event, f"用法：/bot {command} <QQ号或@成员>",
+                    explicit_group_send=explicit_group_send,
+                )
+            target_user_id = _parse_ai_target_user_id(parts[1])
+            blocked = command == "拉黑"
+            changed = store.set_dsapi_user_blocked(target_user_id, blocked, actor_id=actor_id)
+            if blocked:
+                message = (
+                    f"已将 {target_user_id} 加入 AI 黑名单，AI 将静默忽略他的消息。"
+                    if changed else f"{target_user_id} 已在 AI 黑名单中。"
+                )
+            else:
+                message = (
+                    f"已将 {target_user_id} 移出 AI 黑名单。"
+                    if changed else f"{target_user_id} 不在 AI 黑名单中。"
+                )
+            await _send_control_response(
+                matcher, bot, event, message, explicit_group_send=explicit_group_send,
+            )
+
+        if command == "黑名单":
+            if len(parts) != 1:
+                await _send_control_response(
+                    matcher, bot, event, "用法：/bot 黑名单",
+                    explicit_group_send=explicit_group_send,
+                )
+            users = store.get_dsapi_blocked_users()
+            message = "AI 黑名单（所有群通用）\n" + ("\n".join(map(str, users)) or "暂无")
+            await _send_control_response(
+                matcher, bot, event, message, explicit_group_send=explicit_group_send,
+            )
+
         if command == "mode":
             if len(parts) != 2 or parts[1] not in {"allowlist", "blocklist"}:
                 await _send_control_response(
@@ -406,6 +450,7 @@ async def _handle_bot_command(
                 "aion [group_id] | aioff [group_id] | ai rs | "
                 "aim list|flash|pro | "
                 "aik list|<index> | "
+                "拉黑 <QQ号或@成员> | 解黑 <QQ号或@成员> | 黑名单 | "
                 "mode allowlist|blocklist | admin add <user_id> | "
                 "prefix add|remove|list [prefix]"
             ),

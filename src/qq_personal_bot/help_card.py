@@ -164,6 +164,8 @@ def build_help_sections(
                 (True, "/bot aion|aioff  AI 总开关；加群号增删 AI 群"),
                 (True, "/bot aim list|<模型>  查看或切换模型"),
                 (True, "/bot aik list|<序号>  查看或切换知识库"),
+                (True, "/bot 拉黑|解黑 <QQ号或@成员>  管理 AI 黑名单"),
+                (True, "/bot 黑名单  查看 AI 黑名单（所有群通用）"),
                 (True, "/bot prefix list|add|remove  管理前缀"),
                 (enabled("downloads.ingest"), "/d  下载引用聊天记录中的图片"),
                 (enabled("downloads.stickers"), "/dimg  将引用图片加入 AI 表情包库"),

@@ -127,6 +127,8 @@ async def generate_mention_reply(
     settings: AppSettings,
     store: PolicyStore,
 ) -> str | list[str] | None:
+    if store.is_dsapi_user_blocked(event.user_id):
+        return None
     if not store.is_feature_enabled("ai.master", settings.dsapi_enabled) or not settings.dsapi_api_key:
         return None
 
@@ -177,6 +179,8 @@ async def generate_random_group_reply(
     settings: AppSettings,
     store: PolicyStore,
 ) -> str | list[str] | Path | None:
+    if store.is_dsapi_user_blocked(event.user_id):
+        return None
     if not store.is_feature_enabled("ai.master", settings.dsapi_enabled) or not settings.dsapi_api_key:
         return None
 
