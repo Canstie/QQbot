@@ -125,6 +125,14 @@ def build_help_sections(
         ),
     )
 
+    add(
+        "怪物猎人荒野",
+        (
+            (enabled("mhwa.master", "mhwa.skills"), "/荒野 技能 <名称>  查看全部等级效果图"),
+            (enabled("mhwa.master", "mhwa.quests"), "/荒野 任务 <名称或编号>  查看单人任务数据图"),
+        ),
+    )
+
     steam_base = bool(settings.steam_api_key) and enabled("steam.master", "steam.commands")
     add(
         "Steam",

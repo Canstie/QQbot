@@ -39,6 +39,7 @@ nonebot.load_plugin("qq_personal_bot.plugins.control")
 nonebot.load_plugin("qq_personal_bot.plugins.download")
 nonebot.load_plugin("qq_personal_bot.plugins.chat")
 nonebot.load_plugin("qq_personal_bot.plugins.steam")
+nonebot.load_plugin("qq_personal_bot.plugins.mhwa")
 nonebot.load_plugin("qq_personal_bot.plugins.web_admin")
 
 

@@ -59,6 +59,9 @@ STATIC_FEATURES: tuple[FeatureDefinition, ...] = (
     FeatureDefinition("steam.notify.image", "Steam", "图片通知", "发送 Steam 状态图片卡片。"),
     FeatureDefinition("steam.notify.text", "Steam", "文本通知", "发送 Steam 状态文本。"),
     FeatureDefinition("steam.notify.mention", "Steam", "@ 已绑定用户", "通知时提醒绑定的 QQ 用户。", False),
+    FeatureDefinition("mhwa.master", "怪物猎人荒野", "荒野资料总开关", "控制 /荒野 图片查询。"),
+    FeatureDefinition("mhwa.skills", "怪物猎人荒野", "技能查询", "查询技能全部等级并发送图片。"),
+    FeatureDefinition("mhwa.quests", "怪物猎人荒野", "任务查询", "发送任务目标、单人血量、肉质与部位数据图片。"),
 )
 
 
