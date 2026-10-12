@@ -18,7 +18,7 @@ WIDTH = 1440
 MAX_HEIGHT = 2400
 MARGIN = 48
 CONTENT_WIDTH = WIDTH - MARGIN * 2
-_CARD_VERSION = 1
+_CARD_VERSION = 2
 _BG = "#17140f"
 _PANEL = "#211c14"
 _HEADER = "#332919"
@@ -51,8 +51,7 @@ def skill_tables(skill: dict) -> list[Table]:
     for level in skill["levels"]:
         description = level["description"] or "资料未提供效果说明"
         description = description.replace("%攻击伤口", "%\n攻击伤口")
-        if level["special"]:
-            description += f"\n{level['special']}"
+        # `special` holds calculator routing metadata, not player-facing effect text.
         rows.append([f"Lv.{level['level']}", description])
     tables = [Table("全部等级效果", ["等级", "效果说明"], rows, [1, 7])]
     if skill["id"] == "HunterSkill_062":

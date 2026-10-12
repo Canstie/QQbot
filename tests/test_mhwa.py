@@ -17,7 +17,7 @@ from qq_personal_bot.core.policy import PolicyEngine
 from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.help_card import build_help_sections
 from qq_personal_bot.mhwa.calculate import calculate_target, game_round
-from qq_personal_bot.mhwa.render import MAX_HEIGHT, Table, quest_tables, render_cards
+from qq_personal_bot.mhwa.render import MAX_HEIGHT, Table, quest_tables, render_cards, skill_tables
 from qq_personal_bot.mhwa.service import MhwaService
 from qq_personal_bot.mhwa.store import DEFAULT_SEED_PATH, MhwaQueryError, MhwaStore
 from qq_personal_bot.settings import AppSettings
@@ -83,6 +83,28 @@ def test_weakness_exploit_returns_every_level_and_both_effects(archive):
         (5, "weak_spot", 30),
         (5, "wound", 20),
     ]
+
+
+def test_skill_cards_hide_calculator_metadata_for_all_affected_skills(archive):
+    seed = json.loads(DEFAULT_SEED_PATH.read_text(encoding="utf-8"))
+    affected = {row["skill_id"] for row in seed["skill_levels"] if row["special"]}
+    assert len(affected) == 10
+    for skill_id in affected:
+        skill = archive.get_skill(skill_id)
+        tables = skill_tables(skill)
+        output = "\n".join(str(cell) for table in tables for row in table.rows for cell in row)
+        for level in skill["levels"]:
+            assert f"Lv.{level['level']}" in output
+            if level["description"]:
+                assert level["description"] in output
+            if level["special"]:
+                # Keep the structured source data available for calculation, out of the card.
+                assert isinstance(json.loads(level["special"]), dict)
+                assert level["special"] not in output
+        assert "groupKey" not in output
+    assert "技能发动时，大幅提升属性伤害和状态异常累积值" in skill_tables(
+        archive.get_skill("因祸得福")
+    )[0].rows[-1][1]
 
 
 def test_solo_arch_tempered_arkveld_full_data(archive):
