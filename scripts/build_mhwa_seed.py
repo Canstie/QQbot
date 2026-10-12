@@ -211,6 +211,146 @@ def build_seed(path: Path) -> dict:
         }
         for r in sheets["技能效果"]
     ]
+    # These skills keep their numeric parameters outside the skill-level table.
+    grouped_parameters: dict[str, dict[int, dict]] = {}
+    chain_parameters: dict[str, dict] = {}
+    weapon_names = {"sword_shield": "片手剑"}
+    dragon_values = []
+    charge_boost_value = None
+    for row in sheets["计算器补充参数"]:
+        route = json.loads(row["原始字段路径"])
+        original = row["原始内容"]
+        decoded = (
+            json.loads(original)
+            if isinstance(original, str) and original.startswith(("[", "{"))
+            else original
+        )
+        if route[:2] == ["CALC_DATA", "weaponMeta"] and route[-1] == "nameCn":
+            weapon_names[route[2]] = original
+        if route == ["CALC_DATA", "weaponGroups", "dragon_elem"]:
+            dragon_values = decoded
+        if len(route) == 5 and route[:3] == ["CALC_DATA", "weaponGroups", "chain"]:
+            chain_parameters.setdefault(route[3], {})[route[4]] = decoded
+        if (
+            route[:2] == ["CALC_DATA", "skills"]
+            and route[-1] == "weaponsNote"
+            and "蓄击强化" in str(original)
+        ):
+            charge_boost_value = float(re.search(r"×(\d+(?:\.\d+)?)", original)[1])
+        if (
+            len(route) == 5
+            and route[:2] == ["CALC_DATA", "weaponGroups"]
+            and route[2]
+            in {
+                "convert_elem",
+                "convert_status",
+                "charge_master",
+                "crit_element",
+                "crit_status",
+                "absorb_elem",
+            }
+            and route[4] in {"weapons", "values"}
+        ):
+            entry = grouped_parameters.setdefault(route[2], {}).setdefault(route[3], {})
+            entry[route[4]] = decoded
+            if route[4] == "weapons":
+                entry["weapon_label"] = row["数值或中文内容"]
+    definitions = {
+        "convert_elem": ("HunterSkill_113", "属性倍率", "multiplier"),
+        "convert_status": ("HunterSkill_113", "异常累积倍率", "multiplier"),
+        "charge_master": ("HunterSkill_048", "蓄力属性与异常倍率", "multiplier"),
+        "crit_element": ("HunterSkill_003", "会心时属性倍率", "multiplier"),
+        "crit_status": ("HunterSkill_056", "会心时异常倍率", "multiplier"),
+        "absorb_elem": ("HunterSkill_190", "首击面板属性增加", "add"),
+    }
+    numeric_skills: dict[str, list[dict]] = {}
+    for key, entries in grouped_parameters.items():
+        skill_id, effect, mode = definitions[key]
+        for _, entry in sorted(entries.items()):
+            if entry["weapons"] == ["*"]:
+                entry["weapon_label"] = "其他武器" if len(entries) > 1 else "所有武器"
+            numeric_skills.setdefault(skill_id, []).append(
+                {
+                    "effect": effect,
+                    "mode": mode,
+                    "weapon_label": entry["weapon_label"],
+                    "values": entry["values"],
+                }
+            )
+    if numeric_skills.get("HunterSkill_190"):
+        resistance = [
+            int(re.search(r"耐性值\+(\d+)", r["description"])[1])
+            for r in levels
+            if r["skill_id"] == "HunterSkill_190"
+        ]
+        numeric_skills["HunterSkill_190"].append(
+            {
+                "effect": "受击属性耐性增加",
+                "mode": "add",
+                "weapon_label": "所有武器",
+                "values": resistance,
+            }
+        )
+    if dragon_values:
+        numeric_skills["HunterSkill_191"] = [
+            {
+                "effect": "面板龙属性增加",
+                "mode": "add",
+                "weapon_label": "所有武器",
+                "values": dragon_values,
+            }
+        ]
+    if charge_boost_value is not None:
+        numeric_skills["HunterSkill_057"] = [
+            {
+                "effect": "蓄力攻击气绝倍率",
+                "mode": "multiplier",
+                "weapon_label": "大锤",
+                "values": [charge_boost_value],
+            }
+        ]
+    # Merge equal rows without dropping weapon differences; the first value is the initial stage.
+    merged_chain = {}
+    for weapon, parameters in chain_parameters.items():
+        if weapon == "sword_shield" and "sword_and_shield" in chain_parameters:
+            continue
+        for key, label in (("attack", "基础攻击力增加"), ("element", "面板属性增加")):
+            values = parameters.get(key)
+            row_key = (label, tuple(values) if values is not None else None)
+            entry = merged_chain.setdefault(
+                row_key,
+                {"effect": label, "mode": "add", "weapons": [], "values": values or [None] * 6},
+            )
+            entry["weapons"].append(weapon_names.get(weapon, weapon))
+    if merged_chain:
+        numeric_skills["HunterSkill_114"] = [
+            {
+                "effect": r["effect"],
+                "mode": r["mode"],
+                "weapon_label": "、".join(r["weapons"]),
+                "values": r["values"],
+                "initial_stage": True,
+            }
+            for r in merged_chain.values()
+        ]
+    numeric_notes = {
+        "HunterSkill_113": ["技能发动后的属性与异常累积倍率，不代表总伤害增幅。"],
+        "HunterSkill_048": ["只作用于蓄力攻击的属性伤害和异常累积。补充表未提供长枪的具体倍率。"],
+        "HunterSkill_003": ["只在会心攻击时应用属性倍率，不是物理会心倍率。"],
+        "HunterSkill_056": ["只在会心攻击时应用异常累积倍率。"],
+        "HunterSkill_190": [
+            "表中属性增量为首击值；第二次受击再 +10，第三次再 +10，后续加值最多 +20。",
+            "属性耐性增量仍按技能等级取值。",
+        ],
+        "HunterSkill_191": [
+            "表中为面板龙属性增量，仅对龙属性生效。资料没有给出追加龙属性伤害的固定数值。"
+        ],
+        "HunterSkill_057": ["只作用于大锤蓄力攻击的气绝累积。"],
+        "HunterSkill_114": [
+            "初段不随技能等级变化；持续命中的后段按 Lv.1～5 取值。",
+            "属性栏为面板属性增量；轻弩、重弩的属性增量未提供，保留为空。",
+        ],
+    }
     return {
         "format_version": 1,
         "data_version": int(source[2]),
@@ -230,6 +370,8 @@ def build_seed(path: Path) -> dict:
         "skills": skills,
         "skill_levels": levels,
         "skill_effects": effects,
+        "numeric_skill_groups": numeric_skills,
+        "numeric_skill_notes": numeric_notes,
     }
 
 

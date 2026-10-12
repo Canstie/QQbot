@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -18,7 +19,7 @@ WIDTH = 1440
 MAX_HEIGHT = 2400
 MARGIN = 48
 CONTENT_WIDTH = WIDTH - MARGIN * 2
-_CARD_VERSION = 2
+_CARD_VERSION = 5
 _BG = "#17140f"
 _PANEL = "#211c14"
 _HEADER = "#332919"
@@ -52,8 +53,40 @@ def skill_tables(skill: dict) -> list[Table]:
         description = level["description"] or "资料未提供效果说明"
         description = description.replace("%攻击伤口", "%\n攻击伤口")
         # `special` holds calculator routing metadata, not player-facing effect text.
-        rows.append([f"Lv.{level['level']}", description])
-    tables = [Table("全部等级效果", ["等级", "效果说明"], rows, [1, 7])]
+        if skill["id"] == "HunterSkill_183":
+            description = description.replace("，两档覆盖率合计100%。", "。")
+        if skill["kind"] == "系列技能":
+            description = re.sub(r"^\d+件[:：]\s*", "", description)
+        label = f"{level['level']}件" if skill["kind"] == "系列技能" else f"Lv.{level['level']}"
+        rows.append([label, description])
+    title, level_label = (
+        ("套装效果", "件数") if skill["kind"] == "系列技能" else ("全部等级效果", "等级")
+    )
+    tables = [Table(title, [level_label, "效果说明"], rows, [1, 7])]
+    if skill.get("numeric_groups"):
+        rows = []
+        for group in skill["numeric_groups"]:
+            if group["mode"] == "multiplier":
+                values = [f"×{v:.2f}\n（+{(v - 1) * 100:.0f}%）" for v in group["values"]]
+            else:
+                values = [f"+{v:g}" if v is not None else "—" for v in group["values"]]
+            rows.append([group["effect"], group["weapon_label"], *values])
+        initial = any(g.get("initial_stage") for g in skill["numeric_groups"])
+        headers = ["作用", "适用武器"]
+        if initial:
+            headers.append("初段")
+        headers.extend(
+            f"{'后段 ' if initial else ''}Lv.{n}" for n in range(1, skill["max_level"] + 1)
+        )
+        tables = [
+            Table(
+                "全部等级 · 具体数值",
+                headers,
+                rows,
+                [1.6, 3.6, *([1.2] * (skill["max_level"] + int(initial)))],
+                skill.get("numeric_notes", []),
+            )
+        ]
     if skill["id"] == "HunterSkill_062":
         effects = {
             (r["level"], r["condition"]): r["value"]

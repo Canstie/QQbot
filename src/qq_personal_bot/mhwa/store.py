@@ -126,6 +126,8 @@ class MhwaStore:
                             "random_health_rates",
                         )
                     }
+                    meta["numeric_skill_groups"] = seed.get("numeric_skill_groups", {})
+                    meta["numeric_skill_notes"] = seed.get("numeric_skill_notes", {})
                     meta.update(seed_hash=seed_hash, schema_version=_SCHEMA_VERSION)
                     conn.executemany(
                         "INSERT INTO dataset_meta VALUES (?, ?)",
@@ -310,6 +312,8 @@ class MhwaStore:
 
     def get_skill(self, query: str) -> dict:
         skill = self._find("skills", query)
+        skill["numeric_groups"] = self.metadata.get("numeric_skill_groups", {}).get(skill["id"], [])
+        skill["numeric_notes"] = self.metadata.get("numeric_skill_notes", {}).get(skill["id"], [])
         conn = self._connect()
         try:
             skill["levels"] = [

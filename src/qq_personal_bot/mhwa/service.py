@@ -22,11 +22,18 @@ class MhwaService:
                 kind = {"EQUIP": "装备技能", "GROUP": "组合技能", "SERIES": "系列技能"}.get(
                     skill["kind"], skill["kind"]
                 )
+                subtitle = f"{kind} · 最高 Lv.{skill['max_level']} · 全部等级"
+                if kind == "系列技能":
+                    subtitle = (
+                        f"{kind} · "
+                        + " / ".join(f"{r['level']}件" for r in skill["levels"])
+                        + "效果"
+                    )
                 return render_cards(
                     self.settings,
                     self.output_dir,
                     title=skill["name"],
-                    subtitle=f"{kind} · 最高 Lv.{skill['max_level']} · 全部等级",
+                    subtitle=subtitle,
                     tables=skill_tables(skill),
                     metadata=self.store.metadata,
                     identity=f"skill:{skill['id']}",

@@ -92,19 +92,97 @@ def test_skill_cards_hide_calculator_metadata_for_all_affected_skills(archive):
     for skill_id in affected:
         skill = archive.get_skill(skill_id)
         tables = skill_tables(skill)
-        output = "\n".join(str(cell) for table in tables for row in table.rows for cell in row)
+        output = "\n".join(
+            str(cell)
+            for table in tables
+            for row in [table.headers, *table.rows, table.notes]
+            for cell in row
+        )
         for level in skill["levels"]:
-            assert f"Lv.{level['level']}" in output
-            if level["description"]:
+            label = f"{level['level']}件" if skill["kind"] == "系列技能" else f"Lv.{level['level']}"
+            assert label in output
+            if (
+                level["description"]
+                and not skill["numeric_groups"]
+                and skill["id"] != "HunterSkill_183"
+            ):
                 assert level["description"] in output
             if level["special"]:
                 # Keep the structured source data available for calculation, out of the card.
                 assert isinstance(json.loads(level["special"]), dict)
                 assert level["special"] not in output
         assert "groupKey" not in output
-    assert "技能发动时，大幅提升属性伤害和状态异常累积值" in skill_tables(
-        archive.get_skill("因祸得福")
-    )[0].rows[-1][1]
+    assert "两档覆盖率" not in str(skill_tables(archive.get_skill("黑蚀龙之力")))
+
+
+def test_coalescence_card_has_weapon_dependent_numeric_effects(archive):
+    skill = archive.get_skill("因祸得福")
+    assert [g["values"] for g in skill["numeric_groups"]] == [
+        [1.1, 1.2, 1.3],
+        [1.05, 1.1, 1.15],
+        [1.05, 1.1, 1.15],
+    ]
+    assert "大剑" in skill["numeric_groups"][0]["weapon_label"]
+    assert skill["numeric_groups"][1]["weapon_label"] == "其他武器"
+    assert skill["numeric_groups"][2]["weapon_label"] == "所有武器"
+    table = next(t for t in skill_tables(skill) if t.title == "全部等级 · 具体数值")
+    assert table.headers[-3:] == ["Lv.1", "Lv.2", "Lv.3"]
+    assert table.rows[0][-1] == "×1.30\n（+30%）"
+    assert table.rows[1][-1] == "×1.15\n（+15%）"
+    assert table.rows[2][0] == "异常累积倍率"
+
+
+@pytest.mark.parametrize(
+    "name,values,last,mode",
+    [
+        ("蓄力大师", [1.15, 1.2, 1.25], "×1.25\n（+25%）", "multiplier"),
+        ("会心击【属性】", [1.07, 1.13, 1.2], "×1.20\n（+20%）", "multiplier"),
+        ("会心击【特殊】", [1.1, 1.2, 1.4], "×1.40\n（+40%）", "multiplier"),
+        ("属性吸收", [50, 80, 100], "+100", "add"),
+        ("属性变换", [80, 120, 180], "+180", "add"),
+        ("蓄击强化", [1.3], "×1.30\n（+30%）", "multiplier"),
+    ],
+)
+def test_supplementary_skill_numbers_keep_their_units(archive, name, values, last, mode):
+    skill = archive.get_skill(name)
+    assert skill["numeric_groups"][0]["values"] == values
+    assert skill["numeric_groups"][0]["mode"] == mode
+    tables = skill_tables(skill)
+    assert tables[0].rows[0][-1] == last
+    assert "略微" not in str(tables[0].rows)
+    if name == "属性吸收":
+        assert skill["numeric_groups"][-1]["values"] == [4, 6, 8]
+        assert "+20" in "\n".join(skill["numeric_notes"])
+    if name == "蓄力大师":
+        assert "未提供长枪" in "\n".join(skill["numeric_notes"])
+
+
+def test_burst_keeps_initial_stage_weapon_differences_and_missing_values(archive):
+    skill = archive.get_skill("连击")
+    groups = skill["numeric_groups"]
+    great_sword = next(
+        g for g in groups if g["effect"] == "基础攻击力增加" and "大剑" in g["weapon_label"]
+    )
+    assert great_sword["values"] == [5, 10, 12, 14, 16, 18]
+    assert great_sword["initial_stage"] is True
+    bowguns = next(
+        g for g in groups if g["effect"] == "面板属性增加" and "轻弩" in g["weapon_label"]
+    )
+    assert bowguns["values"] == [None] * 6
+    table = skill_tables(skill)[0]
+    assert table.headers[2:] == ["初段", *[f"后段 Lv.{n}" for n in range(1, 6)]]
+    assert len(table.rows) == 7
+    assert any(row[2:] == ["—"] * 6 for row in table.rows)
+    assert "默认二段100%" not in str(table)
+
+
+def test_series_skill_uses_piece_counts_and_keeps_numeric_state_effects(archive):
+    table = skill_tables(archive.get_skill("黑蚀龙之力"))[0]
+    assert table.headers[0] == "件数"
+    assert [r[0] for r in table.rows] == ["2件", "4件"]
+    assert "攻击力+10" in table.rows[1][1]
+    assert "攻击力+15" in table.rows[1][1]
+    assert "覆盖率" not in table.rows[1][1]
 
 
 def test_solo_arch_tempered_arkveld_full_data(archive):
