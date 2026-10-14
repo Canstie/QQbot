@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import logging
+
 import nonebot
 from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
+from nonebot.log import LoguruHandler
 
 from qq_personal_bot.activity import close_group_activity
 from qq_personal_bot.ai_transport import close_ai_clients
@@ -17,6 +20,11 @@ nonebot.init(
     command_start={"/"},
     superusers={str(admin) for admin in settings.admins},
 )
+
+transport_logger = logging.getLogger("qq_personal_bot.ai_transport")
+transport_logger.setLevel(logging.INFO)
+transport_logger.addHandler(LoguruHandler())
+transport_logger.propagate = False
 
 driver = nonebot.get_driver()
 driver.register_adapter(OneBotV11Adapter)
