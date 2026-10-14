@@ -1220,6 +1220,7 @@ name = "qq-personal-bot"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "httpx" },
     { name = "lunar-python" },
     { name = "lupa" },
     { name = "minio" },
@@ -1240,6 +1241,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "httpx", specifier = ">=0.28.1,<1" },
     { name = "lunar-python", specifier = ">=1.4.8,<2" },
     { name = "lupa", specifier = ">=2.8" },
     { name = "minio", specifier = ">=7.2.0,<8" },

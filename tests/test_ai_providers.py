@@ -9,7 +9,7 @@ from urllib.error import HTTPError
 import pytest
 from fastapi.testclient import TestClient
 
-from qq_personal_bot import dsapi, group_digest, memory_graph, provider_web
+from qq_personal_bot import ai_transport, dsapi, group_digest, memory_graph, provider_web
 from qq_personal_bot.ai_models import catalog_model_option
 from qq_personal_bot.ai_providers import active_ai_model, resolve_ai_settings
 from qq_personal_bot.core.models import MessageEvent
@@ -196,7 +196,7 @@ def test_switching_knowledge_bases_keeps_global_model(context):
 
 
 def test_tls_compatibility_keeps_certificate_verification_and_is_provider_specific(
-    context, monkeypatch
+    context,
 ):
     _, store, settings = context
     provider_id = store.save_ai_provider(
@@ -208,17 +208,10 @@ def test_tls_compatibility_keeps_certificate_verification_and_is_provider_specif
     )
     store.activate_ai_provider(provider_id)
     routed = resolve_ai_settings(settings, store)
-    captured = {}
-
-    def open_request(request, timeout, **kwargs):
-        captured.update(kwargs)
-        return object()
-
-    monkeypatch.setattr(dsapi, "urlopen", open_request)
-    dsapi._open_ai_request(None, routed)
-    assert captured["context"].check_hostname
-    assert captured["context"].verify_mode == ssl.CERT_REQUIRED
-    assert captured["context"].maximum_version == ssl.TLSVersion.TLSv1_2
+    context = ai_transport._ssl_context(routed.dsapi_tls_mode)
+    assert context.check_hostname
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    assert context.maximum_version == ssl.TLSVersion.TLSv1_2
     assert settings.dsapi_tls_mode == "auto"
 
 
@@ -315,18 +308,18 @@ async def test_every_ai_entry_uses_selected_provider_and_model_without_deepseek_
                 {"choices": [{"message": {"content": text}, "finish_reason": "stop"}]}
             ).encode()
 
-    def request(req, timeout):
+    def request(req, settings):
         requests.append(
             {
                 "url": req.full_url,
                 "auth": req.headers["Authorization"],
                 "body": json.loads(req.data),
-                "timeout": timeout,
+                "timeout": settings.dsapi_timeout_seconds,
             }
         )
         return Response()
 
-    monkeypatch.setattr(dsapi, "urlopen", request)
+    monkeypatch.setattr(dsapi, "_open_ai_request", request)
     monkeypatch.setattr(dsapi, "build_mention_prompt", AsyncMock(return_value="你好"))
     monkeypatch.setattr(dsapi, "refresh_memory_graph", AsyncMock())
     monkeypatch.setattr(dsapi, "graph_enabled", lambda *args: True)

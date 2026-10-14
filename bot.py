@@ -4,6 +4,7 @@ import nonebot
 from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
 
 from qq_personal_bot.activity import close_group_activity
+from qq_personal_bot.ai_transport import close_ai_clients
 from qq_personal_bot.memory_graph import MemoryGraphWorker
 from qq_personal_bot.runtime import get_settings, get_store
 
@@ -31,6 +32,7 @@ async def _start_memory_graph() -> None:
 async def _flush_activity_on_shutdown() -> None:
     await close_group_activity()
     await memory_worker.stop()
+    close_ai_clients()
 
 get_store()
 

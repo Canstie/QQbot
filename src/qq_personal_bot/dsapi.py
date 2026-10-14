@@ -11,6 +11,7 @@ import re
 import ssl
 import time
 from collections.abc import Mapping, Sequence
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -18,6 +19,7 @@ from urllib.request import Request, urlopen
 
 from qq_personal_bot.ai_models import catalog_model_option, is_vision_dsapi_model
 from qq_personal_bot.ai_providers import active_ai_model, resolve_ai_settings
+from qq_personal_bot.ai_transport import AITransportError, request_ai_bytes
 from qq_personal_bot.classic_storage import classic_image_type, read_classic_image_source
 from qq_personal_bot.core.models import MessageEvent
 from qq_personal_bot.core.store import PolicyStore
@@ -83,6 +85,11 @@ class DSAPIImageError(DSAPIError):
 
 
 def _open_ai_request(request: Request, settings: AppSettings):
+    if settings.dsapi_provider_managed:
+        try:
+            return BytesIO(request_ai_bytes(request, settings))
+        except AITransportError as exc:
+            raise DSAPIError(str(exc)) from exc
     if settings.dsapi_tls_mode == "tls12":
         context = ssl.create_default_context()
         context.maximum_version = ssl.TLSVersion.TLSv1_2
