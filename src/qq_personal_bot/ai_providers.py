@@ -16,6 +16,7 @@ def provider_settings(
         dsapi_api_key=provider["api_key"],
         dsapi_model=model,
         dsapi_api_format=provider["api_format"],
+        dsapi_tls_mode=provider.get("tls_mode", "auto"),
         dsapi_timeout_seconds=provider["timeout_seconds"],
         dsapi_provider_id=provider["id"],
         dsapi_provider_managed=managed,

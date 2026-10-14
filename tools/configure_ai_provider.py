@@ -13,7 +13,7 @@ from qq_personal_bot.dsapi import DSAPIError, _request_chat_completion, fetch_ds
 from qq_personal_bot.settings import AppSettings
 
 
-def configure(settings, store, *, name, base_url, model, api_key, test_all=False):
+def configure(settings, store, *, name, base_url, model, api_key, test_all=False, tls_mode="auto"):
     base_url = normalize_ai_base_url(base_url)
     existing = next(
         (
@@ -29,6 +29,7 @@ def configure(settings, store, *, name, base_url, model, api_key, test_all=False
         "api_key": api_key,
         "default_model": model,
         "api_format": "openai",
+        "tls_mode": tls_mode,
         "timeout_seconds": 60,
         "models": [],
     }
@@ -77,6 +78,7 @@ def configure(settings, store, *, name, base_url, model, api_key, test_all=False
         default_model=model,
         api_key=api_key,
         api_format="openai",
+        tls_mode=tls_mode,
         timeout_seconds=60,
         provider_id=existing["id"] if existing else None,
     )
@@ -93,6 +95,7 @@ def main():
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--model", required=True)
     parser.add_argument("--test-all", action="store_true")
+    parser.add_argument("--tls-mode", choices=("auto", "tls12"), default="auto")
     args = parser.parse_args()
     key = sys.stdin.readline().strip()
     if not key:
@@ -110,6 +113,7 @@ def main():
             model=args.model,
             api_key=key,
             test_all=args.test_all,
+            tls_mode=args.tls_mode,
         )
     except (ValueError, DSAPIError) as exc:
         print(f"Configuration failed: {exc}", file=sys.stderr)

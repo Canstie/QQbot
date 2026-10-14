@@ -48,6 +48,11 @@ class AIProviderStore:
                 updated_at REAL NOT NULL
             )
         """)
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(ai_providers)")}
+        if "tls_mode" not in columns:
+            conn.execute(
+                "ALTER TABLE ai_providers ADD COLUMN tls_mode TEXT NOT NULL DEFAULT 'auto'"
+            )
         legacy_flash_ids = {"deepseek-v4-flash", "deepseek-v4-flash-vision-exp"}
         conn.execute(
             "UPDATE ai_providers SET default_model='deepseek-flash' "
@@ -144,6 +149,7 @@ class AIProviderStore:
         base_url: str,
         default_model: str,
         api_format: str = "openai",
+        tls_mode: str = "auto",
         timeout_seconds: float = 60,
         api_key: str | None = None,
         provider_id: int | None = None,
@@ -156,6 +162,8 @@ class AIProviderStore:
         default_model = self._normalize_dsapi_model(default_model)
         if api_format not in {"openai", "deepseek"}:
             raise ValueError("请选择兼容接口或 DeepSeek 接口")
+        if tls_mode not in {"auto", "tls12"}:
+            raise ValueError("请选择自动 TLS 或 TLS 1.2 兼容模式")
         if not 5 <= timeout_seconds <= 600:
             raise ValueError("请求超时须在 5—600 秒之间")
         existing = self.get_ai_provider(provider_id) if provider_id is not None else None
@@ -194,6 +202,7 @@ class AIProviderStore:
                 {"name": name, "default_model": default_model, "api_format": api_format},
                 conn=conn,
             )
+            conn.execute("UPDATE ai_providers SET tls_mode=? WHERE id=?", (tls_mode, provider_id))
         self._invalidate_runtime_cache()
         return provider_id
 

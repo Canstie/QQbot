@@ -16,6 +16,7 @@ class ProviderPayload(BaseModel):
     default_model: str
     api_key: SecretStr | None = None
     api_format: str = "openai"
+    tls_mode: str = "auto"
     timeout_seconds: float = 60
 
 
@@ -44,6 +45,7 @@ def register_ai_provider_routes(app, get_settings, get_store, require_token):
             base_url=payload.base_url,
             default_model=payload.default_model,
             api_format=payload.api_format,
+            tls_mode=payload.tls_mode,
             timeout_seconds=payload.timeout_seconds,
             api_key=key or None,
             provider_id=provider_id,

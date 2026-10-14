@@ -8,6 +8,7 @@ const draftFrom = (provider = {}) => ({
   name: provider.name || "", base_url: provider.base_url || "https://",
   default_model: provider.default_model || "", api_key: "",
   api_format: provider.api_format || "openai", timeout_seconds: provider.timeout_seconds || 60,
+  tls_mode: provider.tls_mode || "auto",
 });
 
 export default function AiProvidersPanel({ data, onChanged }) {
@@ -91,6 +92,7 @@ export default function AiProvidersPanel({ data, onChanged }) {
           <Field label="当前供应商模型" hint="所有 AI 功能统一使用此模型"><input list="provider-model-catalog" value={draft.default_model} disabled={Boolean(busy)} onChange={(event) => update("default_model", event.target.value)} placeholder="模型完整名称" /><datalist id="provider-model-catalog">{models.map((item) => <option key={item.id} value={item.id} />)}</datalist></Field>
           <Field label="接口类型"><select value={draft.api_format} disabled={Boolean(busy)} onChange={(event) => update("api_format", event.target.value)}><option value="openai">通用兼容接口（Gemini / 多模型网关）</option><option value="deepseek">DeepSeek（支持 Thinking 开关）</option></select></Field>
           <Field label="请求超时（秒）"><input type="number" min="5" max="600" value={draft.timeout_seconds} disabled={Boolean(busy)} onChange={(event) => update("timeout_seconds", event.target.value)} /></Field>
+          <Field label="TLS 协商" hint="连接超时时可尝试兼容模式，仍校验证书"><select value={draft.tls_mode} disabled={Boolean(busy)} onChange={(event) => update("tls_mode", event.target.value)}><option value="auto">自动协商</option><option value="tls12">TLS 1.2 兼容模式</option></select></Field>
         </div>
         <div className="provider-actions">
           <Button icon={Save} disabled={Boolean(busy)} onClick={save}>{busy === "save" ? "保存中" : "保存供应商"}</Button>

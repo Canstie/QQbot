@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import ssl
 from dataclasses import replace
 from unittest.mock import AsyncMock
 
@@ -191,6 +192,33 @@ def test_switching_knowledge_bases_keeps_global_model(context):
         active_ai_model(store.get_dsapi_config(), resolve_ai_settings(settings, store))
         == "qwen3.8-max"
     )
+
+
+def test_tls_compatibility_keeps_certificate_verification_and_is_provider_specific(
+    context, monkeypatch
+):
+    _, store, settings = context
+    provider_id = store.save_ai_provider(
+        name="TLS gateway",
+        base_url="https://gateway.example",
+        default_model="gemini-3.8-flash-high",
+        api_key="new-secret",
+        tls_mode="tls12",
+    )
+    store.activate_ai_provider(provider_id)
+    routed = resolve_ai_settings(settings, store)
+    captured = {}
+
+    def open_request(request, timeout, **kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(dsapi, "urlopen", open_request)
+    dsapi._open_ai_request(None, routed)
+    assert captured["context"].check_hostname
+    assert captured["context"].verify_mode == ssl.CERT_REQUIRED
+    assert captured["context"].maximum_version == ssl.TLSVersion.TLSv1_2
+    assert settings.dsapi_tls_mode == "auto"
 
 
 def test_provisioning_tests_catalog_before_switch_and_does_not_change_route_on_failure(

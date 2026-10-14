@@ -6,6 +6,7 @@ import html
 import json
 import logging
 import re
+import ssl
 import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -72,6 +73,14 @@ class DSAPILengthError(DSAPIError):
     """The model stopped before completing its answer."""
 
 
+def _open_ai_request(request: Request, settings: AppSettings):
+    if settings.dsapi_tls_mode == "tls12":
+        context = ssl.create_default_context()
+        context.maximum_version = ssl.TLSVersion.TLSv1_2
+        return urlopen(request, timeout=settings.dsapi_timeout_seconds, context=context)
+    return urlopen(request, timeout=settings.dsapi_timeout_seconds)
+
+
 def fetch_dsapi_models(settings: AppSettings) -> list[dict[str, Any]]:
     if not settings.dsapi_api_key:
         raise DSAPIError("DSAPI key is not configured")
@@ -85,7 +94,7 @@ def fetch_dsapi_models(settings: AppSettings) -> list[dict[str, Any]]:
         method="GET",
     )
     try:
-        with urlopen(request, timeout=settings.dsapi_timeout_seconds) as response:
+        with _open_ai_request(request, settings) as response:
             result = json.loads(response.read().decode("utf-8"))
     except HTTPError as exc:
         raise DSAPIError(f"HTTP {exc.code}") from exc
@@ -774,7 +783,7 @@ def _request_chat_completion(
     )
 
     try:
-        with urlopen(request, timeout=settings.dsapi_timeout_seconds) as response:
+        with _open_ai_request(request, settings) as response:
             result = json.loads(response.read().decode("utf-8"))
     except HTTPError as exc:
         raise DSAPIError(f"HTTP {exc.code}") from exc
