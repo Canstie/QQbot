@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from qq_personal_bot.core.ai_providers import AIProviderStore
 from qq_personal_bot.core.memory_graph import MemoryGraphStore
 from qq_personal_bot.features import feature_catalog, feature_defaults
 from qq_personal_bot.menu_recipes import (
@@ -41,7 +42,7 @@ def _strip_cq_segments(message: str) -> str:
     return re.sub(r"\[CQ:[^\]]+\]", "", message)
 
 
-class PolicyStore(MemoryGraphStore):
+class PolicyStore(MemoryGraphStore, AIProviderStore):
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self._runtime_cache: dict[tuple[Any, ...], tuple[float, Any]] = {}
@@ -64,6 +65,7 @@ class PolicyStore(MemoryGraphStore):
                     self.add_admin(admin_id, actor_id=0, conn=conn)
             self._initialize_dsapi_settings(conn)
             self._initialize_knowledge_bases(conn, settings)
+            self._initialize_ai_providers(conn, settings)
             conn.execute(
                 "UPDATE dsapi_knowledge_bases SET model = 'deepseek-flash' "
                 "WHERE model IN ('deepseek-v4-flash', 'deepseek-v4-flash-vision-exp')"
@@ -1086,6 +1088,9 @@ class PolicyStore(MemoryGraphStore):
 
     def set_active_dsapi_model(self, model: str, *, actor_id: int) -> dict[str, Any]:
         normalized_model = self._normalize_dsapi_model(model)
+        if self.ai_provider_managed():
+            self.set_ai_provider_model(normalized_model, actor_id=actor_id)
+            return {"model": normalized_model}
         with self._connect() as conn:
             active_id = self._active_knowledge_id(conn)
             if active_id is None:

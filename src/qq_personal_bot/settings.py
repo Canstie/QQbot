@@ -76,6 +76,10 @@ class AppSettings:
     dsapi_base_url: str = "https://api.deepseek.com"
     dsapi_api_key: str = ""
     dsapi_model: str = "deepseek-flash"
+    dsapi_api_format: str = "deepseek"
+    dsapi_provider_id: int = 0
+    dsapi_provider_managed: bool = False
+    dsapi_vision_enabled: bool = False
     dsapi_timeout_seconds: float = 30.0
     dsapi_max_tokens: int = 80
     dsapi_history_idle_seconds: int = 1200

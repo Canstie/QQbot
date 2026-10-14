@@ -11,6 +11,7 @@ from typing import Any
 
 from nonebot import logger
 
+from qq_personal_bot.ai_providers import active_ai_model, resolve_ai_settings
 from qq_personal_bot.core.models import MessageEvent
 from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.dsapi import DSAPIError, _request_chat_completion_with_fallback
@@ -48,6 +49,7 @@ async def generate_group_digest_report(
     *,
     yesterday: bool = False,
 ) -> GroupDigestResult:
+    settings = resolve_ai_settings(settings, store)
     if event.group_id is None:
         raise GroupDigestEmptyError("这个功能只能在群聊里使用。")
     if not settings.dsapi_api_key:
@@ -81,8 +83,7 @@ async def generate_group_digest_report(
         )
 
     config = store.get_dsapi_config()
-    active = config.get("active_knowledge") or {}
-    model = str(active.get("model") or settings.dsapi_model)
+    model = active_ai_model(config, settings)
     with latency_phase("digest_deepseek"):
         digest = await _summarize_transcript(
             transcript_path,
@@ -344,7 +345,7 @@ async def _complete(
             {"role": "user", "content": prompt},
         ],
         model=model,
-        max_tokens=_DIGEST_MAX_TOKENS,
+        max_tokens=_DIGEST_MAX_TOKENS if settings.dsapi_api_format == "deepseek" else None,
         thinking_enabled=False,
         temperature=0.2,
     )

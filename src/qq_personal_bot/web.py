@@ -28,7 +28,7 @@ from nonebot.adapters.onebot.v11 import Message, MessageSegment
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
-from qq_personal_bot.ai_models import public_dsapi_model_options
+from qq_personal_bot.ai_providers import active_ai_model, resolve_ai_settings
 from qq_personal_bot.classic_sharing import (
     bind_classic_group,
     classic_lock,
@@ -52,6 +52,7 @@ from qq_personal_bot.miniapp import (
     XiaoheiheCaptchaRequired,
     cache_xiaoheihe_images_with_captcha,
 )
+from qq_personal_bot.provider_web import register_ai_provider_routes
 from qq_personal_bot.replies import (
     DEFAULT_CONFIG,
     parse_reply_config,
@@ -229,6 +230,8 @@ def create_app():
         if not _is_authenticated(request):
             raise HTTPException(status_code=401, detail="invalid admin token")
 
+    register_ai_provider_routes(app, get_settings, get_store, require_token)
+
     @app.get("/")
     async def index() -> FileResponse:
         return FileResponse(static_dir / "index.html")
@@ -405,14 +408,15 @@ def create_app():
     @app.get("/api/dsapi")
     async def get_dsapi_config() -> dict:
         config = get_store().get_dsapi_config()
-        settings = get_settings()
+        settings = resolve_ai_settings(get_settings(), get_store())
         active_knowledge = config.get("active_knowledge") or {}
         return {
             **config,
             "api_configured": bool(settings.dsapi_enabled and settings.dsapi_api_key),
-            "model": active_knowledge.get("model") or settings.dsapi_model,
+            "model": active_ai_model(config, settings),
             "max_tokens": active_knowledge.get("max_tokens") or settings.dsapi_max_tokens,
-            "thinking_enabled": bool(active_knowledge.get("thinking_enabled", False)),
+            "thinking_enabled": settings.dsapi_api_format == "deepseek" and bool(active_knowledge.get("thinking_enabled", False)),
+            "thinking_supported": settings.dsapi_api_format == "deepseek",
             "response_mode": active_knowledge.get("response_mode") or "short",
             "max_reply_messages": active_knowledge.get("max_reply_messages") or 1,
             "temperature": active_knowledge.get("temperature"),
@@ -420,7 +424,10 @@ def create_app():
             "default_max_tokens": settings.dsapi_max_tokens,
             "base_url": settings.dsapi_base_url,
             "history_idle_seconds": settings.dsapi_history_idle_seconds,
-            "model_options": public_dsapi_model_options(),
+            "model_options": get_store().get_ai_model_options(),
+            "providers": get_store().list_ai_providers(),
+            "active_provider_id": int(get_store().get_setting("ai_active_provider_id", "0")),
+            "provider_managed": settings.dsapi_provider_managed,
         }
 
     @app.post("/api/dsapi")
@@ -487,11 +494,18 @@ def create_app():
     @app.post("/api/dsapi/models/refresh")
     async def refresh_dsapi_models(request: Request) -> dict:
         require_token(request)
-        settings = get_settings()
+        store = get_store()
+        settings = resolve_ai_settings(get_settings(), store)
+        provider = store.get_active_ai_provider()
         if not settings.dsapi_api_key:
             raise HTTPException(status_code=400, detail="DSAPI API Key 未配置")
         try:
             models = await asyncio.to_thread(fetch_dsapi_models, settings)
+            if provider:
+                store.save_ai_provider_models(provider["id"], models,
+                                              expected_updated_at=provider["updated_at"])
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         except DSAPIError as exc:
             raise HTTPException(status_code=502, detail=f"获取 DSAPI 模型失败：{exc}") from exc
         return {
@@ -512,7 +526,7 @@ def create_app():
                 model=(
                     payload.model
                     if payload.model is not None
-                    else get_settings().dsapi_model
+                    else resolve_ai_settings(get_settings(), get_store()).dsapi_model
                 ),
                 thinking_enabled=bool(payload.thinking_enabled),
                 max_tokens=(

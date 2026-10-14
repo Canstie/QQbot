@@ -25,7 +25,7 @@ export default function OverviewPage({ summary, onNavigate }) {
             <p>OneBot 正在接收群事件，策略层决定消息进入 Lua 指令还是 AI 对话。</p>
             <div className="inline-statuses">
               <Status tone="ok">OneBot 在线</Status>
-              <Status tone={ai?.api_configured ? "ok" : "error"}>DSAPI {ai?.api_configured ? "可用" : "未配置"}</Status>
+              <Status tone={ai?.api_configured ? "ok" : "error"}>AI 接口 {ai?.api_configured ? "可用" : "未配置"}</Status>
               <Status>{policy?.mode || "读取中"}</Status>
             </div>
           </div>
@@ -43,7 +43,7 @@ export default function OverviewPage({ summary, onNavigate }) {
         <Panel title="常用工作区" eyebrow="Quick routes">
           <div className="link-stack">
             <LinkRow icon={Settings2} title="调整群策略" description="启用群、触发方式与频率限制" meta={`${policy?.enabled_groups?.length ?? 0} 群`} onClick={() => onNavigate("policy")} />
-            <LinkRow icon={BrainCircuit} title="切换 AI 角色" description="知识提示词与短期上下文" meta={ai?.model || "DSAPI"} onClick={() => onNavigate("ai")} />
+            <LinkRow icon={BrainCircuit} title="切换 AI 模型与角色" description="供应商、全局模型与角色知识" meta={ai?.model || "AI"} onClick={() => onNavigate("ai")} />
             <LinkRow icon={Code2} title="维护 Lua 指令" description="编辑群功能脚本并即时生效" meta={`${summary?.lua?.commands?.length ?? 0} 个`} onClick={() => onNavigate("lua")} />
             <LinkRow icon={MessageSquareText} title="管理固定回复" description="前缀与免前缀触发规则" onClick={() => onNavigate("replies")} />
           </div>

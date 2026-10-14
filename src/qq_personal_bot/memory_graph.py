@@ -9,6 +9,7 @@ from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from qq_personal_bot.ai_providers import active_ai_model, resolve_ai_settings
 from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.settings import AppSettings
 
@@ -108,6 +109,7 @@ def parse_claims(response: str, batch: dict[str, Any]) -> list[dict[str, Any]]:
 
 def memory_pause_reason(store: PolicyStore, settings: AppSettings, group_id: int) -> str:
     """Collection opts a group into extraction; conversational AI has a separate allowlist."""
+    settings = resolve_ai_settings(settings, store)
     if not store.is_memory_group_enabled(group_id):
         return "本群未开启图谱采集"
     if not settings.dsapi_api_key:
@@ -162,6 +164,7 @@ def get_memory_status(store: PolicyStore, settings: AppSettings) -> dict[str, An
 
 async def refresh_memory_graph(store: PolicyStore, settings: AppSettings, group_id: int,
                                *, force: bool = False) -> bool:
+    settings = resolve_ai_settings(settings, store)
     if await asyncio.to_thread(memory_pause_reason, store, settings, group_id):
         return False
     batch = await asyncio.to_thread(store.claim_memory_batch, group_id, force=force)
@@ -181,13 +184,12 @@ async def refresh_memory_graph(store: PolicyStore, settings: AppSettings, group_
                      "time": datetime.fromtimestamp(m["created_at"], zone).isoformat()}
                     for m in sorted(batch["messages"], key=lambda m: (m["created_at"], m["id"]))]
         config = store.get_dsapi_config()
-        knowledge = config.get("active_knowledge") or {}
         response = await asyncio.to_thread(
             _request_chat_completion_with_fallback, settings,
             [{"role": "system", "content": EXTRACTION_PROMPT},
              {"role": "user", "content": json.dumps(
                  {"group_id": group_id, "new_ids": batch["new_ids"], "messages": messages}, ensure_ascii=False)}],
-            model=str(knowledge.get("model") or settings.dsapi_model),
+            model=active_ai_model(config, settings),
             max_tokens=4000, thinking_enabled=False, temperature=0.1,
         )
         claims = parse_claims(response, batch)

@@ -71,15 +71,15 @@ def _parse_ai_target_user_id(value: str) -> int:
     return int(qq)
 
 
-def _format_ai_models(current_model: str) -> str:
+def _format_ai_models(current_model: str, options: list[dict[str, Any]] | None = None) -> str:
     lines = ["AI 模型列表"]
-    for index, option in enumerate(DSAPI_MODEL_OPTIONS, start=1):
+    for index, option in enumerate(options if options is not None else DSAPI_MODEL_OPTIONS, start=1):
         current = "（当前）" if option["id"] == current_model else ""
         vision = "，支持引用图片识别" if option["vision"] else ""
         lines.append(
             f"{index}. {option['key']} — {option['id']}{vision}{current}"
         )
-    lines.append("使用：/bot aim flash|pro")
+    lines.append("使用：/bot aim <模型名>")
     return "\n".join(lines)
 
 
@@ -312,12 +312,15 @@ async def _handle_bot_command(
         if command == "aim":
             config = store.get_dsapi_config()
             current_model = str((config.get("active_knowledge") or {}).get("model") or "")
+            options = store.get_ai_model_options() if hasattr(store, "get_ai_model_options") else None
+            if hasattr(store, "ai_provider_managed") and store.ai_provider_managed():
+                current_model = store.get_active_ai_provider()["default_model"]
             if len(parts) == 2 and parts[1].lower() == "list":
                 await _send_control_response(
                     matcher,
                     bot,
                     event,
-                    _format_ai_models(current_model),
+                    _format_ai_models(current_model, options),
                     explicit_group_send=explicit_group_send,
                 )
             if len(parts) != 2:
@@ -325,10 +328,10 @@ async def _handle_bot_command(
                     matcher,
                     bot,
                     event,
-                    "Usage: /bot aim list|flash|pro",
+                    "Usage: /bot aim list|<model>",
                     explicit_group_send=explicit_group_send,
                 )
-            option = resolve_dsapi_model(parts[1])
+            option = resolve_dsapi_model(parts[1], options)
             knowledge = store.set_active_dsapi_model(option["id"], actor_id=actor_id)
             suffix = (
                 "\n🖼 已开启引用图片识别。"

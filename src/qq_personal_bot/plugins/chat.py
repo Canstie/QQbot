@@ -606,7 +606,7 @@ async def _dispatch_onebot_message(
                 matcher,
                 bot,
                 event,
-                MessageSegment.text("群聊速报生成失败，请检查 DeepSeek 配置后再试。"),
+                MessageSegment.text("群聊速报生成失败，请检查 AI 供应商配置后再试。"),
                 explicit_group_send=explicit_group_send,
             )
             return

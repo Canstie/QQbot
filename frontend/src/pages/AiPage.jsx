@@ -3,21 +3,12 @@ import { BookOpen, BrainCircuit, CheckCircle2, Eraser, ImagePlus, Plus, RefreshC
 
 import { fileToDataUrl, formatBytes, formatIds, get, parseIds, post, put, remove } from "../api";
 import { Button, Empty, Field, IconButton, Metric, PageHeader, Panel, Status, Switch } from "../components/Ui";
-
-const DEFAULT_MODEL_OPTIONS = [
-  { key: "flash", id: "deepseek-flash", label: "Flash", vision: true },
-  { key: "pro", id: "deepseek-v4-pro", label: "Pro", vision: false },
-];
+import AiProvidersPanel from "../components/AiProvidersPanel";
 
 const RESPONSE_MODE_LABELS = {
   short: "短回复",
   normal: "正常回复",
   detailed: "详细回复",
-};
-
-const modelOptionsWithCurrent = (options, currentModel) => {
-  if (!currentModel || options.some((item) => item.id === currentModel)) return options;
-  return [{ key: "custom", id: currentModel, label: `现有模型：${currentModel}`, vision: false }, ...options];
 };
 
 const styleExamplesTextFrom = (examples = []) => examples
@@ -35,21 +26,9 @@ const parseStyleExamples = (value) => String(value || "")
   })
   .filter(Boolean);
 
-function ModelSelect({ value, options, onChange }) {
-  return (
-    <select value={value} onChange={(event) => onChange(event.target.value)}>
-      {modelOptionsWithCurrent(options, value).map((item) => {
-        const detail = item.key && item.key !== item.id ? item.key : item.owned_by;
-        return <option key={item.id} value={item.id}>{item.label || item.id}{detail ? `（${detail}）` : ""}</option>;
-      })}
-    </select>
-  );
-}
-
 const knowledgeDraftFrom = (knowledge = {}, defaults = {}) => ({
   name: knowledge.name || "",
   prompt: knowledge.prompt || "",
-  model: knowledge.model || defaults.model || defaults.default_model || "deepseek-flash",
   thinking_enabled: knowledge.thinking_enabled ?? false,
   history_turns: knowledge.history_turns ?? defaults.history_turns ?? 2,
   response_mode: knowledge.response_mode || "short",
@@ -89,15 +68,12 @@ export default function AiPage({ refreshVersion, onChanged }) {
   const [notice, setNotice] = useState("正在读取 AI 配置");
   const [stickers, setStickers] = useState([]);
   const [stickerFile, setStickerFile] = useState(null);
-  const [liveModelOptions, setLiveModelOptions] = useState(null);
-  const [refreshingModels, setRefreshingModels] = useState(false);
   const [quoteData, setQuoteData] = useState(null);
   const [quoteGroups, setQuoteGroups] = useState("");
   const [quoteClearGroup, setQuoteClearGroup] = useState("");
   const [quoteClearUser, setQuoteClearUser] = useState("");
   const [personGraph, setPersonGraph] = useState(null);
-  const modelOptions = liveModelOptions || data?.model_options || DEFAULT_MODEL_OPTIONS;
-  const visionEnabled = Boolean(modelOptions.find((item) => item.id === data?.model)?.vision);
+  const visionEnabled = Boolean(data?.model_options?.find((item) => item.id === data?.model)?.vision);
 
   const applyConfig = (result, preferredId = null) => {
     setData(result);
@@ -158,20 +134,6 @@ export default function AiPage({ refreshVersion, onChanged }) {
       setPersonGraph(result);
       setNotice(result.edges.length ? `已读取 ${result.edges.length} 条有来源的记忆` : "尚无可用人物记忆，需积累有内容的聊天");
     } catch (error) { setNotice(error.message); }
-  };
-
-  const refreshModels = async () => {
-    setRefreshingModels(true);
-    setNotice("正在从 DSAPI 获取最新模型");
-    try {
-      const result = await post("/dsapi/models/refresh", {});
-      setLiveModelOptions(result.models || []);
-      setNotice(`已获取 ${result.count} 个可用模型，可在模型下拉框中选择`);
-    } catch (error) {
-      setNotice(error.message);
-    } finally {
-      setRefreshingModels(false);
-    }
   };
 
   useEffect(() => {
@@ -339,9 +301,10 @@ export default function AiPage({ refreshVersion, onChanged }) {
 
   return (
     <>
-      <PageHeader eyebrow="Model memory" title="AI 角色与知识" description="维护多个角色知识库，随时切换当前设定，并控制每个群的短期对话。" actions={<Button icon={Save} onClick={save}>保存并生效</Button>} />
+      <PageHeader eyebrow="AI control" title="AI 供应商与角色" description="切换接口与模型，管理角色知识库和群聊记忆。" actions={<Button icon={Save} onClick={save}>保存并生效</Button>} />
+      <AiProvidersPanel data={data} onChanged={async () => { await load(); onChanged(); }} />
       <div className="ai-status-strip">
-        <div className="ai-status-strip__model"><BrainCircuit /><div><span>当前模型</span><strong>{data?.model || "读取中"}</strong><small>{data?.thinking_enabled ? "Thinking" : "Non-thinking"} · {data?.base_url || "-"}</small></div></div>
+        <div className="ai-status-strip__model"><BrainCircuit /><div><span>全局模型</span><strong>{data?.model || "读取中"}</strong><small>{data?.thinking_supported ? data?.thinking_enabled ? "Thinking" : "Non-thinking" : "思考由模型档位控制"} · {data?.base_url || "-"}</small></div></div>
         <Metric label="AI 启用群" value={data?.enabled_groups?.length ?? "-"} tone="blue" />
         <Metric label="上下文消息" value={data?.history_messages ?? "-"} tone="mint" />
         <Metric label="涉及群" value={data?.history_groups ?? "-"} tone="orange" />
@@ -349,14 +312,14 @@ export default function AiPage({ refreshVersion, onChanged }) {
       </div>
 
       <div className="content-grid">
-        <Panel title="角色知识库" eyebrow="Knowledge library" className="span-8" actions={<div className="button-cluster"><Button tone="ghost" icon={RefreshCw} disabled={refreshingModels || !data?.api_configured} aria-busy={refreshingModels} onClick={() => void refreshModels()}>{refreshingModels ? "获取中" : "获取最新模型"}</Button><Button tone="secondary" icon={Plus} onClick={openCreateKnowledge}>新建</Button></div>}>
+        <Panel title="角色知识库" eyebrow="Knowledge library" className="span-8" actions={<Button tone="secondary" icon={Plus} onClick={openCreateKnowledge}>新建</Button>}>
           <div className="knowledge-toolbar"><Switch checked={form.knowledgeEnabled} onChange={(value) => update("knowledgeEnabled", value)} label="挂载角色知识" description="关闭后只使用基础系统提示词" /><span><Sparkles size={15} /> {(data?.knowledge_bases?.length || 0)} 个知识库</span></div>
           <div className="knowledge-workspace">
             <aside className="knowledge-library">
               {(data?.knowledge_bases || []).map((item) => (
                 <button type="button" key={item.id} disabled={switchingKnowledgeId !== null} className={`knowledge-card ${selectedKnowledgeId === item.id ? "is-selected" : ""} ${item.active ? "is-active" : ""}`} onClick={() => void selectKnowledge(item)}>
                   <BookOpen size={17} />
-                  <span><strong>{item.name}</strong><small>{item.model} · {item.thinking_enabled ? "Thinking" : "Fast"} · {RESPONSE_MODE_LABELS[item.response_mode] || "短回复"} · {item.history_turns} 轮 · {item.prompt_chars.toLocaleString()} 字符</small></span>
+                  <span><strong>{item.name}</strong><small>{RESPONSE_MODE_LABELS[item.response_mode] || "短回复"} · {item.history_turns} 轮 · {item.prompt_chars.toLocaleString()} 字符</small></span>
                   {item.active && <b><CheckCircle2 size={12} />当前启用</b>}
                   {switchingKnowledgeId === item.id && <b>切换中</b>}
                 </button>
@@ -370,13 +333,12 @@ export default function AiPage({ refreshVersion, onChanged }) {
                   <span><Sparkles size={14} /> {knowledgeDraft.prompt.length.toLocaleString()} 字符</span>
                 </div>
                 <div className="knowledge-runtime-grid">
-                  <Field label="模型"><ModelSelect value={knowledgeDraft.model} options={modelOptions} onChange={(model) => setKnowledgeDraft((current) => ({ ...current, model }))} /></Field>
                   <Field label="AI 对话轮数"><input type="number" min="1" max="50" value={knowledgeDraft.history_turns} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, history_turns: event.target.value }))} /></Field>
                   <Field label="群聊上下文消息"><input type="number" min="1" max="100" value={knowledgeDraft.context_messages} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, context_messages: event.target.value }))} /></Field>
                   <Field label="回复模式"><select value={knowledgeDraft.response_mode} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, response_mode: event.target.value }))}><option value="short">短回复</option><option value="normal">正常回复</option><option value="detailed">详细回复</option></select></Field>
                   <Field label="单轮连续消息上限"><input type="number" min="1" max="3" value={knowledgeDraft.max_reply_messages} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, max_reply_messages: event.target.value }))} /></Field>
                   <Field label="Temperature" hint="留空使用服务商默认值"><input type="number" min="0" max="2" step="0.1" value={knowledgeDraft.temperature} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, temperature: event.target.value }))} /></Field>
-                  <Switch checked={knowledgeDraft.thinking_enabled} onChange={(value) => setKnowledgeDraft((current) => ({ ...current, thinking_enabled: value }))} label="Thinking 模式" description={knowledgeDraft.thinking_enabled ? "请求模型进行思考" : "Non-thinking，直接快速回复"} />
+                  <Switch checked={Boolean(data?.thinking_supported && knowledgeDraft.thinking_enabled)} disabled={!data?.thinking_supported} onChange={(value) => setKnowledgeDraft((current) => ({ ...current, thinking_enabled: value }))} label="Thinking 模式" description={!data?.thinking_supported ? "由模型档位控制，例如 high；接口不发送 DeepSeek 专属参数" : knowledgeDraft.thinking_enabled ? "请求模型进行思考" : "Non-thinking，直接快速回复"} />
                   <Switch checked={knowledgeDraft.web_search_enabled} onChange={(value) => setKnowledgeDraft((current) => ({ ...current, web_search_enabled: value }))} label="按需联网检索" description="搜索、最新消息等问题自动查询网页" />
                   <Switch checked={knowledgeDraft.relationship_memory_enabled} onChange={(value) => setKnowledgeDraft((current) => ({ ...current, relationship_memory_enabled: value }))} label="AI 自动维护人物关系" description={`按对方 QQ 自动归纳，当前已记住 ${knowledgeDraft.relationship_count || 0} 人`} />
                   <Field label="当前话题示例数"><input type="number" min="0" max="8" value={knowledgeDraft.similar_examples} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, similar_examples: event.target.value }))} /></Field>
@@ -471,7 +433,6 @@ export default function AiPage({ refreshVersion, onChanged }) {
             <div className="knowledge-modal__body">
               <div className="form-grid form-grid--2">
                 <Field label="知识库名称"><input autoFocus value={createDraft.name} maxLength={80} onChange={(event) => setCreateDraft((current) => ({ ...current, name: event.target.value }))} /></Field>
-                <Field label="模型"><ModelSelect value={createDraft.model} options={modelOptions} onChange={(model) => setCreateDraft((current) => ({ ...current, model }))} /></Field>
                 <Field label="AI 对话轮数"><input type="number" min="1" max="50" value={createDraft.history_turns} onChange={(event) => setCreateDraft((current) => ({ ...current, history_turns: event.target.value }))} /></Field>
                 <Field label="回复模式"><select value={createDraft.response_mode} onChange={(event) => setCreateDraft((current) => ({ ...current, response_mode: event.target.value }))}><option value="short">短回复</option><option value="normal">正常回复</option><option value="detailed">详细回复</option></select></Field>
                 <Field label="单轮连续消息上限"><input type="number" min="1" max="3" value={createDraft.max_reply_messages} onChange={(event) => setCreateDraft((current) => ({ ...current, max_reply_messages: event.target.value }))} /></Field>

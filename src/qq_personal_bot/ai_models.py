@@ -22,8 +22,13 @@ _MODELS_BY_ID = {str(item["id"]): item for item in DSAPI_MODEL_OPTIONS}
 _LEGACY_FLASH_IDS = {"deepseek-v4-flash", "deepseek-v4-flash-vision-exp"}
 
 
-def resolve_dsapi_model(value: str) -> dict[str, Any]:
+def resolve_dsapi_model(value: str, available_models: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     normalized = str(value).strip().lower()
+    if available_models is not None:
+        for item in available_models:
+            if value.strip() == item["id"] or normalized == str(item.get("key", "")).lower():
+                return dict(item)
+        raise ValueError("模型不在当前供应商列表中，请先获取最新模型")
     option = _MODELS_BY_KEY.get(normalized) or _MODELS_BY_ID.get(normalized)
     if option is None and (normalized in _LEGACY_FLASH_IDS or normalized == "vision"):
         option = _MODELS_BY_KEY["flash"]
@@ -46,3 +51,13 @@ def is_vision_dsapi_model(model_id: str) -> bool:
 
 def public_dsapi_model_options() -> list[dict[str, Any]]:
     return [dict(option) for option in DSAPI_MODEL_OPTIONS]
+
+
+def catalog_model_option(model_id: str) -> dict[str, Any]:
+    option = dsapi_model_option(model_id)
+    if option:
+        return option
+    lowered = model_id.lower()
+    return {"id": model_id, "key": model_id, "label": model_id,
+            "vision": lowered.startswith(("gemini-", "gpt-4o", "gpt-4.1", "claude-")),
+            "family": model_id.split("-")[0]}

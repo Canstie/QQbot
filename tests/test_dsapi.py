@@ -924,6 +924,7 @@ def test_fetch_models_uses_configured_dsapi_endpoint(tmp_path, monkeypatch):
     assert [item["id"] for item in models] == [
         "deepseek-flash",
         "deepseek-v4-pro",
+        "deepseek-v4-flash",
     ]
     assert models[0]["key"] == "flash"
     assert models[0]["vision"] is True

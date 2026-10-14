@@ -13,7 +13,8 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from qq_personal_bot.ai_models import is_vision_dsapi_model, resolve_dsapi_model
+from qq_personal_bot.ai_models import catalog_model_option, is_vision_dsapi_model
+from qq_personal_bot.ai_providers import active_ai_model, resolve_ai_settings
 from qq_personal_bot.core.models import MessageEvent
 from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.memory_graph import build_graph_guidance, graph_enabled, refresh_memory_graph
@@ -79,6 +80,7 @@ def fetch_dsapi_models(settings: AppSettings) -> list[dict[str, Any]]:
         headers={
             "Authorization": f"Bearer {settings.dsapi_api_key}",
             "Accept": "application/json",
+            "User-Agent": "QQBot/0.1",
         },
         method="GET",
     )
@@ -106,10 +108,7 @@ def fetch_dsapi_models(settings: AppSettings) -> list[dict[str, Any]]:
         model_id = str(entry.get("id") or "").strip()
         if not model_id:
             continue
-        try:
-            option = resolve_dsapi_model(model_id)
-        except ValueError:
-            continue
+        option = catalog_model_option(model_id)
         if option["id"] in seen:
             continue
         seen.add(option["id"])
@@ -129,6 +128,7 @@ async def generate_mention_reply(
 ) -> str | list[str] | None:
     if store.is_dsapi_user_blocked(event.user_id):
         return None
+    settings = resolve_ai_settings(settings, store)
     if not store.is_feature_enabled("ai.master", settings.dsapi_enabled) or not settings.dsapi_api_key:
         return None
 
@@ -139,11 +139,12 @@ async def generate_mention_reply(
         return None
 
     active_knowledge = config.get("active_knowledge") or {}
-    model = active_knowledge.get("model") or settings.dsapi_model
+    model = active_ai_model(config, settings)
     prompt = await build_mention_prompt(
         bot,
         event,
-        vision_enabled=is_vision_dsapi_model(model),
+        vision_enabled=(settings.dsapi_vision_enabled if settings.dsapi_provider_managed
+                        else is_vision_dsapi_model(model)),
     )
     if prompt is None:
         return None
@@ -181,6 +182,7 @@ async def generate_random_group_reply(
 ) -> str | list[str] | Path | None:
     if store.is_dsapi_user_blocked(event.user_id):
         return None
+    settings = resolve_ai_settings(settings, store)
     if not store.is_feature_enabled("ai.master", settings.dsapi_enabled) or not settings.dsapi_api_key:
         return None
 
@@ -243,6 +245,7 @@ async def generate_roast_reply(
     store: PolicyStore,
     request_text: str = "评价一下这位群友",
 ) -> str | None:
+    settings = resolve_ai_settings(settings, store)
     if not await asyncio.to_thread(graph_enabled, store, settings, group_id):
         return None
     await refresh_memory_graph(store, settings, group_id, force=True)
@@ -288,7 +291,7 @@ async def generate_roast_reply(
         _request_chat_completion_with_fallback,
         settings,
         messages,
-        model=str(knowledge.get("model") or settings.dsapi_model),
+        model=active_ai_model(config, settings),
         max_tokens=None,
         thinking_enabled=bool(knowledge.get("thinking_enabled", False)),
         temperature=knowledge.get("temperature"),
@@ -476,7 +479,7 @@ async def _generate_text_reply(
         _request_chat_completion_with_fallback,
         settings,
         messages,
-        model=active_knowledge.get("model") or settings.dsapi_model,
+        model=active_ai_model(config, settings),
         max_tokens=None,
         thinking_enabled=bool(active_knowledge.get("thinking_enabled", False)),
         temperature=active_knowledge.get("temperature"),
@@ -509,7 +512,7 @@ async def _generate_text_reply(
                     user_id=int(event.user_id),
                     user_message=event.raw_message.strip(),
                     assistant_message=assistant_history,
-                    model=active_knowledge.get("model") or settings.dsapi_model,
+                    model=active_ai_model(config, settings),
                 )
             )
             _background_relationship_tasks.add(task)
@@ -590,6 +593,7 @@ def _request_chat_completion_with_fallback(
     thinking_enabled: bool,
     temperature: float | None,
 ) -> str:
+    thinking_enabled = thinking_enabled and settings.dsapi_api_format == "deepseek"
     try:
         response = _request_chat_completion(
             settings,
@@ -749,9 +753,10 @@ def _request_chat_completion(
     body: dict[str, Any] = {
         "model": model or settings.dsapi_model,
         "messages": messages,
-        "thinking": {"type": "enabled" if thinking_enabled else "disabled"},
         "stream": False,
     }
+    if settings.dsapi_api_format == "deepseek":
+        body["thinking"] = {"type": "enabled" if thinking_enabled else "disabled"}
     if max_tokens is not None:
         body["max_tokens"] = int(max_tokens)
     if temperature is not None:
@@ -763,6 +768,7 @@ def _request_chat_completion(
         headers={
             "Authorization": f"Bearer {settings.dsapi_api_key}",
             "Content-Type": "application/json",
+            "User-Agent": "QQBot/0.1",
         },
         method="POST",
     )
