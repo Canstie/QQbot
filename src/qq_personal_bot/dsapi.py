@@ -77,7 +77,16 @@ def _open_ai_request(request: Request, settings: AppSettings):
     if settings.dsapi_tls_mode == "tls12":
         context = ssl.create_default_context()
         context.maximum_version = ssl.TLSVersion.TLSv1_2
-        return urlopen(request, timeout=settings.dsapi_timeout_seconds, context=context)
+        for attempt in range(2):
+            try:
+                return urlopen(request, timeout=settings.dsapi_timeout_seconds, context=context)
+            except HTTPError as exc:
+                if attempt or exc.code not in {408, 429, 500, 502, 503, 504}:
+                    raise
+            except (URLError, OSError):
+                if attempt:
+                    raise
+            time.sleep(0.5)
     return urlopen(request, timeout=settings.dsapi_timeout_seconds)
 
 
@@ -102,6 +111,8 @@ def fetch_dsapi_models(settings: AppSettings) -> list[dict[str, Any]]:
         raise DSAPIError(f"network error: {exc.reason}") from exc
     except TimeoutError as exc:
         raise DSAPIError("request timed out") from exc
+    except OSError as exc:
+        raise DSAPIError("network connection interrupted") from exc
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise DSAPIError("invalid JSON response") from exc
 
@@ -791,6 +802,8 @@ def _request_chat_completion(
         raise DSAPIError(f"network error: {exc.reason}") from exc
     except TimeoutError as exc:
         raise DSAPIError("request timed out") from exc
+    except OSError as exc:
+        raise DSAPIError("network connection interrupted") from exc
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise DSAPIError("invalid JSON response") from exc
 

@@ -64,7 +64,7 @@ def configure(settings, store, *, name, base_url, model, api_key, test_all=False
         return item
 
     targets = models if test_all else [item for item in models if item["id"] == model]
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    with ThreadPoolExecutor(max_workers=2) as executor:
         futures = [executor.submit(probe, item) for item in targets]
         for future in as_completed(futures):
             item = future.result()

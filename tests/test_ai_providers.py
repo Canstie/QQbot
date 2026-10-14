@@ -4,6 +4,7 @@ import json
 import ssl
 from dataclasses import replace
 from unittest.mock import AsyncMock
+from urllib.error import HTTPError
 
 import pytest
 from fastapi.testclient import TestClient
@@ -219,6 +220,31 @@ def test_tls_compatibility_keeps_certificate_verification_and_is_provider_specif
     assert captured["context"].verify_mode == ssl.CERT_REQUIRED
     assert captured["context"].maximum_version == ssl.TLSVersion.TLSv1_2
     assert settings.dsapi_tls_mode == "auto"
+
+
+def test_tls_transport_retries_transient_server_error_and_wraps_connection_reset(
+    context, monkeypatch
+):
+    _, _, settings = context
+    attempts = []
+
+    def flaky(request, timeout, **kwargs):
+        attempts.append(kwargs)
+        if len(attempts) == 1:
+            raise HTTPError("https://gateway.example", 500, "temporary", None, None)
+        return "response"
+
+    monkeypatch.setattr(dsapi, "urlopen", flaky)
+    monkeypatch.setattr(dsapi.time, "sleep", lambda seconds: None)
+    assert dsapi._open_ai_request(None, replace(settings, dsapi_tls_mode="tls12")) == "response"
+    assert len(attempts) == 2
+
+    def reset(*args, **kwargs):
+        raise ConnectionResetError("peer reset")
+
+    monkeypatch.setattr(dsapi, "urlopen", reset)
+    with pytest.raises(dsapi.DSAPIError, match="network connection interrupted"):
+        dsapi._request_chat_completion(settings, [{"role": "user", "content": "OK"}])
 
 
 def test_provisioning_tests_catalog_before_switch_and_does_not_change_route_on_failure(
