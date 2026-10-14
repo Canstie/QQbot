@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import hashlib
 import html
 import json
@@ -16,6 +18,7 @@ from urllib.request import Request, urlopen
 
 from qq_personal_bot.ai_models import catalog_model_option, is_vision_dsapi_model
 from qq_personal_bot.ai_providers import active_ai_model, resolve_ai_settings
+from qq_personal_bot.classic_storage import classic_image_type, read_classic_image_source
 from qq_personal_bot.core.models import MessageEvent
 from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.memory_graph import build_graph_guidance, graph_enabled, refresh_memory_graph
@@ -59,6 +62,8 @@ _RANDOM_REPLY_INSTRUCTION = (
 _DEFAULT_CONTEXT_MESSAGE_LIMIT = 10
 _MAX_VISION_IMAGES = 8
 _MAX_INLINE_IMAGE_URL_CHARS = 44 * 1024 * 1024
+_MAX_VISION_IMAGE_BYTES = 20 * 1024 * 1024
+_MAX_VISION_TOTAL_BYTES = 32 * 1024 * 1024
 _MULTI_REPLY_SEPARATOR = "<|消息分隔|>"
 _RELATIONSHIP_SUMMARY_MAX_CHARS = 500
 _background_relationship_tasks: set[asyncio.Task[None]] = set()
@@ -71,6 +76,10 @@ class DSAPIError(RuntimeError):
 
 class DSAPILengthError(DSAPIError):
     """The model stopped before completing its answer."""
+
+
+class DSAPIImageError(DSAPIError):
+    """A quoted image could not be loaded for the model."""
 
 
 def _open_ai_request(request: Request, settings: AppSettings):
@@ -735,7 +744,7 @@ async def build_mention_prompt(
             has_quoted_images = bool(_image_data_from_message(quoted_segments))
             image_sources = await _resolve_vision_image_sources(bot, quoted_segments)
             if has_quoted_images and not image_sources:
-                raise DSAPIError("failed to resolve quoted image")
+                raise DSAPIImageError("failed to resolve quoted image")
 
     if not current_text and not quoted_text and not image_sources:
         return None
@@ -932,8 +941,19 @@ def _contains_unsupported_multimodal_value(
 async def _resolve_vision_image_sources(bot: Any, message: Any) -> list[str]:
     entries = _image_data_from_message(message)
     sources: list[str] = []
+    seen: set[str] = set()
+    total_bytes = 0
     for data in entries:
-        source = _direct_vision_image_source(data)
+        direct = _direct_vision_image_source(data)
+        identity = direct or str(data.get("file") or data.get("file_id") or "")
+        if identity and identity in seen:
+            continue
+        source = None
+        if direct is not None:
+            try:
+                source = await asyncio.to_thread(_inline_vision_image_source, direct)
+            except (ValueError, OSError):
+                pass
         if source is None:
             image_file = data.get("file") or data.get("file_id")
             if image_file:
@@ -941,12 +961,67 @@ async def _resolve_vision_image_sources(bot: Any, message: Any) -> list[str]:
                     payload = await bot.call_api("get_image", file=image_file)
                 except Exception:  # noqa: BLE001 - OneBot adapters raise varied lookup errors
                     payload = None
-                source = _direct_vision_image_source(payload)
-        if source and source not in sources:
+                fallback = _onebot_vision_image_source(payload)
+                if fallback:
+                    try:
+                        source = await asyncio.to_thread(
+                            _inline_vision_image_source, fallback, allow_local=True,
+                        )
+                    except (ValueError, OSError):
+                        pass
+        if source is None:
+            # Do not silently send a text-only or partially illustrated question.
+            raise DSAPIImageError("failed to read quoted image bytes")
+        seen.add(identity)
+        if source not in sources:
+            encoded = source.partition(",")[2]
+            total_bytes += len(encoded) * 3 // 4 - (len(encoded) - len(encoded.rstrip("=")))
+            if total_bytes > _MAX_VISION_TOTAL_BYTES:
+                raise DSAPIImageError("quoted images exceed 32 MiB in total")
             sources.append(source)
         if len(sources) >= _MAX_VISION_IMAGES:
             break
     return sources
+
+
+def _inline_vision_image_source(source: str, *, allow_local: bool = False) -> str:
+    if source.startswith("data:image/"):
+        header, separator, encoded = source.partition(",")
+        if not separator or not header.endswith(";base64"):
+            raise ValueError("unsupported inline image")
+        if len(encoded) > _MAX_INLINE_IMAGE_URL_CHARS:
+            raise ValueError("inline image is too large")
+        try:
+            body = base64.b64decode(encoded, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise ValueError("invalid inline image") from exc
+        image_type = classic_image_type(body)
+        if image_type is None or not body or len(body) > _MAX_VISION_IMAGE_BYTES:
+            raise ValueError("unsupported or oversized image")
+        content_type = image_type[1]
+    else:
+        if not allow_local and not source.startswith(("https://", "http://", "base64://")):
+            raise ValueError("local image source must come from OneBot get_image")
+        body, _, content_type = read_classic_image_source(source)
+    return f"data:{content_type};base64,{base64.b64encode(body).decode('ascii')}"
+
+
+def _onebot_vision_image_source(payload: Any) -> str | None:
+    if not isinstance(payload, Mapping):
+        return None
+    if isinstance(payload.get("data"), Mapping):
+        payload = payload["data"]
+    encoded = str(payload.get("base64") or "").strip()
+    if encoded and len(encoded) <= _MAX_INLINE_IMAGE_URL_CHARS:
+        return encoded if encoded.startswith(("base64://", "data:image/")) else f"base64://{encoded}"
+    direct = _direct_vision_image_source(payload)
+    if direct:
+        return direct
+    for key in ("file", "path"):
+        source = str(payload.get(key) or "").strip()
+        if source.startswith("file://") or Path(source).is_absolute():
+            return source
+    return None
 
 
 def _image_data_from_message(message: Any) -> list[Mapping[str, Any]]:

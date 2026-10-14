@@ -260,6 +260,39 @@ async def test_quoting_bot_feature_image_does_not_call_ai(monkeypatch, reason, h
 
 
 @pytest.mark.asyncio
+async def test_unreadable_quoted_image_returns_specific_retry_hint(monkeypatch):
+    internal = MessageEvent(
+        platform="onebot.v11", group_id=123, user_id=456, message_id=1,
+        raw_message="图里有什么", is_at_bot=True,
+        segments=({"type": "at", "data": {"qq": "999"}},),
+    )
+    monkeypatch.setattr(chat, "onebot_to_internal", lambda event, self_id: internal)
+    monkeypatch.setattr(chat, "_record_group_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(chat, "extract_miniapp_image_source", lambda segments: None)
+    monkeypatch.setattr(chat, "pending_lua_command", lambda event: None)
+    monkeypatch.setattr(chat, "handle_custom_flow", lambda event: None)
+    monkeypatch.setattr(chat, "get_store", lambda: SimpleNamespace(is_feature_enabled=lambda _: True))
+    monkeypatch.setattr(chat, "get_settings", lambda: SimpleNamespace())
+    monkeypatch.setattr(chat, "get_policy_engine", lambda: SimpleNamespace(
+        evaluate=lambda event, self_id: PolicyDecision(
+            True, "ok", handler="mention", normalized_message="图里有什么",
+        ),
+    ))
+    monkeypatch.setattr(chat, "run_lua_message", AsyncMock(
+        return_value=SimpleNamespace(reply=None, stop=False),
+    ))
+    mention = AsyncMock(side_effect=chat.DSAPIImageError("failed to read quoted image bytes"))
+    finish = AsyncMock()
+    monkeypatch.setattr(chat, "generate_mention_reply", mention)
+    monkeypatch.setattr(chat, "_finish_with_response", finish)
+
+    await chat._dispatch_onebot_message(SimpleNamespace(), SimpleNamespace(self_id=999), SimpleNamespace())
+
+    mention.assert_awaited_once()
+    assert finish.call_args.args[3] == "引用的图片读取失败，请重新发送图片后再引用我。"
+
+
+@pytest.mark.asyncio
 async def test_explicit_at_can_ask_about_quoted_bot_image():
     bot = SimpleNamespace(self_id=999)
     quoted_image = {"type": "reply", "data": {

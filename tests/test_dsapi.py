@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import base64
 import json
+from io import BytesIO
 
 import pytest
 
 from qq_personal_bot.core.models import MessageEvent
 from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.dsapi import (
+    DSAPIImageError,
     DSAPILengthError,
     _brief_reply,
     _chat_completions_url,
@@ -20,10 +23,27 @@ from qq_personal_bot.dsapi import (
     fetch_dsapi_models,
     generate_mention_reply,
     generate_random_group_reply,
-    generate_roast_reply,
 )
 from qq_personal_bot.settings import AppSettings
 from qq_personal_bot.web_search import WebSearchResult
+
+_PNG_BYTES = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j"
+    "l1sAAAAASUVORK5CYII="
+)
+_PNG_SOURCE = "data:image/png;base64," + base64.b64encode(_PNG_BYTES).decode()
+
+
+@pytest.fixture
+def quoted_image_download(monkeypatch):
+    requests = []
+
+    def download(request, timeout):
+        requests.append(request)
+        return BytesIO(_PNG_BYTES)
+
+    monkeypatch.setattr("qq_personal_bot.classic_storage.urlopen", download)
+    return requests
 
 
 class FakeBot:
@@ -142,7 +162,7 @@ async def test_quoted_text_is_included_in_prompt():
 
 
 @pytest.mark.asyncio
-async def test_vision_prompt_uses_official_image_url_content_blocks():
+async def test_vision_prompt_sends_actual_image_bytes_in_content_blocks(quoted_image_download):
     image_url = "https://multimedia.nt.qq.com.cn/download?fileid=abc"
     bot = FakeBot(
         {
@@ -166,14 +186,18 @@ async def test_vision_prompt_uses_official_image_url_content_blocks():
         },
         {
             "type": "image_url",
-            "image_url": {"url": image_url, "detail": "auto"},
+            "image_url": {"url": _PNG_SOURCE, "detail": "auto"},
         },
     ]
     assert bot.calls == [("get_msg", {"message_id": "42"})]
+    assert quoted_image_download[0].full_url == image_url
+    assert quoted_image_download[0].get_header("User-agent")
 
 
 @pytest.mark.asyncio
-async def test_vision_model_sends_quoted_image_and_records_text_history(tmp_path, monkeypatch):
+async def test_vision_model_sends_quoted_image_and_records_text_history(
+    tmp_path, monkeypatch, quoted_image_download,
+):
     image_url = "https://multimedia.nt.qq.com.cn/download?fileid=abc"
     bot = FakeBot({"message": [{"type": "image", "data": {"url": image_url}}]})
     store = make_store(tmp_path)
@@ -201,7 +225,7 @@ async def test_vision_model_sends_quoted_image_and_records_text_history(tmp_path
     assert captured["options"]["model"] == "deepseek-flash"
     assert captured["messages"][-1]["content"][1] == {
         "type": "image_url",
-        "image_url": {"url": image_url, "detail": "auto"},
+        "image_url": {"url": _PNG_SOURCE, "detail": "auto"},
     }
     knowledge_id = store.get_dsapi_config()["active_knowledge_id"]
     assert store.get_dsapi_chat_history(
@@ -209,6 +233,116 @@ async def test_vision_model_sends_quoted_image_and_records_text_history(tmp_path
     )[0]["content"].endswith(
         "[引用图片 1 张]"
     )
+    assert "base64" not in store.get_dsapi_chat_history(123, 2, knowledge_id=knowledge_id)[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_expired_qq_link_falls_back_to_onebot_local_image(tmp_path, monkeypatch):
+    image_path = tmp_path / "cached.png"
+    image_path.write_bytes(_PNG_BYTES)
+
+    def unavailable(*args, **kwargs):
+        raise OSError("expired link")
+
+    monkeypatch.setattr("qq_personal_bot.classic_storage.urlopen", unavailable)
+    bot = FakeBot({"data": {"file": str(image_path)}})
+    event = make_event(segments=({"type": "reply", "data": {"message": [
+        {"type": "image", "data": {"url": "https://qq.example/expired", "file": "cache.png"}},
+    ]}},))
+
+    prompt = await build_mention_prompt(bot, event, vision_enabled=True)
+
+    assert prompt[1]["image_url"]["url"] == _PNG_SOURCE
+    assert bot.calls == [("get_image", {"file": "cache.png"})]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [
+    {"base64": base64.b64encode(_PNG_BYTES).decode()},
+    {"file": "base64://" + base64.b64encode(_PNG_BYTES).decode()},
+])
+async def test_onebot_inline_images_preserve_actual_mime_type(payload):
+    bot = FakeBot(payload)
+    event = make_event(segments=({"type": "reply", "data": {"message": [
+        {"type": "image", "data": {"file": "a.png"}},
+    ]}},))
+
+    prompt = await build_mention_prompt(bot, event, vision_enabled=True)
+
+    assert prompt[1]["image_url"]["url"] == _PNG_SOURCE
+
+
+@pytest.mark.asyncio
+async def test_cq_image_url_is_unescaped_downloaded_and_deduplicated(quoted_image_download):
+    url = "https://qq.example/download?a=1&amp;b=2"
+    message = f"[CQ:image,url={url}][CQ:image,url={url}]"
+    event = make_event(segments=({"type": "reply", "data": {"message": message}},))
+
+    prompt = await build_mention_prompt(FakeBot(), event, vision_enabled=True)
+
+    assert len(prompt) == 2
+    assert quoted_image_download[0].full_url == "https://qq.example/download?a=1&b=2"
+    assert len(quoted_image_download) == 1
+
+
+@pytest.mark.asyncio
+async def test_unreadable_quoted_image_never_reaches_model(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "qq_personal_bot.classic_storage.urlopen", lambda *args, **kwargs: BytesIO(b"<html>expired</html>"),
+    )
+    requested = False
+
+    def fake_request(*args, **kwargs):
+        nonlocal requested
+        requested = True
+
+    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
+    store = make_store(tmp_path)
+    store.set_active_dsapi_model("deepseek-flash", actor_id=0)
+    event = make_event(segments=({"type": "reply", "data": {"message": [
+        {"type": "image", "data": {"url": "https://qq.example/missing"}},
+    ]}},))
+
+    with pytest.raises(DSAPIImageError, match="failed to read quoted image bytes"):
+        await generate_mention_reply(FakeBot(), event, make_settings(tmp_path), store)
+    assert requested is False
+
+
+@pytest.mark.asyncio
+async def test_partially_unreadable_images_do_not_send_partial_question():
+    event = make_event(segments=({"type": "reply", "data": {"message": [
+        {"type": "image", "data": {"url": _PNG_SOURCE}},
+        {"type": "image", "data": {"file": "missing.png"}},
+    ]}},))
+    with pytest.raises(DSAPIImageError):
+        await build_mention_prompt(FakeBot(), event, vision_enabled=True)
+
+
+@pytest.mark.asyncio
+async def test_raw_quoted_local_path_is_not_read_without_onebot_lookup(tmp_path):
+    image_path = tmp_path / "private.png"
+    image_path.write_bytes(_PNG_BYTES)
+    bot = FakeBot()
+    event = make_event(segments=({"type": "reply", "data": {"message": [
+        {"type": "image", "data": {"file": str(image_path)}},
+    ]}},))
+    with pytest.raises(DSAPIImageError):
+        await build_mention_prompt(bot, event, vision_enabled=True)
+    assert bot.calls == [("get_image", {"file": str(image_path)})]
+
+
+@pytest.mark.asyncio
+async def test_inline_image_size_and_encoding_are_checked(monkeypatch):
+    event = make_event(segments=({"type": "reply", "data": {"message": [
+        {"type": "image", "data": {"url": _PNG_SOURCE}},
+    ]}},))
+    monkeypatch.setattr("qq_personal_bot.dsapi._MAX_VISION_IMAGE_BYTES", len(_PNG_BYTES) - 1)
+    with pytest.raises(DSAPIImageError):
+        await build_mention_prompt(FakeBot(), event, vision_enabled=True)
+    monkeypatch.setattr("qq_personal_bot.dsapi._MAX_VISION_IMAGE_BYTES", len(_PNG_BYTES))
+    monkeypatch.setattr("qq_personal_bot.dsapi._MAX_VISION_TOTAL_BYTES", len(_PNG_BYTES) - 1)
+    with pytest.raises(DSAPIImageError, match="in total"):
+        await build_mention_prompt(FakeBot(), event, vision_enabled=True)
 
 
 @pytest.mark.asyncio

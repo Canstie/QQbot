@@ -25,6 +25,7 @@ from qq_personal_bot.core.person_evaluation import (
 )
 from qq_personal_bot.dsapi import (
     DSAPIError,
+    DSAPIImageError,
     DSAPILengthError,
     generate_mention_reply,
     generate_random_group_reply,
@@ -681,7 +682,9 @@ async def _dispatch_onebot_message(
                 bot,
                 event,
                 (
-                    "这次回答没能完整生成，试着缩短问题再问一次。"
+                    "引用的图片读取失败，请重新发送图片后再引用我。"
+                    if isinstance(exc, DSAPIImageError)
+                    else "这次回答没能完整生成，试着缩短问题再问一次。"
                     if isinstance(exc, DSAPILengthError)
                     else "脑袋刚刚卡住啦，再问我一次嘛 (｡•́︿•̀｡)"
                 ),
