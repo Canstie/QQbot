@@ -693,7 +693,7 @@ async def test_quoted_news_uses_event_topic_for_search(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("question,queries", [
-    ("梁文峰发放近7天使用量你怎么看", ["DeepSeek API 近7天 消费补偿", "DeepSeek 故障 赠金补偿"]),
+    ("梁文峰发放近7天使用量你怎么看", ["DeepSeek API 近7天 消费补偿", "DeepSeek 七天 赠金补偿"]),
     ("尊界v800刹车支架断裂问题你怎么看", ["尊界 V800 刹车支架 断裂", "尊界 V800 制动踏板 支架断裂"]),
 ])
 async def test_event_query_is_rewritten_and_retried_without_persona_rules(
@@ -709,10 +709,12 @@ async def test_event_query_is_rewritten_and_retried_without_persona_rules(
         if len(bodies) == 1:
             assert body["messages"][-1]["content"] == question
             assert "政治相关问题不回答" not in str(body["messages"])
-            return completion(json.dumps({"queries": queries, "freshness_days": 0}))
+            return completion(json.dumps({"queries": queries, "freshness_days": 0,
+                                          "required_terms": [["主体名称"], ["具体事件"]]}))
         return completion("这件事需要看公开的具体事实。")
 
-    def search(query, *, freshness_days):
+    def search(query, *, freshness_days, required_terms):
+        assert required_terms[:2] == [["主体名称"], ["具体事件"]]
         searches.append((query, freshness_days))
         return [] if len(searches) == 1 else [web_result()]
 
@@ -732,14 +734,36 @@ def test_invalid_query_plan_falls_back_to_the_current_topic(tmp_path, monkeypatc
     monkeypatch.setattr(dsapi_module, "_post_chat_body", lambda *args: completion(plan))
     assert dsapi_module._plan_web_queries(
         make_settings(tmp_path), "当前问题", model="current-model",
-    ) == (["当前问题"], None)
+    ) == (["当前问题"], None, [])
+
+
+def test_query_planner_cannot_replace_original_product_model(tmp_path, monkeypatch):
+    plan = {"queries": ["尊界 S800 刹车断裂", "尊界 刹车断裂"], "freshness_days": 0,
+            "required_terms": [["尊界"], ["断裂", "制动故障"]]}
+    monkeypatch.setattr(dsapi_module, "_post_chat_body", lambda *args: completion(json.dumps(plan)))
+    queries, _, required = dsapi_module._plan_web_queries(
+        make_settings(tmp_path), "尊界v800刹车支架断裂问题你怎么看", model="current-model",
+    )
+    assert queries == ["尊界 刹车断裂 v800"]
+    assert required[-1] == ["v800"]
+
+
+def test_query_planner_preserves_numeric_offer_details(tmp_path, monkeypatch):
+    plan = {"queries": ["DeepSeek 赠送 额度", "DeepSeek 补偿 近7天 使用量"], "freshness_days": 0,
+            "required_terms": [["DeepSeek"], ["补偿", "额度"]]}
+    monkeypatch.setattr(dsapi_module, "_post_chat_body", lambda *args: completion(json.dumps(plan)))
+    queries, _, required = dsapi_module._plan_web_queries(
+        make_settings(tmp_path), "梁文峰发放近7天使用量你怎么看", model="current-model",
+    )
+    assert queries == ["DeepSeek 赠送 额度 7天", "DeepSeek 补偿 近7天 使用量"]
+    assert "7天" in required[-1] and "七天" in required[-1]
 
 
 @pytest.mark.asyncio
 async def test_empty_recent_search_cannot_fall_back_to_training_memory(tmp_path, monkeypatch):
     store = make_store(tmp_path)
     enable_web_search(store)
-    monkeypatch.setattr(dsapi_module, "_plan_web_queries", lambda *args, **kwargs: (["最新消息"], None))
+    monkeypatch.setattr(dsapi_module, "_plan_web_queries", lambda *args, **kwargs: (["最新消息"], None, []))
     monkeypatch.setattr("qq_personal_bot.web_search.search_web", lambda query: [])
     monkeypatch.setattr(dsapi_module, "_post_chat_body", lambda *args: pytest.fail("must not invent news"))
     reply = await generate_mention_reply(

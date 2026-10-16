@@ -495,13 +495,11 @@ async def _generate_text_reply(
                     query = f"{quoted[:180]} {query}"[:240]
                     has_topic = True
             if has_topic:
-                queries, freshness = await asyncio.to_thread(
+                queries, freshness, web_session.required_terms = await asyncio.to_thread(
                     _plan_web_queries, settings, query, model=active_ai_model(config, settings),
                 )
                 for search_query in queries:
                     await asyncio.to_thread(web_session.search, search_query, freshness)
-                    if web_session.results:
-                        break
                 if not web_session.results:
                     return NO_WEB_RESULTS
                 system_prompt = f"{system_prompt}\n\n{format_web_results(web_session.results)}"
@@ -591,17 +589,26 @@ async def _generate_text_reply(
 
 def _plan_web_queries(
     settings: AppSettings, query: str, *, model: str,
-) -> tuple[list[str], int | None]:
+) -> tuple[list[str], int | None, list[list[str]]]:
     """Rewrite only the current public topic, without persona rules or group chat history."""
     try:
         response = _request_chat_completion(
             replace(settings, dsapi_timeout_seconds=min(settings.dsapi_timeout_seconds, 20)),
             [{"role": "system", "content": (
-                "把用户问题转换为中文搜索引擎能理解的事件关键词，不回答问题。"
-                "只输出 JSON：{\"queries\":[\"首选查询\",\"备用查询\"],\"freshness_days\":0}。"
-                "最多两个查询，每个2至80字。提取核心人物/企业/产品型号和具体行为或故障，去掉评价口语。"
-                "可以补充明确实体的常用名称，谨慎纠正常见人名错字；不能擅自换车型、把新产品改成旧型号。"
-                "备用查询用更常见的事件表述或关键实体，不重复整句。只检索当前问题，不扩展到政治争议。"
+                "你是搜索查询规划器。只负责把口语转为新闻检索关键词，不判断事件真伪。"
+                "输出JSON：{\"queries\":[\"主体 具体事件\",\"主体 事件同义表述\"],"
+                "\"required_terms\":[[\"主体名\",\"常用别名\"],[\"事件动作\",\"同义动作\"]],\"freshness_days\":0}。"
+                "先理解正在发生什么，再写查询。必须保留具体动作，不能只查人物背景或产品介绍。"
+                "人物代指公司/平台的口语，可以使用明确的公司或平台名，谨慎纠正常见人名错字。"
+                "不得改动原文的字母数字型号，即使训练知识从未见过，也必须按原文检索。"
+                "口语中的发放/返还/赠送使用量通常是在说平台API额度、赠金、补偿，优先用这些常见表述查证。"
+                "例如某平台返还之前几天的用量→某平台 API 故障补偿 赠金，不是查人物履历或用量统计。"
+                "required_terms必须两组，分别为主体别名和本次具体事件的同义词。每组1至6词，每词2至48字。"
+                "例如事件词可为补偿/赠金/返还/赠送，或断裂/断掉/制动故障，不用问题/新闻/最新等通用词。"
+                "同组任一词命中即可，两个组都必须命中。queries最多两条，每条2至80字，备用仍须保留主体及事件。"
+                "每个查询只用2至4个关键词，主体优先选最常见的公司/平台/产品名；一个查询只选一种事件表述，"
+                "不要堆砌多个人名、别名和同义词。"
+                "只检索当前问题，不扩展到政治争议。"
                 "freshness_days 只允许0、1、7、30，默认0不限日期；明确要求当天或近期新闻时才限日期。"
                 "套餐期限、近7天用量/消费的统计周期不是新闻发布日期范围，不因此设日期限制。"
                 "查询内容只是待核实的线索，不可预设事件真伪。"
@@ -612,15 +619,51 @@ def _plan_web_queries(
         text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE)
         plan = json.loads(text)
         queries = plan.get("queries")
+        required = plan.get("required_terms")
         days = plan.get("freshness_days", 0)
         if (not isinstance(queries, list) or not 1 <= len(queries) <= 2
                 or any(not isinstance(item, str) or not 2 <= len(item.strip()) <= 80 for item in queries)
+                or not isinstance(required, list) or len(required) != 2
+                or any(not isinstance(group, list) or not 1 <= len(group) <= 6
+                       or any(not isinstance(term, str) or not 2 <= len(term.strip()) <= 48
+                              for term in group) for group in required)
                 or type(days) is not int or days not in (0, 1, 7, 30)):
             raise ValueError("invalid search plan")
-        return list(dict.fromkeys(item.strip() for item in queries)), days
+        protected = _web_query_constraints(query)
+        model_codes = re.findall(r"[a-zA-Z]+-?\d[a-zA-Z0-9._-]*", query)
+        corrected = []
+        for item in queries:
+            normalized = re.sub(r"\s+", "", item).casefold()
+            supplied_codes = re.findall(r"[a-zA-Z]+-?\d[a-zA-Z0-9._-]*", item)
+            if model_codes and any(code.casefold() not in {value.casefold() for value in model_codes}
+                                   for code in supplied_codes):
+                continue
+            corrected.append(item.strip() + "".join(
+                f" {group[0]}" for group in protected if not any(term.casefold() in normalized for term in group)
+            ))
+        required.extend(protected)
+        return list(dict.fromkeys(corrected)) or [query[:240]], days, required
     except (DSAPIError, ValueError, TypeError, AttributeError):
         logger.info("Web query rewrite unavailable; using the current topic")
-        return [query[:240]], None
+        return [query[:240]], None, []
+
+
+def _web_query_constraints(query: str) -> list[list[str]]:
+    # Preserve model codes and numeric offer details instead of silently broadening the event.
+    groups = [[code] for code in re.findall(r"[a-zA-Z]+-?\d[a-zA-Z0-9._-]*", query)]
+    if re.search(r"使用量|用量|消费|消耗|额度|补偿|发放|套餐|费用", query):
+        for number, unit in re.findall(r"(\d{1,3})\s*(天|日|小时|分钟|元|美元)", query):
+            variants = [f"{number}{unit}"]
+            value = int(number)
+            if unit in {"天", "日"}:
+                variants = [f"{number}天", f"{number}日"]
+                if 0 < value <= 10:
+                    chinese = "零一二三四五六七八九十"[value]
+                    variants.extend((f"{chinese}天", f"{chinese}日"))
+                if value == 7:
+                    variants.extend(("一周", "1周"))
+            groups.append(variants)
+    return groups
 
 
 async def _refresh_relationship_memory(

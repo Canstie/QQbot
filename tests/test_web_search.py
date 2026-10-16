@@ -190,6 +190,18 @@ def test_sogou_fallback_reads_original_source_url(current_time):
     assert "消费返还" in results[0].snippet
 
 
+def test_entity_background_without_the_event_cannot_be_used_as_evidence(current_time):
+    candidates = [
+        WebSearchResult("梁文锋 深度求索 创始人", "https://example.test/background", "人物经历"),
+        WebSearchResult("别家平台赠送额度", "https://example.test/unrelated", "其他平台的活动。" * 40 + "相关搜索：DeepSeek 补偿"),
+        WebSearchResult("梁文锋 深度求索 补偿通知", "https://example.test/notice", "发放赠金"),
+    ]
+    results = web._select_results(candidates, 5, 0, current_time, "梁文锋 深度求索", [
+        ["DeepSeek", "深度求索", "梁文锋"], ["补偿", "返还", "赠金"],
+    ])
+    assert [item.url for item in results] == ["https://example.test/notice"]
+
+
 def test_web_search_only_triggers_for_fresh_or_explicit_queries():
     assert should_search_web("帮我查一下 DeepSeek 最新消息") is True
     assert should_search_web("今天有什么新闻") is True

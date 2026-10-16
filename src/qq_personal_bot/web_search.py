@@ -116,6 +116,7 @@ class WebSearchSession:
     results: list[WebSearchResult] = field(default_factory=list)
     searches: int = 0
     tool_called: bool = False
+    required_terms: list[list[str]] = field(default_factory=list)
 
     @property
     def searched(self) -> bool:
@@ -126,8 +127,12 @@ class WebSearchSession:
             return {"error": "本轮查询次数已用完，请根据已有资料回答。"}
         self.searches += 1
         started = time.monotonic()
-        found = (search_web(query) if freshness_days is None
-                 else search_web(query, freshness_days=freshness_days))
+        options: dict[str, Any] = {}
+        if freshness_days is not None:
+            options["freshness_days"] = freshness_days
+        if self.required_terms:
+            options["required_terms"] = self.required_terms
+        found = search_web(query, **options)
         logger.info(
             "Web search trigger=%s query_number=%s results=%s elapsed_ms=%.1f",
             "model_tool" if self.tool_called else "automatic", self.searches, len(found),
@@ -178,6 +183,7 @@ def should_search_web(text: str) -> bool:
 def search_web(
     query: str, *, limit: int = 5, timeout: float = 8.0,
     freshness_days: int | None = None,
+    required_terms: list[list[str]] | None = None,
 ) -> list[WebSearchResult]:
     normalized_query = _search_query(query)
     if not normalized_query:
@@ -193,7 +199,7 @@ def search_web(
         if (years and all(int(year) < clock.year for year in years)
                 and not re.search(r"今天|今日|最新|最近|近期|新进展|目前", normalized_query)):
             days = 0
-    cache_key = f"{clock.date()}:{days}:{normalized_limit}:{normalized_query.casefold()}"
+    cache_key = f"{clock.date()}:{days}:{normalized_limit}:{normalized_query.casefold()}:{required_terms}"
     now = time.monotonic()
     with _cache_lock:
         cached = _search_cache.get(cache_key)
@@ -222,11 +228,11 @@ def search_web(
             if is_html:
                 results = _parse_html_results(
                     body.decode("utf-8", errors="replace"), base, normalized_limit,
-                    days, clock, normalized_query,
+                    days, clock, normalized_query, required_terms,
                 )
             else:
                 results = _parse_results(
-                    ET.fromstring(body), normalized_limit, days, clock, normalized_query,
+                    ET.fromstring(body), normalized_limit, days, clock, normalized_query, required_terms,
                 )
         except (OSError, ValueError, ET.ParseError):
             continue
@@ -243,6 +249,7 @@ def search_web(
 
 def _parse_results(
     root: ET.Element, limit: int, days: int, now: datetime, query: str,
+    required_terms: list[list[str]] | None = None,
 ) -> list[WebSearchResult]:
     candidates = [WebSearchResult(
         _clean_xml_text(item.findtext("title"), 180),
@@ -250,7 +257,7 @@ def _parse_results(
         _clean_xml_text(item.findtext("description"), 500),
         _clean_xml_text(item.findtext("pubDate"), 80),
     ) for item in root.findall("./channel/item")]
-    return _select_results(candidates, limit, days, now, query)
+    return _select_results(candidates, limit, days, now, query, required_terms)
 
 
 class _ResultLinkParser(HTMLParser):
@@ -266,6 +273,7 @@ class _ResultLinkParser(HTMLParser):
 
 def _parse_html_results(
     body: str, base: str, limit: int, days: int, now: datetime, query: str,
+    required_terms: list[list[str]] | None = None,
 ) -> list[WebSearchResult]:
     candidates = []
     cards = list(_HTML_CARD_RE.finditer(body))
@@ -280,7 +288,8 @@ def _parse_html_results(
         original = re.search(r'''\bdata-url=["']([^"']+)["']''', block)
         url = _clean_result_url(original[1] if original else urljoin(base, parser.url))
         host = urlparse(url).hostname or ""
-        if not parser.url or host == "so.com" or host.endswith(".so.com"):
+        if (not parser.url or host in {"so.com", "360kan.com"}
+                or host.endswith((".so.com", ".360kan.com"))):
             continue  # Related searches and generated news summaries are not source documents.
         summary = re.search(r'''<p\b[^>]*class=["'][^"']*\bres-desc\b[^"']*["'][^>]*>(.*?)</p>''',
                             block, flags=re.IGNORECASE | re.DOTALL)
@@ -289,17 +298,30 @@ def _parse_html_results(
         candidates.append(WebSearchResult(
             _clean_xml_text(heading[1], 180), url, _clean_xml_text(snippet, 650),
         ))
-    return _select_results(candidates, limit, days, now, query)
+    return _select_results(candidates, limit, days, now, query, required_terms)
 
 
 def _select_results(
     candidates: list[WebSearchResult], limit: int, days: int, now: datetime, query: str,
+    required_terms: list[list[str]] | None = None,
 ) -> list[WebSearchResult]:
     results: list[WebSearchResult] = []
     seen_urls: set[str] = set()
     for item in candidates:
         title, result_url, snippet, published = item.title, item.url, item.snippet, item.published
-        if not _relevant_news(query, title, snippet, result_url):
+        text = re.sub(r"\s+", "", f"{title} {snippet}").casefold()
+        lead = re.sub(r"\s+", "", f"{title} {snippet[:200]}").casefold()
+        if required_terms and not all(
+            any(re.sub(r"\s+", "", term).casefold() in lead for term in group)
+            for index, group in enumerate(required_terms) if index != 1
+        ):
+            continue  # A topic mentioned only in related-search/footer text is not the article subject.
+        if required_terms and not all(
+            any(re.sub(r"\s+", "", term).casefold() in text for term in group)
+            for group in required_terms
+        ):
+            continue
+        if not required_terms and not _relevant_news(query, title, snippet, result_url):
             continue
         published_at = _published_time(published)
         page_date = _page_date(result_url, title, snippet)
