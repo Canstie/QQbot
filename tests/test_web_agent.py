@@ -124,7 +124,7 @@ async def test_initial_queries_are_both_kept_and_failed_reads_allow_a_retry(monk
     monkeypatch.setattr("qq_personal_bot.web_search.search_web", search)
     monkeypatch.setattr(agent, "read_web_pages", read)
     assert await agent.generate_web_reply(complete, "角色", [], "当前安排") == "已核实的安排。"
-    assert searches == ["主题 当前安排", "主题 另一种名称", "主题 原始发布方"]
+    assert searches == [f"主题 当前安排 {agent.beijing_now():%Y年%m月}", "主题 另一种名称", "主题 原始发布方"]
     assert reads == [[item.url for item in stale], [fresh.url]]
 
 

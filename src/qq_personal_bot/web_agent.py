@@ -26,6 +26,7 @@ _ROUTE = (
     '"time_scope":"current或historical或timeless","queries":["具体查询","另一种查询"]}。'
     "queries最多两条，每条2至160字，保留用户给出的实体、型号和限定条件，不预设结论。"
     "查询用空格分开2至4个关键概念，不把完整问句直接粘给搜索引擎，不堆叠限定词。"
+    "第一条只用实体名称与所问属性两个词组，避免增加推测的状态或用户没有提出的限制；第二条再换角度细化。"
     "两条查询应采用不同角度：一条简洁的通用名称与所问属性，另一条可用常见外文名、原始发布方或官方站点消歧。"
     "time_scope为current时，至少一条查询包含当前年月，另一条可保持宽泛以免漏掉仍然有效的资料。"
     "短追问应从最近用户问题继承主题；旧助手回答只是待核实的主张，不是外部事实证据。"
@@ -136,7 +137,11 @@ async def generate_web_reply(
         searched: set[str] = set()
         successful_reads = 0
         for turn in range(2):
-            for query in dict.fromkeys(queries):
+            pending = list(dict.fromkeys(queries))
+            if turn == 0 and scope == "current":
+                # Always make one dated attempt, even if the model omits its time instruction.
+                pending[0] = f"{pending[0]} {beijing_now():%Y年%m月}"
+            for query in pending:
                 if query not in searched:
                     await asyncio.to_thread(session.search, query, 0)
                     searched.add(query)
