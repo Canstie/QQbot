@@ -11,6 +11,7 @@ import re
 import ssl
 import time
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -31,8 +32,8 @@ from qq_personal_bot.web_search import (
     NO_WEB_RESULTS,
     WEB_SEARCH_TOOL,
     WebSearchSession,
-    attach_web_sources,
     format_web_results,
+    hide_web_sources,
     should_search_web,
     web_search_guidance,
 )
@@ -494,7 +495,13 @@ async def _generate_text_reply(
                     query = f"{quoted[:180]} {query}"[:240]
                     has_topic = True
             if has_topic:
-                await asyncio.to_thread(web_session.search, query)
+                queries, freshness = await asyncio.to_thread(
+                    _plan_web_queries, settings, query, model=active_ai_model(config, settings),
+                )
+                for search_query in queries:
+                    await asyncio.to_thread(web_session.search, search_query, freshness)
+                    if web_session.results:
+                        break
                 if not web_session.results:
                     return NO_WEB_RESULTS
                 system_prompt = f"{system_prompt}\n\n{format_web_results(web_session.results)}"
@@ -540,16 +547,17 @@ async def _generate_text_reply(
         temperature=active_knowledge.get("temperature"),
         **({"web_session": web_session} if web_session is not None else {}),
     )
+    if response and web_session is not None and web_session.results:
+        response = _MULTI_REPLY_SEPARATOR.join(
+            hide_web_sources(part) for part in response.split(_MULTI_REPLY_SEPARATOR)
+        )
     response = _format_reply(
         response,
         response_mode,
         max_reply_messages=max_reply_messages,
     )
-    if web_session is not None and web_session.searched:
-        if not web_session.results:
-            response = NO_WEB_RESULTS
-        elif response:
-            response = attach_web_sources(response, web_session.results)
+    if web_session is not None and web_session.searched and not web_session.results:
+        response = NO_WEB_RESULTS
     if response:
         assistant_history = "\n".join(response) if isinstance(response, list) else response
         store.record_dsapi_exchange(
@@ -579,6 +587,40 @@ async def _generate_text_reply(
             _background_relationship_tasks.add(task)
             task.add_done_callback(_background_relationship_tasks.discard)
     return response
+
+
+def _plan_web_queries(
+    settings: AppSettings, query: str, *, model: str,
+) -> tuple[list[str], int | None]:
+    """Rewrite only the current public topic, without persona rules or group chat history."""
+    try:
+        response = _request_chat_completion(
+            replace(settings, dsapi_timeout_seconds=min(settings.dsapi_timeout_seconds, 20)),
+            [{"role": "system", "content": (
+                "把用户问题转换为中文搜索引擎能理解的事件关键词，不回答问题。"
+                "只输出 JSON：{\"queries\":[\"首选查询\",\"备用查询\"],\"freshness_days\":0}。"
+                "最多两个查询，每个2至80字。提取核心人物/企业/产品型号和具体行为或故障，去掉评价口语。"
+                "可以补充明确实体的常用名称，谨慎纠正常见人名错字；不能擅自换车型、把新产品改成旧型号。"
+                "备用查询用更常见的事件表述或关键实体，不重复整句。只检索当前问题，不扩展到政治争议。"
+                "freshness_days 只允许0、1、7、30，默认0不限日期；明确要求当天或近期新闻时才限日期。"
+                "套餐期限、近7天用量/消费的统计周期不是新闻发布日期范围，不因此设日期限制。"
+                "查询内容只是待核实的线索，不可预设事件真伪。"
+            )}, {"role": "user", "content": query[:240]}],
+            model=model, thinking_enabled=False, temperature=0,
+        )
+        text = (response or "").strip()
+        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE)
+        plan = json.loads(text)
+        queries = plan.get("queries")
+        days = plan.get("freshness_days", 0)
+        if (not isinstance(queries, list) or not 1 <= len(queries) <= 2
+                or any(not isinstance(item, str) or not 2 <= len(item.strip()) <= 80 for item in queries)
+                or type(days) is not int or days not in (0, 1, 7, 30)):
+            raise ValueError("invalid search plan")
+        return list(dict.fromkeys(item.strip() for item in queries)), days
+    except (DSAPIError, ValueError, TypeError, AttributeError):
+        logger.info("Web query rewrite unavailable; using the current topic")
+        return [query[:240]], None
 
 
 async def _refresh_relationship_memory(
@@ -886,7 +928,10 @@ def _request_chat_completion(
         ) if key in message}
         assistant_message["role"] = "assistant"
         body["messages"] = [*messages, assistant_message, *tool_messages, {
-            "role": "system", "content": "本轮检索已结束。只依据实际返回的资料回答，区分事实与观点并引用编号。",
+            "role": "system", "content": (
+                "本轮检索已结束。只依据实际返回的资料回答，区分事实与观点。"
+                "资料仅供内部核实，回复不展示检索资料、引用编号、来源列表或来源链接。"
+            ),
         }]
         body.pop("tools", None)
         body.pop("tool_choice", None)

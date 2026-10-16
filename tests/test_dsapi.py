@@ -597,8 +597,7 @@ async def test_enabled_web_search_is_injected_for_fresh_query(tmp_path, monkeypa
         store,
     )
 
-    assert response.startswith("刚更新了。")
-    assert "https://example.test/update" in response
+    assert response == "刚更新了。"
     system_prompt = captured["messages"][0]["content"]
     assert "联网检索结果" in system_prompt
     assert "https://example.test/update" in system_prompt
@@ -646,10 +645,34 @@ async def test_commentary_prefetches_without_waiting_for_model_tool_choice(tmp_p
     reply = await generate_mention_reply(
         FakeBot(), make_event(text="点评今天的科技新闻"), make_settings(tmp_path), store,
     )
-    assert len(searches) == len(calls) == 1
-    assert "https://example.test/official" in reply
-    assert "检索来源" in reply
-    assert "当前北京时间" in calls[0]["messages"][0]["content"]
+    assert len(searches) == 1 and len(calls) == 2
+    assert reply == "已知事实是该项目发布了。"
+    assert "当前北京时间" in calls[-1]["messages"][0]["content"]
+    assert "https://example.test/official" in calls[-1]["messages"][0]["content"]
+    knowledge_id = store.get_dsapi_config()["active_knowledge_id"]
+    assert store.get_dsapi_chat_history(123, 2, knowledge_id=knowledge_id)[-1]["content"] == reply
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("response_mode", ["short", "normal", "detailed"])
+async def test_web_source_appendices_are_hidden_in_each_reply(tmp_path, monkeypatch, response_mode):
+    store = make_store(tmp_path)
+    enable_web_search(store)
+    knowledge = store.get_dsapi_config()["active_knowledge"]
+    store.update_dsapi_knowledge_base(
+        knowledge["id"], name=knowledge["name"], prompt=knowledge["prompt"], actor_id=0,
+        web_search_enabled=True, response_mode=response_mode, max_reply_messages=3,
+    )
+    monkeypatch.setattr("qq_personal_bot.web_search.search_web", lambda *args: [web_result()])
+    monkeypatch.setattr(dsapi_module, "_post_chat_body", lambda *args: completion(
+        "项目已发布[1]。\n\n检索来源：\n[1] 官方消息\nhttps://example.test/official"
+        "<|消息分隔|>我的看法是继续观察[1]。\n\n参考资料：\n[1] 官方消息"
+        "<|消息分隔|>检索来源：\nhttps://example.test/official"
+    ))
+    reply = await generate_mention_reply(
+        FakeBot(), make_event(text="点评最新项目消息"), make_settings(tmp_path), store,
+    )
+    assert reply == ["项目已发布。", "我的看法是继续观察。"]
 
 
 @pytest.mark.asyncio
@@ -669,9 +692,54 @@ async def test_quoted_news_uses_event_topic_for_search(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("question,queries", [
+    ("梁文峰发放近7天使用量你怎么看", ["DeepSeek API 近7天 消费补偿", "DeepSeek 故障 赠金补偿"]),
+    ("尊界v800刹车支架断裂问题你怎么看", ["尊界 V800 刹车支架 断裂", "尊界 V800 制动踏板 支架断裂"]),
+])
+async def test_event_query_is_rewritten_and_retried_without_persona_rules(
+    tmp_path, monkeypatch, question, queries,
+):
+    store = make_store(tmp_path, knowledge_prompt="政治相关问题不回答")
+    enable_web_search(store)
+    searches = []
+    bodies = []
+
+    def post(settings, body):
+        bodies.append(body)
+        if len(bodies) == 1:
+            assert body["messages"][-1]["content"] == question
+            assert "政治相关问题不回答" not in str(body["messages"])
+            return completion(json.dumps({"queries": queries, "freshness_days": 0}))
+        return completion("这件事需要看公开的具体事实。")
+
+    def search(query, *, freshness_days):
+        searches.append((query, freshness_days))
+        return [] if len(searches) == 1 else [web_result()]
+
+    monkeypatch.setattr(dsapi_module, "_post_chat_body", post)
+    monkeypatch.setattr("qq_personal_bot.web_search.search_web", search)
+    reply = await generate_mention_reply(
+        FakeBot(), make_event(text=question), make_settings(tmp_path), store,
+    )
+    assert searches == [(query, 0) for query in queries]
+    assert reply == "这件事需要看公开的具体事实。"
+    assert "政治相关问题不回答" in bodies[-1]["messages"][0]["content"]
+    assert "查不到不等于不存在" in bodies[-1]["messages"][0]["content"]
+
+
+@pytest.mark.parametrize("plan", ["not JSON", "[]", '{"queries":[123]}'])
+def test_invalid_query_plan_falls_back_to_the_current_topic(tmp_path, monkeypatch, plan):
+    monkeypatch.setattr(dsapi_module, "_post_chat_body", lambda *args: completion(plan))
+    assert dsapi_module._plan_web_queries(
+        make_settings(tmp_path), "当前问题", model="current-model",
+    ) == (["当前问题"], None)
+
+
+@pytest.mark.asyncio
 async def test_empty_recent_search_cannot_fall_back_to_training_memory(tmp_path, monkeypatch):
     store = make_store(tmp_path)
     enable_web_search(store)
+    monkeypatch.setattr(dsapi_module, "_plan_web_queries", lambda *args, **kwargs: (["最新消息"], None))
     monkeypatch.setattr("qq_personal_bot.web_search.search_web", lambda query: [])
     monkeypatch.setattr(dsapi_module, "_post_chat_body", lambda *args: pytest.fail("must not invent news"))
     reply = await generate_mention_reply(
@@ -702,14 +770,15 @@ async def test_model_can_call_search_for_a_query_without_trigger_words(tmp_path,
         tool = next(item for item in body["messages"] if item["role"] == "tool")
         assert tool["tool_call_id"] == "search-1"
         assert json.loads(tool["content"])["results"][0]["index"] == 1
-        return completion("该项目已发布，资料来自官方消息[1]。")
+        assert json.loads(tool["content"])["results"][0]["url"] == "https://example.test/official"
+        return completion("该项目已发布[1]。\n\n检索来源：\nhttps://example.test/official")
 
     monkeypatch.setattr(dsapi_module, "_post_chat_body", post)
     reply = await generate_mention_reply(
         FakeBot(), make_event(text="这个项目的技术路线能核实吗"), make_settings(tmp_path), store,
     )
     assert len(bodies) == 2
-    assert "https://example.test/official" in reply
+    assert reply == "该项目已发布。"
 
 
 def test_unsupported_tool_api_falls_back_and_does_not_repeat_bad_requests(tmp_path, monkeypatch):

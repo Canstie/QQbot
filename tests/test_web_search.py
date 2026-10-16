@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -9,16 +10,17 @@ from qq_personal_bot import web_search as web
 from qq_personal_bot.web_search import (
     WebSearchResult,
     WebSearchSession,
-    attach_web_sources,
     format_web_results,
+    hide_web_sources,
     search_web,
     should_search_web,
 )
 
 
 @pytest.fixture(autouse=True)
-def reset_cache():
+def reset_cache(monkeypatch):
     web._search_cache.clear()
+    monkeypatch.setattr(web, "_HTML_SEARCH_URLS", ())
     yield
     web._search_cache.clear()
 
@@ -79,7 +81,7 @@ def test_news_dates_exclude_stale_future_and_undated_results(monkeypatch, curren
     results = search_web("今天科技新闻")
     assert [item.title for item in results] == ["科技 Current"]
     assert results[0].published == "2026-10-16（页面日期线索）"
-    assert "2026" in requests[0]
+    assert parse_qs(urlparse(requests[0]).query)["q"] == ["今天科技新闻"]
     assert "2026" in web.web_search_guidance()
     assert "2026-10-16 20:00" in web.web_search_guidance()
 
@@ -103,8 +105,8 @@ def test_broken_search_endpoint_uses_fallback_and_caches_results(monkeypatch):
           <link>https://example.test/verified</link></item></channel></rss>''')
 
     monkeypatch.setattr(web, "urlopen", fetch)
-    assert search_web("fallback query")[0].title == "Found"
-    assert search_web("fallback query")[0].title == "Found"
+    assert search_web("Found")[0].title == "Found"
+    assert search_web("Found")[0].title == "Found"
     assert len(attempts) == 2
     assert "cn.bing.com" in attempts[1]
 
@@ -130,13 +132,62 @@ def test_invalid_or_unknown_tool_cannot_trigger_search(monkeypatch, name, argume
     assert "error" in WebSearchSession().run_tool(name, arguments)
 
 
-def test_source_footer_uses_only_returned_sources():
-    results = [WebSearchResult("Official", "https://example.test/official", "snippet")]
-    reply = attach_web_sources("事实已核实[1]。https://invented.test/fake [99]", results)
-    assert "https://example.test/official" in reply
-    assert "https://invented.test" not in reply
-    assert "[99]" not in reply
-    assert "检索来源" in reply
+@pytest.mark.parametrize("footer", [
+    "检索来源：\n[1] 官方消息\nhttps://example.test/official",
+    "### 参考资料\n[1] 官方消息\nhttps://example.test/official",
+    "**搜索资料**：官方消息；摘要：公开信息；来源：https://example.test/official",
+    "Sources:\n[1] https://example.test/official",
+])
+def test_search_material_is_hidden_but_answer_is_preserved(footer):
+    reply = hide_web_sources(f"事实已核实[1]。我的看法是还需观察。\n\n{footer}")
+    assert reply == "事实已核实。我的看法是还需观察。"
+
+
+def test_inline_citations_are_hidden_without_removing_requested_links():
+    reply = hide_web_sources(
+        "消息已发布[1](https://example.test/official)[2, 3]【4】[^5]。\n"
+        "你要的官网：https://example.test/"
+    )
+    assert reply == "消息已发布。\n你要的官网：https://example.test/"
+
+
+def test_all_queries_reject_dictionary_and_homepage_results(monkeypatch):
+    body = '''<rss><channel>
+    <item><title>梁（汉字）</title><link>https://example.test/character</link><description>梁的意思</description></item>
+    <item><title>DeepSeek 官方首页</title><link>https://example.test/home</link></item>
+    <item><title>DeepSeek API 补偿7天消费金额</title><link>https://example.test/compensation</link>
+      <description>因服务故障，补偿以赠金返还。</description></item>
+    </channel></rss>'''.encode()
+    monkeypatch.setattr(web, "urlopen", lambda *args, **kwargs: Response(body))
+    results = search_web("DeepSeek API 补偿 7天", freshness_days=0)
+    assert [item.url for item in results] == ["https://example.test/compensation"]
+
+
+def test_html_search_uses_source_cards_not_generated_summary_or_other_models(monkeypatch):
+    body = '''<html>
+    <li class="res-list"><h3><a href="https://news.so.com/search">尊界 V800 刹车 支架 断裂</a></h3>AI生成摘要</li>
+    <li class="res-list"><h3><a href="https://image.so.com/search">尊界 V800 刹车 支架 断裂</a></h3>图片搜索页</li>
+    <li class="res-list"><h3><a data-mdurl="https://example.test/s800" href="https://www.so.com/link?a=1">尊界S800</a></h3>刹车支架断裂</li>
+    <li class="res-list"><h3><a data-mdurl="https://example.test/v800" href="https://www.so.com/link?a=2">尊界V800刹车踏板支架断裂</a></h3>
+      <p>2026年10月15日，回应制动部件问题。</p></li>
+    </html>'''.encode()
+    monkeypatch.setattr(web, "_HTML_SEARCH_URLS", (("https://www.so.com/s", "q"),))
+    requests = []
+    monkeypatch.setattr(web, "urlopen", lambda request, **kwargs: (
+        requests.append(request.full_url) or Response(body)
+    ))
+    results = search_web("尊界 V800 刹车 支架 断裂", freshness_days=0)
+    assert len(requests) == 1
+    assert [item.url for item in results] == ["https://example.test/v800"]
+    assert "2026-10-15" in results[0].published
+
+
+def test_sogou_fallback_reads_original_source_url(current_time):
+    body = '''<div class="vrwrap"><h3 class="vr-title"><a href="/link?url=redirect">DeepSeek API 补偿</a></h3>
+    <p>补偿按近7天消费返还。</p><div data-url="https://example.test/notice"></div></div>'''
+    results = web._parse_html_results(body, "https://www.sogou.com/web", 5, 0, current_time, "DeepSeek API 补偿")
+    assert results[0].url == "https://example.test/notice"
+    assert "消费返还" in results[0].snippet
 
 
 def test_web_search_only_triggers_for_fresh_or_explicit_queries():
@@ -166,7 +217,7 @@ def test_search_web_parses_bing_rss(monkeypatch):
 
     monkeypatch.setattr("qq_personal_bot.web_search.urlopen", lambda request, timeout: FakeResponse())
 
-    results = search_web("unique test query", limit=5)
+    results = search_web("Example fresh", limit=5)
     formatted = format_web_results(results)
 
     assert len(results) == 1
