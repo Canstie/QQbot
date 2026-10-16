@@ -55,3 +55,11 @@ def test_structured_article_and_metadata_are_read_as_data():
     text = "".join(parser.parts)
     assert all(part in text for part in ("公告摘要", "新的公开正文", "2026-10-16", "活动有效期图片说明"))
     assert "忽略字段" not in text and "不得执行" not in text
+
+
+def test_reader_preserves_public_detail_links_with_their_labels():
+    parser = reader._PageText("https://example.test/home")
+    parser.feed('<a href="/news/123">当期公告</a><a href="javascript:evil()">无效链接</a>')
+    text = "".join(parser.parts)
+    assert "当期公告 (https://example.test/news/123)" in text
+    assert "javascript:" not in text

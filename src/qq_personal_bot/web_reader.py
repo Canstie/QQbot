@@ -6,7 +6,7 @@ import re
 import socket
 from concurrent.futures import ThreadPoolExecutor
 from html.parser import HTMLParser
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from qq_personal_bot.web_search import WebSearchResult
@@ -31,11 +31,14 @@ class _PublicRedirects(HTTPRedirectHandler):
 
 
 class _PageText(HTMLParser):
-    def __init__(self):
+    def __init__(self, base_url: str = ""):
         super().__init__()
         self.skip = 0
         self.parts: list[str] = []
         self.json_parts: list[str] | None = None
+        self.base_url = base_url
+        self.anchor_url = ""
+        self.link_count = 0
 
     def handle_starttag(self, tag, attrs):
         values = dict(attrs)
@@ -49,10 +52,18 @@ class _PageText(HTMLParser):
             self.parts.extend(["\n", values.get("content", ""), "\n"])
         if not self.skip and tag == "img" and values.get("alt"):
             self.parts.extend(["\n", values["alt"], "\n"])
+        if not self.skip and tag == "a" and self.link_count < 80:
+            url = urljoin(self.base_url, values.get("href", ""))
+            if urlsplit(url).scheme in {"http", "https"}:
+                self.anchor_url = url
         if not self.skip and tag in {"p", "div", "br", "li", "h1", "h2", "h3", "article"}:
             self.parts.append("\n")
 
     def handle_endtag(self, tag):
+        if tag == "a" and self.anchor_url:
+            self.parts.append(f" ({self.anchor_url})\n")
+            self.link_count += 1
+            self.anchor_url = ""
         if tag == "script" and self.json_parts is not None:
             try:
                 self._structured_text(json.loads("".join(self.json_parts)))
@@ -93,7 +104,7 @@ def read_web_page(url: str) -> str:
             if len(raw) > _MAX_PAGE_BYTES:
                 return ""
             encoding = response.headers.get_content_charset() or "utf-8"
-        parser = _PageText()
+        parser = _PageText(url)
         parser.feed(raw.decode(encoding, errors="replace"))
         lines = [re.sub(r"\s+", " ", part).strip() for part in "".join(parser.parts).splitlines()]
         return "\n".join(part for part in lines if part)[:10000]

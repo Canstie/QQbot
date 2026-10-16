@@ -5,11 +5,15 @@ import json
 import logging
 import re
 from collections.abc import Callable, Mapping, Sequence
-from datetime import date, timedelta
 from typing import Any
 
 from qq_personal_bot.web_reader import read_web_pages
-from qq_personal_bot.web_search import WebSearchSession, beijing_now, hide_web_sources
+from qq_personal_bot.web_search import (
+    WebSearchResult,
+    WebSearchSession,
+    beijing_now,
+    hide_web_sources,
+)
 
 logger = logging.getLogger(__name__)
 UNVERIFIED_WEB_REPLY = "这次没找到足以核实答案的资料，暂时无法确认，不能用旧信息代答。"
@@ -47,7 +51,13 @@ _GROUND = (
     '"evidence":[{"source":1,"quote":"来源中连续存在的原文片段"}]}。'
     "evidence必须覆盖回答中的关键事实，每条quote至少8字且必须原样存在于对应来源的标题、摘要或正文中。"
     "若资料不足、过期、无关或相互矛盾，输出"
-    '{"status":"insufficient","time_valid":false,"next_query":"更有针对性的查询"}。'
+    '{"status":"insufficient","time_valid":false,"read_sources":[1],'
+    '"read_urls":[],"next_query":""}。'
+    "你可以用read_sources要求读取已有来源的编号，用read_urls打开已经出现在资料正文中的具体链接。"
+    "text为空表示尚未读正文，read_status为unavailable表示读取失败。"
+    "有相关页面但摘要不足时，优先读取该页面；相关主页上有公告、新闻、详情链接时，继续读所需详情。"
+    "不要把所有来源一律认作无效后重复搜索；只有没有合适页面可读时才用next_query补查。"
+    "每次至多选三个页面；不能编造URL，不读取与问题无关的链接。"
     "next_query可为空，不得把查不到说成对象不存在，也不得用训练记忆补出未证实的结论。"
     "如果候选过旧或同名混淆，补查应尝试更简短的通用名称、外文名称或原始发布方；"
     "保留原问题所问实体与属性，不因旧页面声称尚未发布就把问题改成询问发布时间。"
@@ -88,17 +98,6 @@ def _supported_answer(decision: dict, sources: list[dict], current: bool) -> str
     return answer.strip()
 
 
-def _reading_priority(date_hint: str) -> int:
-    # This only orders reads; the evidence verifier decides actual temporal validity.
-    if "页面日期" not in date_hint:
-        return 1
-    try:
-        day = date.fromisoformat(date_hint[:10])
-    except ValueError:
-        return 1
-    return 2 if day >= beijing_now().date() - timedelta(days=90) else 0
-
-
 async def generate_web_reply(
     complete: Callable[[list[dict[str, Any]]], str | None],
     system_prompt: str,
@@ -136,7 +135,7 @@ async def generate_web_reply(
         read_urls: set[str] = set()
         searched: set[str] = set()
         successful_reads = 0
-        for turn in range(2):
+        for turn in range(3):
             pending = list(dict.fromkeys(queries))
             if turn == 0 and scope == "current":
                 # Always make one dated attempt, even if the model omits its time instruction.
@@ -145,26 +144,16 @@ async def generate_web_reply(
                 if query not in searched:
                     await asyncio.to_thread(session.search, query, 0)
                     searched.add(query)
-            for index, result in enumerate(session.results, 1):
-                if index > len(sources):
-                    sources.append({"index": index, "title": result.title, "url": result.url,
+            for result in session.results:
+                if not any(item["url"] == result.url for item in sources):
+                    sources.append({"index": len(sources) + 1, "title": result.title, "url": result.url,
                                     "snippet": result.snippet, "date_hint": result.published, "text": ""})
-            unread = [item for item in session.results if item.url not in read_urls]
-            if scope == "current":
-                unread.sort(key=lambda item: _reading_priority(item.published), reverse=True)
-            unread = unread[:min(3, max(0, 4 - successful_reads), max(0, 6 - len(read_urls)))]
-            if unread:
-                texts = await asyncio.to_thread(read_web_pages, unread)
-                for result, text in zip(unread, texts, strict=True):
-                    read_urls.add(result.url)
-                    successful_reads += bool(text)
-                    next(item for item in sources if item["url"] == result.url)["text"] = text
-            if not sources:
-                continue
             decision = _json_object(await asyncio.to_thread(complete, [
                 {"role": "system", "content": f"{system_prompt}\n\n{clock}{_GROUND}"},
                 {"role": "user", "content": json.dumps({
                     "question": question, "time_scope": scope, "sources": sources,
+                    "remaining_searches": session.max_searches - session.searches,
+                    "remaining_reads": max(0, min(4 - successful_reads, 6 - len(read_urls))),
                 }, ensure_ascii=False)},
             ]))
             if answer := _supported_answer(decision, sources, scope == "current"):
@@ -173,9 +162,34 @@ async def generate_web_reply(
                         if reply_separator else hide_web_sources(answer))
             followup = decision.get("next_query")
             logger.info("Web agent evidence=insufficient turn=%s", turn + 1)
-            if not isinstance(followup, str) or not 2 <= len(followup) <= 160 or followup in searched:
+            if turn == 2:
                 break
-            queries = [followup]
+            wanted = decision.get("read_sources") or []
+            unread = [item for item in sources if item["index"] in wanted and item["url"] not in read_urls]
+            allowed_urls = {match for item in sources for match in re.findall(
+                r'https?://[^\s<>()"\]]+', item["text"],
+            )}
+            for url in (decision.get("read_urls") or [])[:3]:
+                if url in allowed_urls and url not in read_urls and not any(item["url"] == url for item in unread):
+                    source = next((item for item in sources if item["url"] == url), None)
+                    if source is None:
+                        source = {"index": len(sources) + 1, "url": url, "title": "链接详情", "snippet": "", "text": ""}
+                        sources.append(source)
+                    unread.append(source)
+            unread = unread[:min(3, max(0, 4 - successful_reads), max(0, 6 - len(read_urls)))]
+            if unread:
+                texts = await asyncio.to_thread(read_web_pages, [
+                    WebSearchResult(item["title"], item["url"], item["snippet"]) for item in unread])
+                for source, text in zip(unread, texts, strict=True):
+                    read_urls.add(source["url"])
+                    successful_reads += bool(text)
+                    source.update(text=text, read_status="read" if text else "unavailable")
+                queries = []
+            elif (isinstance(followup, str) and 2 <= len(followup) <= 160
+                  and followup not in searched and session.searches < session.max_searches):
+                queries = [followup]
+            else:
+                break
         return UNVERIFIED_WEB_REPLY
     except (ValueError, TypeError, KeyError):
         logger.info("Web agent invalid structured response; no unverified answer sent")

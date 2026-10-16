@@ -601,6 +601,8 @@ async def test_web_reply_resolves_question_and_uses_checked_evidence(tmp_path, m
             assert topic in str(body["messages"])
             return completion(json.dumps({"action":"search", "question":topic,
                 "time_scope":"current", "queries":["测试主题 当期公告"]}))
+        if len(calls) == 2:
+            return completion(json.dumps({"status":"insufficient", "read_sources":[1]}))
         data = json.loads(body["messages"][-1]["content"])
         assert data["question"] == topic and data["sources"][0]["text"] == quote
         assert not any(item["role"] == "assistant" for item in body["messages"])
@@ -611,7 +613,7 @@ async def test_web_reply_resolves_question_and_uses_checked_evidence(tmp_path, m
         WebSearchResult("公开公告", "https://example.test/notice", "摘要不足以确认全部信息。")])
     monkeypatch.setattr("qq_personal_bot.web_agent.read_web_pages", lambda items: [quote for _ in items])
     reply = await generate_mention_reply(FakeBot(), make_event(text=question), make_settings(tmp_path), store)
-    assert reply == "本期开放对象为甲。" and len(calls) == 2
+    assert reply == "本期开放对象为甲。" and len(calls) == 3
     assert store.get_dsapi_chat_history(123, 2, knowledge_id=knowledge_id)[-1]["content"] == reply
 
 

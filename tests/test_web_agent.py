@@ -96,7 +96,7 @@ async def test_insufficient_evidence_drives_a_new_query(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_initial_queries_are_both_kept_and_failed_reads_allow_a_retry(monkeypatch):
+async def test_initial_queries_are_both_kept_before_refinement(monkeypatch):
     searches, reads, calls = [], [], []
     stale = [WebSearchResult(f"旧页面{i}", f"https://example.test/old{i}", "过期资料无法证实当前情况。",
                             "2020-01-01（页面日期线索）") for i in range(3)]
@@ -125,7 +125,61 @@ async def test_initial_queries_are_both_kept_and_failed_reads_allow_a_retry(monk
     monkeypatch.setattr(agent, "read_web_pages", read)
     assert await agent.generate_web_reply(complete, "角色", [], "当前安排") == "已核实的安排。"
     assert searches == [f"主题 当前安排 {agent.beijing_now():%Y年%m月}", "主题 另一种名称", "主题 原始发布方"]
-    assert reads == [[item.url for item in stale], [fresh.url]]
+    assert reads == []  # The snippet already supports the answer; no unnecessary page reads.
+
+
+@pytest.mark.asyncio
+async def test_related_homepage_can_lead_to_a_detail_link_but_not_an_invented_url(monkeypatch):
+    calls, reads = [], []
+    homepage = WebSearchResult("官方主页", "https://example.test/", "发布方的活动信息。")
+    detail_url = "https://example.test/news/123"
+    quote = "本期正式安排的有效期覆盖当前日期。"
+
+    def read(items):
+        reads.extend(item.url for item in items)
+        return [f"当期公告 ({detail_url})" if item.url == homepage.url else quote for item in items]
+
+    def complete(messages):
+        calls.append(messages)
+        if len(calls) == 1:
+            return json.dumps({"action":"search", "question":"当前安排", "time_scope":"current",
+                               "queries":["主题 安排"]})
+        if len(calls) == 2:
+            return json.dumps({"status":"insufficient", "read_sources":[1]})
+        if len(calls) == 3:
+            return json.dumps({"status":"insufficient", "read_urls":[
+                "https://example.test/invented", detail_url]})
+        return json.dumps({"status":"supported", "time_valid":True, "answer":"当期安排已核实。",
+                           "evidence":[{"source":2,"quote":quote}]})
+
+    monkeypatch.setattr("qq_personal_bot.web_search.search_web", lambda *a, **kw: [homepage])
+    monkeypatch.setattr(agent, "read_web_pages", read)
+    assert await agent.generate_web_reply(complete, "角色", [], "当前安排") == "当期安排已核实。"
+    assert reads == [homepage.url, detail_url]
+
+
+@pytest.mark.asyncio
+async def test_failed_reads_do_not_consume_the_successful_page_budget(monkeypatch):
+    calls, reads = [], []
+    sources = [WebSearchResult(f"页面{i}", f"https://example.test/{i}", "摘要不足以确认。") for i in range(4)]
+    quote = "详细的原始公告证实了所问安排。"
+
+    def read(items):
+        reads.append([item.url for item in items])
+        return [quote if item == sources[3] else "" for item in items]
+
+    def complete(messages):
+        calls.append(messages)
+        if len(calls) == 1:
+            return json.dumps({"action":"search", "question":"安排", "time_scope":"timeless", "queries":["主题 安排"]})
+        if len(calls) < 4:
+            return json.dumps({"status":"insufficient", "read_sources":[1,2,3] if len(calls) == 2 else [4]})
+        return json.dumps({"status":"supported", "answer":"已核实。", "evidence":[{"source":4,"quote":quote}]})
+
+    monkeypatch.setattr("qq_personal_bot.web_search.search_web", lambda *a, **kw: sources)
+    monkeypatch.setattr(agent, "read_web_pages", read)
+    assert await agent.generate_web_reply(complete, "角色", [], "安排") == "已核实。"
+    assert reads == [[item.url for item in sources[:3]], [sources[3].url]]
 
 
 @pytest.mark.asyncio
