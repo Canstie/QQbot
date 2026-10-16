@@ -139,7 +139,9 @@ async def generate_web_reply(
             pending = list(dict.fromkeys(queries))
             if turn == 0 and scope == "current":
                 # Always make one dated attempt, even if the model omits its time instruction.
-                pending[0] = f"{pending[0]} {beijing_now():%Y年%m月}"
+                month = f"{beijing_now():%Y年%m月}"
+                if month not in pending[0]:
+                    pending[0] = f"{pending[0]} {month}"
             for query in pending:
                 if query not in searched:
                     await asyncio.to_thread(session.search, query, 0)

@@ -44,6 +44,27 @@ async def test_domains_share_the_same_semantic_search_and_evidence_flow(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_model_supplied_current_month_is_not_duplicated(monkeypatch):
+    source = result()
+    month = f"{agent.beijing_now():%Y年%m月}"
+    query = f"主题 安排 {month}"
+    responses = iter([
+        {"action":"search", "question":"当前安排", "time_scope":"current", "queries":[query]},
+        {"status":"supported", "time_valid":True, "answer":"已核实。",
+         "evidence":[{"source":1,"quote":source.snippet}]},
+    ])
+
+    def search(value, **kwargs):
+        assert value == query
+        return [source]
+
+    monkeypatch.setattr("qq_personal_bot.web_search.search_web", search)
+    assert await agent.generate_web_reply(
+        lambda messages: json.dumps(next(responses)), "角色", [], "当前安排",
+    ) == "已核实。"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("corruption", ["invented_quote", "wrong_source", "expired", "empty_evidence"])
 async def test_unverified_or_expired_claim_cannot_be_sent(monkeypatch, corruption):
     calls = []
