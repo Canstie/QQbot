@@ -13,7 +13,6 @@ from qq_personal_bot.web_search import (
     format_web_results,
     hide_web_sources,
     search_web,
-    should_search_web,
 )
 
 
@@ -23,21 +22,6 @@ def reset_cache(monkeypatch):
     monkeypatch.setattr(web, "_HTML_SEARCH_URLS", ())
     yield
     web._search_cache.clear()
-
-
-@pytest.mark.parametrize("text", [
-    "如何看待最近的人工智能监管动态", "点评今天的科技新闻", "评价台海局势",
-    "最近科技圈有什么大事", "DeepSeek 近况怎么样", "国际新闻你怎么看",
-])
-def test_current_event_and_commentary_intents_are_automatically_searched(text):
-    assert should_search_web(text)
-
-
-@pytest.mark.parametrize("text", [
-    "随便聊聊", "你现在在干嘛", "评价一下我的性格", "点评这段代码", "我今天有点累",
-])
-def test_casual_and_personal_topics_do_not_force_public_search(text):
-    assert not should_search_web(text)
 
 
 class Response:
@@ -190,6 +174,25 @@ def test_sogou_fallback_reads_original_source_url(current_time):
     assert "消费返还" in results[0].snippet
 
 
+def test_semantic_candidate_search_combines_independent_engines(monkeypatch):
+    monkeypatch.setattr(web, "_HTML_SEARCH_URLS", (
+        ("https://www.so.com/s", "q"), ("https://www.sogou.com/web", "query"),
+    ))
+    requests = []
+
+    def fetch(request, **kwargs):
+        requests.append(request.full_url)
+        name = "first" if "so.com/s?" in request.full_url else "second"
+        body = "".join(f'<li class="res-list"><h3><a href="https://example.test/{name}/{i}">{name} {i}</a></h3>'
+                       f'<p class="res-desc">candidate text</p></li>' for i in range(2))
+        return Response(body.encode())
+
+    monkeypatch.setattr(web, "urlopen", fetch)
+    results = search_web("任意主题", semantic=True, freshness_days=0)
+    assert len(requests) == 2
+    assert [item.title for item in results] == ["first 0", "second 0", "first 1", "second 1"]
+
+
 def test_entity_background_without_the_event_cannot_be_used_as_evidence(current_time):
     candidates = [
         WebSearchResult("梁文锋 深度求索 创始人", "https://example.test/background", "人物经历"),
@@ -200,13 +203,6 @@ def test_entity_background_without_the_event_cannot_be_used_as_evidence(current_
         ["DeepSeek", "深度求索", "梁文锋"], ["补偿", "返还", "赠金"],
     ])
     assert [item.url for item in results] == ["https://example.test/notice"]
-
-
-def test_web_search_only_triggers_for_fresh_or_explicit_queries():
-    assert should_search_web("帮我查一下 DeepSeek 最新消息") is True
-    assert should_search_web("今天有什么新闻") is True
-    assert should_search_web("你现在在干嘛") is False
-    assert should_search_web("随便聊聊") is False
 
 
 def test_search_web_parses_bing_rss(monkeypatch):
