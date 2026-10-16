@@ -27,7 +27,15 @@ from qq_personal_bot.memory_graph import build_graph_guidance, graph_enabled, re
 from qq_personal_bot.menu_recipes import is_supported_image_file
 from qq_personal_bot.persona import build_persona_guidance
 from qq_personal_bot.settings import AppSettings
-from qq_personal_bot.web_search import format_web_results, search_web, should_search_web
+from qq_personal_bot.web_search import (
+    NO_WEB_RESULTS,
+    WEB_SEARCH_TOOL,
+    WebSearchSession,
+    attach_web_sources,
+    format_web_results,
+    should_search_web,
+    web_search_guidance,
+)
 
 _MULTIMODAL_SEGMENT_TYPES = {
     "file",
@@ -69,6 +77,7 @@ _MAX_VISION_TOTAL_BYTES = 32 * 1024 * 1024
 _MULTI_REPLY_SEPARATOR = "<|消息分隔|>"
 _RELATIONSHIP_SUMMARY_MAX_CHARS = 500
 _background_relationship_tasks: set[asyncio.Task[None]] = set()
+_web_tools_disabled_until: dict[tuple[int, str, str], float] = {}
 logger = logging.getLogger(__name__)
 
 
@@ -472,13 +481,23 @@ async def _generate_text_reply(
         )
         if persona_guidance:
             system_prompt = f"{system_prompt}\n\n人物关系与动态示例：\n{persona_guidance}"
-    if bool(active_knowledge.get("web_search_enabled")) and should_search_web(
-        event.raw_message
-    ):
-        search_results = await asyncio.to_thread(search_web, event.raw_message)
-        search_context = format_web_results(search_results)
-        if search_context:
-            system_prompt = f"{system_prompt}\n\n{search_context}"
+    web_session = WebSearchSession() if active_knowledge.get("web_search_enabled") else None
+    if web_session is not None:
+        system_prompt = f"{system_prompt}\n\n{web_search_guidance()}"
+        if should_search_web(event.raw_message):
+            query = event.raw_message
+            has_topic = not re.search(r"这件事|这事|这条|这个|对此|上面", query)
+            if re.search(r"这件事|这事|这条|这个|对此|上面|这段|怎么看", query):
+                quoted = _prompt_history_text(prompt).partition("被引用的消息：\n")[2]
+                quoted = quoted.partition("\n\n用户的问题或补充：")[0].strip()
+                if quoted and quoted != "（引用消息包含图片）":
+                    query = f"{quoted[:180]} {query}"[:240]
+                    has_topic = True
+            if has_topic:
+                await asyncio.to_thread(web_session.search, query)
+                if not web_session.results:
+                    return NO_WEB_RESULTS
+                system_prompt = f"{system_prompt}\n\n{format_web_results(web_session.results)}"
     response_instruction = _RESPONSE_MODE_INSTRUCTIONS.get(
         response_mode,
         _RESPONSE_MODE_INSTRUCTIONS["short"],
@@ -519,12 +538,18 @@ async def _generate_text_reply(
         max_tokens=None,
         thinking_enabled=bool(active_knowledge.get("thinking_enabled", False)),
         temperature=active_knowledge.get("temperature"),
+        **({"web_session": web_session} if web_session is not None else {}),
     )
     response = _format_reply(
         response,
         response_mode,
         max_reply_messages=max_reply_messages,
     )
+    if web_session is not None and web_session.searched:
+        if not web_session.results:
+            response = NO_WEB_RESULTS
+        elif response:
+            response = attach_web_sources(response, web_session.results)
     if response:
         assistant_history = "\n".join(response) if isinstance(response, list) else response
         store.record_dsapi_exchange(
@@ -628,6 +653,7 @@ def _request_chat_completion_with_fallback(
     max_tokens: int | None,
     thinking_enabled: bool,
     temperature: float | None,
+    web_session: WebSearchSession | None = None,
 ) -> str:
     thinking_enabled = thinking_enabled and settings.dsapi_api_format == "deepseek"
     try:
@@ -638,6 +664,7 @@ def _request_chat_completion_with_fallback(
             max_tokens=max_tokens,
             thinking_enabled=thinking_enabled,
             temperature=temperature,
+            **({"web_session": web_session} if web_session is not None else {}),
         )
     except DSAPIError:
         if not thinking_enabled:
@@ -649,6 +676,7 @@ def _request_chat_completion_with_fallback(
             max_tokens=max_tokens,
             thinking_enabled=False,
             temperature=temperature,
+            **({"web_session": web_session} if web_session is not None else {}),
         )
     if response is None and thinking_enabled:
         response = _request_chat_completion(
@@ -658,6 +686,7 @@ def _request_chat_completion_with_fallback(
             max_tokens=max_tokens,
             thinking_enabled=False,
             temperature=temperature,
+            **({"web_session": web_session} if web_session is not None else {}),
         )
     if response is None:
         raise DSAPIError("empty assistant content")
@@ -785,7 +814,13 @@ def _request_chat_completion(
     max_tokens: int | None = None,
     thinking_enabled: bool = False,
     temperature: float | None = None,
+    web_session: WebSearchSession | None = None,
 ) -> str | None:
+    if web_session is not None and web_session.results:
+        evidence = format_web_results(web_session.results)
+        if not any(item.get("role") == "system" and evidence in str(item.get("content", ""))
+                   for item in messages):
+            messages = [{"role": "system", "content": evidence}, *messages]
     body: dict[str, Any] = {
         "model": model or settings.dsapi_model,
         "messages": messages,
@@ -797,6 +832,69 @@ def _request_chat_completion(
         body["max_tokens"] = int(max_tokens)
     if temperature is not None:
         body["temperature"] = float(temperature)
+    tool_key = (settings.dsapi_provider_id, settings.dsapi_base_url, body["model"])
+    use_tools = (web_session is not None and not web_session.searched
+                 and _web_tools_disabled_until.get(tool_key, 0) <= time.monotonic())
+    if use_tools:
+        body["tools"] = [WEB_SEARCH_TOOL]
+        body["tool_choice"] = "auto"
+    elif web_session is not None and not web_session.searched:
+        body["messages"] = [*messages, {"role": "system", "content":
+            "本接口当前不支持工具调用；没有检索资料时不能声称已核实实时事实。"}]
+    try:
+        result = _post_chat_body(settings, body)
+    except DSAPIError as exc:
+        if not use_tools or str(exc) not in {"HTTP 400", "HTTP 422"}:
+            raise
+        if len(_web_tools_disabled_until) >= 64:
+            _web_tools_disabled_until.clear()
+        _web_tools_disabled_until[tool_key] = time.monotonic() + 600
+        body.pop("tools", None)
+        body.pop("tool_choice", None)
+        body["messages"] = [*messages, {"role": "system", "content":
+            "本接口当前不支持工具调用。没有本轮检索资料时，不能声称已联网或已核实实时事实。"}]
+        use_tools = False
+        result = _post_chat_body(settings, body)
+    try:
+        choice = result["choices"][0]
+        message = choice["message"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise DSAPIError("response does not contain assistant content") from exc
+    calls = message.get("tool_calls") if isinstance(message, Mapping) else None
+    if use_tools and calls and choice.get("finish_reason") in {None, "", "stop", "tool_calls"}:
+        if not isinstance(calls, list) or len(calls) > 4:
+            raise DSAPIError("invalid web tool calls")
+        tool_messages: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for call in calls:
+            if not isinstance(call, Mapping):
+                raise DSAPIError("invalid web tool call")
+            call_id = call.get("id")
+            function = call.get("function")
+            if (not isinstance(call_id, str) or not call_id or call_id in seen_ids
+                    or not isinstance(function, Mapping)):
+                raise DSAPIError("invalid web tool call")
+            seen_ids.add(call_id)
+            arguments = function.get("arguments")
+            tool_result = web_session.run_tool(
+                function.get("name"), arguments if isinstance(arguments, str) else "",
+            )
+            tool_messages.append({"role": "tool", "tool_call_id": call_id,
+                                  "content": json.dumps(tool_result, ensure_ascii=False)})
+        assistant_message = {key: message[key] for key in (
+            "role", "content", "tool_calls", "reasoning_content",
+        ) if key in message}
+        assistant_message["role"] = "assistant"
+        body["messages"] = [*messages, assistant_message, *tool_messages, {
+            "role": "system", "content": "本轮检索已结束。只依据实际返回的资料回答，区分事实与观点并引用编号。",
+        }]
+        body.pop("tools", None)
+        body.pop("tool_choice", None)
+        result = _post_chat_body(settings, body)
+    return _extract_chat_text(result, body, thinking_enabled)
+
+
+def _post_chat_body(settings: AppSettings, body: dict[str, Any]) -> Any:
     payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
     request = Request(
         _chat_completions_url(settings.dsapi_base_url),
@@ -822,7 +920,10 @@ def _request_chat_completion(
         raise DSAPIError("network connection interrupted") from exc
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise DSAPIError("invalid JSON response") from exc
+    return result
 
+
+def _extract_chat_text(result: Any, body: dict[str, Any], thinking_enabled: bool) -> str | None:
     try:
         choice = result["choices"][0]
         content = choice["message"]["content"]

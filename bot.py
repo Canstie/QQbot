@@ -21,10 +21,11 @@ nonebot.init(
     superusers={str(admin) for admin in settings.admins},
 )
 
-transport_logger = logging.getLogger("qq_personal_bot.ai_transport")
-transport_logger.setLevel(logging.INFO)
-transport_logger.addHandler(LoguruHandler())
-transport_logger.propagate = False
+for component in ("qq_personal_bot.ai_transport", "qq_personal_bot.web_search"):
+    component_logger = logging.getLogger(component)
+    component_logger.setLevel(logging.INFO)
+    component_logger.addHandler(LoguruHandler())
+    component_logger.propagate = False
 
 driver = nonebot.get_driver()
 driver.register_adapter(OneBotV11Adapter)

@@ -6,6 +6,7 @@ from io import BytesIO
 
 import pytest
 
+import qq_personal_bot.dsapi as dsapi_module
 from qq_personal_bot.core.models import MessageEvent
 from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.dsapi import (
@@ -25,13 +26,20 @@ from qq_personal_bot.dsapi import (
     generate_random_group_reply,
 )
 from qq_personal_bot.settings import AppSettings
-from qq_personal_bot.web_search import WebSearchResult
+from qq_personal_bot.web_search import NO_WEB_RESULTS, WebSearchResult, WebSearchSession
 
 _PNG_BYTES = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j"
     "l1sAAAAASUVORK5CYII="
 )
 _PNG_SOURCE = "data:image/png;base64," + base64.b64encode(_PNG_BYTES).decode()
+
+
+@pytest.fixture(autouse=True)
+def reset_tool_compatibility_cache():
+    dsapi_module._web_tools_disabled_until.clear()
+    yield
+    dsapi_module._web_tools_disabled_until.clear()
 
 
 @pytest.fixture
@@ -579,7 +587,7 @@ async def test_enabled_web_search_is_injected_for_fresh_query(tmp_path, monkeypa
         captured["messages"] = messages
         return "刚更新了。"
 
-    monkeypatch.setattr("qq_personal_bot.dsapi.search_web", fake_search)
+    monkeypatch.setattr("qq_personal_bot.web_search.search_web", fake_search)
     monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
 
     response = await generate_mention_reply(
@@ -589,10 +597,154 @@ async def test_enabled_web_search_is_injected_for_fresh_query(tmp_path, monkeypa
         store,
     )
 
-    assert response == "刚更新了。"
+    assert response.startswith("刚更新了。")
+    assert "https://example.test/update" in response
     system_prompt = captured["messages"][0]["content"]
     assert "联网检索结果" in system_prompt
     assert "https://example.test/update" in system_prompt
+
+
+def enable_web_search(store):
+    knowledge = store.get_dsapi_config()["active_knowledge"]
+    if knowledge is None:
+        store.create_dsapi_knowledge_base(
+            name="联网测试", prompt="", actor_id=0, web_search_enabled=True,
+        )
+        return
+    store.update_dsapi_knowledge_base(
+        knowledge["id"], name=knowledge["name"], prompt=knowledge["prompt"],
+        actor_id=0, web_search_enabled=True,
+    )
+
+
+def web_result():
+    return WebSearchResult("官方消息", "https://example.test/official", "公开资料显示某项目发布。")
+
+
+def completion(text):
+    return {"choices": [{"message": {"role": "assistant", "content": text}, "finish_reason": "stop"}]}
+
+
+@pytest.mark.asyncio
+async def test_commentary_prefetches_without_waiting_for_model_tool_choice(tmp_path, monkeypatch):
+    store = make_store(tmp_path)
+    enable_web_search(store)
+    searches = []
+    calls = []
+
+    def search(query):
+        searches.append(query)
+        return [web_result()]
+
+    def post(settings, body):
+        calls.append(body)
+        assert "tools" not in body
+        return completion("已知事实是该项目发布了[1]。我的看法是需要观察后续效果。")
+
+    monkeypatch.setattr("qq_personal_bot.web_search.search_web", search)
+    monkeypatch.setattr(dsapi_module, "_post_chat_body", post)
+    reply = await generate_mention_reply(
+        FakeBot(), make_event(text="点评今天的科技新闻"), make_settings(tmp_path), store,
+    )
+    assert len(searches) == len(calls) == 1
+    assert "https://example.test/official" in reply
+    assert "检索来源" in reply
+    assert "当前北京时间" in calls[0]["messages"][0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_quoted_news_uses_event_topic_for_search(tmp_path, monkeypatch):
+    store = make_store(tmp_path)
+    enable_web_search(store)
+    queries = []
+    monkeypatch.setattr("qq_personal_bot.web_search.search_web", lambda query: (
+        queries.append(query) or [web_result()]
+    ))
+    monkeypatch.setattr(dsapi_module, "_post_chat_body", lambda *args: completion("观点基于消息[1]。"))
+    event = make_event(text="这个你怎么看", segments=({"type": "reply", "data": {"message": [
+        {"type": "text", "data": {"text": "某科技公司公布人工智能监管方案"}},
+    ]}},))
+    await generate_mention_reply(FakeBot(), event, make_settings(tmp_path), store)
+    assert "某科技公司公布人工智能监管方案" in queries[0]
+
+
+@pytest.mark.asyncio
+async def test_empty_recent_search_cannot_fall_back_to_training_memory(tmp_path, monkeypatch):
+    store = make_store(tmp_path)
+    enable_web_search(store)
+    monkeypatch.setattr("qq_personal_bot.web_search.search_web", lambda query: [])
+    monkeypatch.setattr(dsapi_module, "_post_chat_body", lambda *args: pytest.fail("must not invent news"))
+    reply = await generate_mention_reply(
+        FakeBot(), make_event(text="评价最新消息"), make_settings(tmp_path), store,
+    )
+    assert reply == NO_WEB_RESULTS
+
+
+@pytest.mark.asyncio
+async def test_model_can_call_search_for_a_query_without_trigger_words(tmp_path, monkeypatch):
+    store = make_store(tmp_path)
+    enable_web_search(store)
+    bodies = []
+    monkeypatch.setattr("qq_personal_bot.web_search.search_web", lambda *args, **kwargs: [web_result()])
+
+    def post(settings, body):
+        bodies.append(json.loads(json.dumps(body)))
+        if len(bodies) == 1:
+            assert body["tools"][0]["function"]["name"] == "web_search"
+            return {"choices": [{"finish_reason": "tool_calls", "message": {
+                "role": "assistant", "content": None, "tool_calls": [{
+                    "id": "search-1", "type": "function", "function": {
+                        "name": "web_search", "arguments": '{"query":"项目公开资料"}',
+                    },
+                }],
+            }}]}
+        assert "tools" not in body
+        tool = next(item for item in body["messages"] if item["role"] == "tool")
+        assert tool["tool_call_id"] == "search-1"
+        assert json.loads(tool["content"])["results"][0]["index"] == 1
+        return completion("该项目已发布，资料来自官方消息[1]。")
+
+    monkeypatch.setattr(dsapi_module, "_post_chat_body", post)
+    reply = await generate_mention_reply(
+        FakeBot(), make_event(text="这个项目的技术路线能核实吗"), make_settings(tmp_path), store,
+    )
+    assert len(bodies) == 2
+    assert "https://example.test/official" in reply
+
+
+def test_unsupported_tool_api_falls_back_and_does_not_repeat_bad_requests(tmp_path, monkeypatch):
+    requests = []
+
+    def post(settings, body):
+        requests.append(json.loads(json.dumps(body)))
+        if "tools" in body:
+            raise dsapi_module.DSAPIError("HTTP 400")
+        return completion("你好")
+
+    monkeypatch.setattr(dsapi_module, "_post_chat_body", post)
+    messages = [{"role": "user", "content": "你好"}]
+    for _ in range(2):
+        assert _request_chat_completion(
+            make_settings(tmp_path), messages, web_session=WebSearchSession(),
+        ) == "你好"
+    assert len(requests) == 3
+    assert "tools" in requests[0]
+    assert "tools" not in requests[1] and "tools" not in requests[2]
+    assert messages == [{"role": "user", "content": "你好"}]
+
+
+@pytest.mark.parametrize("tool_call", [
+    {"id": "x", "function": "invalid"}, {"function": {"name": "web_search"}}, "invalid",
+])
+def test_invalid_tool_protocol_is_rejected(tmp_path, monkeypatch, tool_call):
+    monkeypatch.setattr(dsapi_module, "_post_chat_body", lambda *args: {"choices": [{
+        "finish_reason": "tool_calls", "message": {"content": None, "tool_calls": [tool_call]},
+    }]})
+    with pytest.raises(dsapi_module.DSAPIError, match="invalid web tool"):
+        _request_chat_completion(
+            make_settings(tmp_path), [{"role": "user", "content": "核实资料"}],
+            web_session=WebSearchSession(),
+        )
 
 
 @pytest.mark.asyncio
