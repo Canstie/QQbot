@@ -96,6 +96,39 @@ async def test_insufficient_evidence_drives_a_new_query(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_initial_queries_are_both_kept_and_failed_reads_allow_a_retry(monkeypatch):
+    searches, reads, calls = [], [], []
+    stale = [WebSearchResult(f"旧页面{i}", f"https://example.test/old{i}", "过期资料无法证实当前情况。",
+                            "2020-01-01（页面日期线索）") for i in range(3)]
+    fresh = WebSearchResult("当期公告", "https://example.test/new", "当期正式公告说明有效的安排。",
+                            "2026-10-16（页面日期线索）")
+
+    def search(query, **kwargs):
+        searches.append(query)
+        return stale if len(searches) < 3 else [fresh]
+
+    def read(items):
+        reads.append([item.url for item in items])
+        return [fresh.snippet if item == fresh else "" for item in items]
+
+    def complete(messages):
+        calls.append(messages)
+        if len(calls) == 1:
+            return json.dumps({"action":"search", "question":"当前安排", "time_scope":"current",
+                               "queries":["主题 当前安排", "主题 另一种名称"]})
+        if len(calls) == 2:
+            return json.dumps({"status":"insufficient", "next_query":"主题 原始发布方"})
+        return json.dumps({"status":"supported", "time_valid":True, "answer":"已核实的安排。",
+                           "evidence":[{"source":4,"quote":fresh.snippet}]})
+
+    monkeypatch.setattr("qq_personal_bot.web_search.search_web", search)
+    monkeypatch.setattr(agent, "read_web_pages", read)
+    assert await agent.generate_web_reply(complete, "角色", [], "当前安排") == "已核实的安排。"
+    assert searches == ["主题 当前安排", "主题 另一种名称", "主题 原始发布方"]
+    assert reads == [[item.url for item in stale], [fresh.url]]
+
+
+@pytest.mark.asyncio
 async def test_plain_or_malformed_answer_cannot_bypass_verification(monkeypatch):
     monkeypatch.setattr("qq_personal_bot.web_search.search_web", lambda *args: pytest.fail("invalid plan"))
     reply = await agent.generate_web_reply(lambda messages: "这个产品尚未推出。", "角色", [], "现在怎么样")

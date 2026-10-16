@@ -21,7 +21,7 @@ nonebot.init(
     superusers={str(admin) for admin in settings.admins},
 )
 
-for component in ("qq_personal_bot.ai_transport", "qq_personal_bot.web_search"):
+for component in ("qq_personal_bot.ai_transport", "qq_personal_bot.web_search", "qq_personal_bot.web_agent"):
     component_logger = logging.getLogger(component)
     component_logger.setLevel(logging.INFO)
     component_logger.addHandler(LoguruHandler())

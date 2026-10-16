@@ -105,13 +105,14 @@ class WebSearchSession:
     tool_called: bool = False
     required_terms: list[list[str]] = field(default_factory=list)
     semantic: bool = False
+    max_searches: int = 2
 
     @property
     def searched(self) -> bool:
         return bool(self.searches or self.tool_called)
 
     def search(self, query: str, freshness_days: int | None = None) -> dict[str, Any]:
-        if self.searches >= 2:
+        if self.searches >= self.max_searches:
             return {"error": "本轮查询次数已用完，请根据已有资料回答。"}
         self.searches += 1
         started = time.monotonic()

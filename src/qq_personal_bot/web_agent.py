@@ -5,6 +5,7 @@ import json
 import logging
 import re
 from collections.abc import Callable, Mapping, Sequence
+from datetime import date, timedelta
 from typing import Any
 
 from qq_personal_bot.web_reader import read_web_pages
@@ -24,6 +25,9 @@ _ROUTE = (
     '{"action":"search","question":"补全上下文后的独立问题",'
     '"time_scope":"current或historical或timeless","queries":["具体查询","另一种查询"]}。'
     "queries最多两条，每条2至160字，保留用户给出的实体、型号和限定条件，不预设结论。"
+    "查询用空格分开2至4个关键概念，不把完整问句直接粘给搜索引擎，不堆叠限定词。"
+    "两条查询应采用不同角度：一条简洁的通用名称与所问属性，另一条可用常见外文名、原始发布方或官方站点消歧。"
+    "time_scope为current时，至少一条查询包含当前年月，另一条可保持宽泛以免漏掉仍然有效的资料。"
     "短追问应从最近用户问题继承主题；旧助手回答只是待核实的主张，不是外部事实证据。"
     "只把当前问题所需的公开主题放入查询，不查询用户身份、QQ号码或整段群聊。"
     "如果上下文仍不能确定主题，输出"
@@ -44,6 +48,8 @@ _GROUND = (
     "若资料不足、过期、无关或相互矛盾，输出"
     '{"status":"insufficient","time_valid":false,"next_query":"更有针对性的查询"}。'
     "next_query可为空，不得把查不到说成对象不存在，也不得用训练记忆补出未证实的结论。"
+    "如果候选过旧或同名混淆，补查应尝试更简短的通用名称、外文名称或原始发布方；"
+    "保留原问题所问实体与属性，不因旧页面声称尚未发布就把问题改成询问发布时间。"
     "answer只写最终答案，隐藏搜索过程、引用编号、资料摘要和来源列表；没核实的日期或细节不补造。"
 )
 
@@ -81,6 +87,17 @@ def _supported_answer(decision: dict, sources: list[dict], current: bool) -> str
     return answer.strip()
 
 
+def _reading_priority(date_hint: str) -> int:
+    # This only orders reads; the evidence verifier decides actual temporal validity.
+    if "页面日期" not in date_hint:
+        return 1
+    try:
+        day = date.fromisoformat(date_hint[:10])
+    except ValueError:
+        return 1
+    return 2 if day >= beijing_now().date() - timedelta(days=90) else 0
+
+
 async def generate_web_reply(
     complete: Callable[[list[dict[str, Any]]], str | None],
     system_prompt: str,
@@ -113,23 +130,29 @@ async def generate_web_reply(
                 or scope not in {"current", "historical", "timeless"}):
             raise ValueError("invalid web action")
         logger.info("Web agent action=search time_scope=%s", scope)
-        session = WebSearchSession(semantic=True)
+        session = WebSearchSession(semantic=True, max_searches=3)
         sources: list[dict] = []
         read_urls: set[str] = set()
+        searched: set[str] = set()
+        successful_reads = 0
         for turn in range(2):
-            query = queries[min(turn, len(queries) - 1)]
-            if scope == "current":
-                query = f"{query} {beijing_now():%Y年%m月}"
-            await asyncio.to_thread(session.search, query, 0)
+            for query in dict.fromkeys(queries):
+                if query not in searched:
+                    await asyncio.to_thread(session.search, query, 0)
+                    searched.add(query)
             for index, result in enumerate(session.results, 1):
                 if index > len(sources):
                     sources.append({"index": index, "title": result.title, "url": result.url,
                                     "snippet": result.snippet, "date_hint": result.published, "text": ""})
-            unread = [item for item in session.results if item.url not in read_urls][:min(3, max(0, 4 - len(read_urls)))]
+            unread = [item for item in session.results if item.url not in read_urls]
+            if scope == "current":
+                unread.sort(key=lambda item: _reading_priority(item.published), reverse=True)
+            unread = unread[:min(3, max(0, 4 - successful_reads), max(0, 6 - len(read_urls)))]
             if unread:
                 texts = await asyncio.to_thread(read_web_pages, unread)
                 for result, text in zip(unread, texts, strict=True):
                     read_urls.add(result.url)
+                    successful_reads += bool(text)
                     next(item for item in sources if item["url"] == result.url)["text"] = text
             if not sources:
                 continue
@@ -144,11 +167,10 @@ async def generate_web_reply(
                 return (reply_separator.join(hide_web_sources(part) for part in answer.split(reply_separator))
                         if reply_separator else hide_web_sources(answer))
             followup = decision.get("next_query")
-            if isinstance(followup, str) and 2 <= len(followup) <= 160:
-                queries = [queries[0], followup]
             logger.info("Web agent evidence=insufficient turn=%s", turn + 1)
-            if len(queries) < 2 or queries[1] == queries[0]:
+            if not isinstance(followup, str) or not 2 <= len(followup) <= 160 or followup in searched:
                 break
+            queries = [followup]
         return UNVERIFIED_WEB_REPLY
     except (ValueError, TypeError, KeyError):
         logger.info("Web agent invalid structured response; no unverified answer sent")
