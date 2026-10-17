@@ -226,3 +226,93 @@ async def test_small_talk_and_reasoning_do_not_need_a_search(monkeypatch):
         lambda messages: json.dumps({"action":"answer", "basis":"conversation", "answer":"晚上好呀"}), "角色", [], "晚上好",
     )
     assert reply == "晚上好呀"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("term", ["绝妖星", "铅笔芯计划", "MSR"])
+async def test_unfamiliar_terms_keep_the_original_name_without_a_date(monkeypatch, term):
+    queries = []
+    source = result(snippet=f"{term}是社区使用的简称，指向该项目的协作活动。")
+    responses = iter([
+        {"action":"search", "question":f"{term}是什么", "time_scope":"timeless", "focus":term,
+         "queries":[f"{term} 是什么"]},
+        {"status":"supported", "answer":"该项目协作活动的简称。",
+         "evidence":[{"source":1,"quote":source.snippet}]},
+    ])
+
+    def search(query, **kwargs):
+        queries.append(query)
+        assert kwargs["required_terms"] == [[term]]
+        return [source]
+
+    monkeypatch.setattr("qq_personal_bot.web_search.search_web", search)
+    assert await agent.generate_web_reply(
+        lambda messages: json.dumps(next(responses)), "角色", [], f"{term}是什么",
+    ) == "该项目协作活动的简称。"
+    assert queries[0] == term and all("年" not in query for query in queries)
+
+
+@pytest.mark.asyncio
+async def test_one_malformed_structured_response_can_be_repaired():
+    calls = []
+
+    def complete(messages):
+        calls.append(messages)
+        return ('{broken JSON' if len(calls) == 1 else
+                json.dumps({"action":"answer", "basis":"reasoning", "answer":"49"}))
+
+    assert await agent.generate_web_reply(complete, "角色", [], "7的平方") == "49"
+    assert len(calls) == 2 and "合法JSON" in calls[-1][-1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_inexact_quote_receives_feedback_and_can_be_corrected(monkeypatch):
+    calls = []
+    source = result(snippet="原始文档明确说明该项目属于协作活动。")
+
+    def complete(messages):
+        calls.append(messages)
+        if len(calls) == 1:
+            return json.dumps({"action":"search", "question":"项目含义", "time_scope":"timeless", "queries":["项目"]})
+        if len(calls) == 3:
+            assert json.loads(messages[-1]["content"])["verification_feedback"]
+        return json.dumps({"status":"supported", "answer":"该项目属于协作活动。", "evidence":[
+            {"source":1, "quote":"引用并不在原文中，不能发送。" if len(calls) == 2 else source.snippet}]})
+
+    monkeypatch.setattr("qq_personal_bot.web_search.search_web", lambda *a, **kw: [source])
+    assert await agent.generate_web_reply(complete, "角色", [], "项目含义") == "该项目属于协作活动。"
+    assert len(calls) == 3
+
+
+def test_evidence_tolerates_layout_spaces_but_not_different_facts():
+    sources = [{"title":"资料", "snippet":"某活动 是一种 社区 协作活动，代号 ＡＢＣ。"}]
+    decision = {"status":"supported", "answer":"已核实。", "evidence":[
+        {"source":1,"quote":"某活动是一种社区协作活动，代号ABC。"}]}
+    assert agent._supported_answer(decision, sources, False) == "已核实。"
+    decision["evidence"][0]["quote"] = "某活动是一种社区竞技活动，代号ABC。"
+    assert agent._supported_answer(decision, sources, False) is None
+
+
+@pytest.mark.asyncio
+async def test_reading_a_blocked_page_does_not_discard_a_requested_search(monkeypatch):
+    calls, searches = [], []
+    blocked = WebSearchResult("社区用法", "https://example.test/blocked", "只有简称，缺少说明。")
+    definition = WebSearchResult("完整说明", "https://example.test/definition", "该简称表示一种公开的协作活动。")
+
+    def complete(messages):
+        calls.append(messages)
+        if len(calls) == 1:
+            return json.dumps({"action":"search", "question":"简称含义", "time_scope":"timeless", "queries":["简称"]})
+        if len(calls) == 2:
+            return json.dumps({"status":"insufficient", "read_sources":[1], "next_query":"简称 完整说明"})
+        assert json.loads(messages[-1]["content"])["sources"][0]["read_status"] == "unavailable"
+        return json.dumps({"status":"supported", "answer":"一种协作活动的简称。", "evidence":[
+            {"source":2,"quote":definition.snippet}]})
+
+    def search(query, **kwargs):
+        searches.append(query)
+        return [blocked] if len(searches) == 1 else [definition]
+
+    monkeypatch.setattr("qq_personal_bot.web_search.search_web", search)
+    assert await agent.generate_web_reply(complete, "角色", [], "简称含义") == "一种协作活动的简称。"
+    assert searches == ["简称", "简称 完整说明"] and len(calls) == 3

@@ -193,6 +193,27 @@ def test_semantic_candidate_search_combines_independent_engines(monkeypatch):
     assert [item.title for item in results] == ["first 0", "second 0", "first 1", "second 1"]
 
 
+def test_semantic_focus_prefers_complete_names_before_truncating_results(current_time):
+    cards = ''.join(
+        f'<li class="res-list"><h3><a href="https://example.test/{i}">{title}</a></h3>'
+        f'<p class="res-desc">{snippet}</p></li>'
+        for i, (title, snippet) in enumerate([
+            ("星的意思", "只匹配部分字"), ("其他作品", "无关内容"),
+            ("项目论坛", "绝妖星 的讨论"), ("绝妖星 活动介绍", "关于完整原词的资料"),
+        ]))
+    results = web._parse_html_results(cards, "https://www.so.com/s", 2, 0, current_time,
+                                      "绝妖星", [["绝妖星"]], semantic=True)
+    assert [item.title for item in results] == ["绝妖星 活动介绍", "项目论坛"]
+
+
+def test_related_search_suggestions_are_not_source_evidence(current_time):
+    body = '''<div class="vrwrap"><h3><a href="https://example.test/unrelated">其他作品</a></h3>
+    <p>这是另一篇文章。</p>推荐您搜索 绝妖星 是什么</div>'''
+    results = web._parse_html_results(body, "https://www.sogou.com/web", 5, 0, current_time,
+                                      "绝妖星", semantic=True)
+    assert "绝妖星" not in results[0].snippet
+
+
 def test_entity_background_without_the_event_cannot_be_used_as_evidence(current_time):
     candidates = [
         WebSearchResult("梁文锋 深度求索 创始人", "https://example.test/background", "人物经历"),

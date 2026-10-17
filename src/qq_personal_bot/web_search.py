@@ -230,6 +230,8 @@ def search_web(
                 if item is not None and item.url not in seen:
                     results.append(item)
                     seen.add(item.url)
+        if required_terms:
+            results.sort(key=lambda item: _focus_score(item, required_terms), reverse=True)
         results = results[:normalized_limit]
     with _cache_lock:
         _search_cache[cache_key] = (time.monotonic() + (_CACHE_SECONDS if results else 15), tuple(results))
@@ -289,6 +291,7 @@ def _parse_html_results(
                             block, flags=re.IGNORECASE | re.DOTALL)
         snippet = summary[1] if summary else block[heading.end():].split("</li>", 1)[0]
         snippet = re.sub(r"<(script|style)\b[^>]*>.*?</\1>", "", snippet, flags=re.IGNORECASE | re.DOTALL)
+        snippet = re.split(r"推荐您搜索|相关搜索", snippet, maxsplit=1)[0]
         candidates.append(WebSearchResult(
             _clean_xml_text(heading[1], 180), url, _clean_xml_text(snippet, 650),
         ))
@@ -302,6 +305,8 @@ def _select_results(
 ) -> list[WebSearchResult]:
     results: list[WebSearchResult] = []
     seen_urls: set[str] = set()
+    if semantic and required_terms:
+        candidates = sorted(candidates, key=lambda item: _focus_score(item, required_terms), reverse=True)
     for item in candidates:
         title, result_url, snippet, published = item.title, item.url, item.snippet, item.published
         text = re.sub(r"\s+", "", f"{title} {snippet}").casefold()
@@ -339,6 +344,13 @@ def _select_results(
         if len(results) >= limit:
             break
     return results
+
+
+def _focus_score(item: WebSearchResult, groups: list[list[str]]) -> tuple[int, int]:
+    title = _SPACE_RE.sub("", item.title).casefold()
+    snippet = _SPACE_RE.sub("", item.snippet).casefold()
+    terms = [_SPACE_RE.sub("", term).casefold() for group in groups for term in group if term.strip()]
+    return (sum(term in title for term in terms), sum(term in snippet for term in terms))
 
 
 def _page_date(*values: str) -> datetime | None:

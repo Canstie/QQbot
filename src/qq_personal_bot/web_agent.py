@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import re
+import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
@@ -27,10 +28,13 @@ _ROUTE = (
     "凡需要查验对话外的具体事实，或者用户明确要求搜索/核实，必须先search；"
     "尤其会随时间变化的信息，不能因训练知识认为对象不存在就跳过搜索。输出"
     '{"action":"search","question":"补全上下文后的独立问题",'
-    '"time_scope":"current或historical或timeless","queries":["具体查询","另一种查询"]}。'
+    '"time_scope":"current或historical或timeless","focus":"应整体检索的用户原词，没有则为空",'
+    '"queries":["具体查询","另一种查询"]}。'
     "queries最多两条，每条2至160字，保留用户给出的实体、型号和限定条件，不预设结论。"
     "查询用空格分开2至4个关键概念，不把完整问句直接粘给搜索引擎，不堆叠限定词。"
     "第一条只用实体名称与所问属性两个词组，避免增加推测的状态或用户没有提出的限制；第二条再换角度细化。"
+    "遇到陌生名称、简称或网络用语，focus照抄用户原词，先查原词，不凭字面猜所属领域或添加未经证实的限定。"
+    "不明确所属领域时只给一条原词查询即可；新主题不套用旧话题的领域，定义类问题不附加日期。"
     "两条查询应采用不同角度：一条简洁的通用名称与所问属性，另一条可用常见外文名、原始发布方或官方站点消歧。"
     "time_scope为current时，至少一条查询包含当前年月，另一条可保持宽泛以免漏掉仍然有效的资料。"
     "短追问应从最近用户问题继承主题；旧助手回答只是待核实的主张，不是外部事实证据。"
@@ -46,6 +50,8 @@ _GROUND = (
     "需要当前状态时，按本轮北京时间核对原文的有效区间，区分发布时间、索引时间、事件时间；"
     "过期内容、未来预告或只显示最近索引时间的旧内容不能支持当前结论。"
     "优先采用原始公告或直接来源，互相冲突、信息不足时不强下结论。"
+    "解释简称、俗称时，可以用多个相关来源的实际用法交叉确认基本含义，无需每个来源都有字典式定义。"
+    "允许正常语义理解和通用缩写展开；只回答证据支持的基本类别与所属领域，未核实的正式名称、时间、细节不补造。"
     "若已足以核实，输出JSON："
     '{"status":"supported","time_valid":true,"answer":"按角色语气给出的最终回答",'
     '"evidence":[{"source":1,"quote":"来源中连续存在的原文片段"}]}。'
@@ -60,6 +66,8 @@ _GROUND = (
     "每次至多选三个页面；不能编造URL，不读取与问题无关的链接。"
     "next_query可为空，不得把查不到说成对象不存在，也不得用训练记忆补出未证实的结论。"
     "如果候选过旧或同名混淆，补查应尝试更简短的通用名称、外文名称或原始发布方；"
+    "陌生名称的补查优先利用来源已经出现的全称、关联领域或其他称呼，一条查询只检验一个方向，避免堆叠OR和重复关键词。"
+    "部分字词碰巧相同、推荐内容和搜索建议不证明相关；读取失败时换来源或补查，不反复请求同一不可读页面。"
     "保留原问题所问实体与属性，不因旧页面声称尚未发布就把问题改成询问发布时间。"
     "answer只写最终答案，隐藏搜索过程、引用编号、资料摘要和来源列表；没核实的日期或细节不补造。"
 )
@@ -93,9 +101,13 @@ def _supported_answer(decision: dict, sources: list[dict], current: bool) -> str
             return None
         source = sources[index - 1]
         original = "\n".join(str(source.get(key) or "") for key in ("title", "snippet", "text"))
-        if len(quote.strip()) < 8 or quote not in original:
+        if len(_normalized(quote)) < 8 or _normalized(quote) not in _normalized(original):
             return None
     return answer.strip()
+
+
+def _normalized(value: str) -> str:
+    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", value)).casefold()
 
 
 async def generate_web_reply(
@@ -109,11 +121,27 @@ async def generate_web_reply(
     # User questions supply follow-up context; old assistant assertions cannot anchor the decision.
     user_history = [{"role": "user", "content": _plain_question(item.get("content", ""))}
                     for item in history[-8:] if item.get("role") == "user"]
+    repair_budget = 1
+
+    async def structured(messages):
+        nonlocal repair_budget
+        try:
+            return _json_object(await asyncio.to_thread(complete, messages))
+        except (ValueError, TypeError):
+            if not repair_budget:
+                raise
+            repair_budget -= 1
+            logger.info("Web agent protocol=repair")
+            return _json_object(await asyncio.to_thread(complete, [*messages, {
+                "role": "user", "content": "上次输出未符合JSON对象格式。请根据上述问题和资料重新输出一个合法JSON对象，"
+                "保持原协议字段，字符串正确转义，只输出JSON；不要凭记忆补事实。",
+            }]))
+
     try:
-        action = _json_object(await asyncio.to_thread(complete, [
+        action = await structured([
             {"role": "system", "content": f"{system_prompt}\n\n{clock}{_ROUTE}"},
             *user_history, {"role": "user", "content": prompt},
-        ]))
+        ])
         if action.get("action") in {"answer", "clarify"}:
             if action["action"] == "answer" and action.get("basis") not in {
                 "conversation", "reasoning", "provided_data", "creative", "boundary",
@@ -131,10 +159,19 @@ async def generate_web_reply(
             raise ValueError("invalid web action")
         logger.info("Web agent action=search time_scope=%s", scope)
         session = WebSearchSession(semantic=True, max_searches=3)
+        focus = action.get("focus")
+        context = _plain_question(prompt) + " ".join(item["content"] for item in user_history)
+        if (isinstance(focus, str) and 2 <= len(focus.strip()) <= 80
+                and _normalized(focus) in _normalized(context)):
+            focus = focus.strip()
+            session.required_terms = [[focus]]
+            if scope == "timeless":
+                queries = [focus, *[q for q in queries if _normalized(q) != _normalized(focus)]][:2]
         sources: list[dict] = []
         read_urls: set[str] = set()
         searched: set[str] = set()
         successful_reads = 0
+        feedback = ""
         for turn in range(3):
             pending = list(dict.fromkeys(queries))
             if turn == 0 and scope == "current":
@@ -150,14 +187,15 @@ async def generate_web_reply(
                 if not any(item["url"] == result.url for item in sources):
                     sources.append({"index": len(sources) + 1, "title": result.title, "url": result.url,
                                     "snippet": result.snippet, "date_hint": result.published, "text": ""})
-            decision = _json_object(await asyncio.to_thread(complete, [
+            decision = await structured([
                 {"role": "system", "content": f"{system_prompt}\n\n{clock}{_GROUND}"},
                 {"role": "user", "content": json.dumps({
                     "question": question, "time_scope": scope, "sources": sources,
                     "remaining_searches": session.max_searches - session.searches,
                     "remaining_reads": max(0, min(4 - successful_reads, 6 - len(read_urls))),
+                    "verification_feedback": feedback,
                 }, ensure_ascii=False)},
-            ]))
+            ])
             if answer := _supported_answer(decision, sources, scope == "current"):
                 logger.info("Web agent evidence=accepted sources=%s", len(sources))
                 return (reply_separator.join(hide_web_sources(part) for part in answer.split(reply_separator))
@@ -166,12 +204,19 @@ async def generate_web_reply(
             logger.info("Web agent evidence=insufficient turn=%s", turn + 1)
             if turn == 2:
                 break
-            wanted = decision.get("read_sources") or []
+            if decision.get("status") == "supported":
+                feedback = "上次结论未通过引用核验：检查来源编号、原文引用和当前有效性。请重核现有资料，不得伪造引用。"
+                queries = []
+                continue
+            wanted = decision.get("read_sources")
+            wanted = [index for index in wanted if type(index) is int] if isinstance(wanted, list) else []
             unread = [item for item in sources if item["index"] in wanted and item["url"] not in read_urls]
             allowed_urls = {match for item in sources for match in re.findall(
                 r'https?://[^\s<>()"\]]+', item["text"],
             )}
-            for url in (decision.get("read_urls") or [])[:3]:
+            links = decision.get("read_urls")
+            links = [url for url in links if isinstance(url, str)] if isinstance(links, list) else []
+            for url in links[:3]:
                 if url in allowed_urls and url not in read_urls and not any(item["url"] == url for item in unread):
                     source = next((item for item in sources if item["url"] == url), None)
                     if source is None:
@@ -186,13 +231,13 @@ async def generate_web_reply(
                     read_urls.add(source["url"])
                     successful_reads += bool(text)
                     source.update(text=text, read_status="read" if text else "unavailable")
-                queries = []
-            elif (isinstance(followup, str) and 2 <= len(followup) <= 160
-                  and followup not in searched and session.searches < session.max_searches):
+            queries = []
+            if (isinstance(followup, str) and 2 <= len(followup) <= 160
+                    and followup not in searched and session.searches < session.max_searches):
                 queries = [followup]
-            else:
+            if not unread and not queries:
                 break
         return UNVERIFIED_WEB_REPLY
-    except (ValueError, TypeError, KeyError):
-        logger.info("Web agent invalid structured response; no unverified answer sent")
+    except (ValueError, TypeError, KeyError) as exc:
+        logger.info("Web agent invalid structured response error=%s; no unverified answer sent", type(exc).__name__)
         return UNVERIFIED_WEB_REPLY
