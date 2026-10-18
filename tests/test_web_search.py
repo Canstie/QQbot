@@ -184,7 +184,7 @@ def test_semantic_candidate_search_combines_independent_engines(monkeypatch):
         requests.append(request.full_url)
         name = "first" if "so.com/s?" in request.full_url else "second"
         body = "".join(f'<li class="res-list"><h3><a href="https://example.test/{name}/{i}">{name} {i}</a></h3>'
-                       f'<p class="res-desc">candidate text</p></li>' for i in range(2))
+                       f'<p class="res-desc">任意主题的相关资料</p></li>' for i in range(2))
         return Response(body.encode())
 
     monkeypatch.setattr(web, "urlopen", fetch)
@@ -204,6 +204,56 @@ def test_semantic_focus_prefers_complete_names_before_truncating_results(current
     results = web._parse_html_results(cards, "https://www.so.com/s", 2, 0, current_time,
                                       "绝妖星", [["绝妖星"]], semantic=True)
     assert [item.title for item in results] == ["绝妖星 活动介绍", "项目论坛"]
+
+
+def test_semantic_search_ranks_relevant_late_results_before_truncating():
+    body = '<rss><channel>' + ''.join(
+        f'<item><title>无关字典条目{i}</title><link>https://example.test/noise{i}</link></item>'
+        for i in range(6)
+    ) + '''<item><title>项目甲 当前活动 公告</title><link>https://example.test/notice</link>
+      <description>项目甲当前活动的最新安排。</description></item></channel></rss>'''
+    results = web._parse_results(web.ET.fromstring(body), 5, 0, web.beijing_now(),
+                                "项目甲 当前活动", semantic=True)
+    assert len(results) == 5
+    assert results[0].url == "https://example.test/notice"
+
+
+def test_irrelevant_html_candidates_do_not_prevent_using_another_provider(monkeypatch):
+    monkeypatch.setattr(web, "_HTML_SEARCH_URLS", (("https://www.so.com/s", "q"),))
+    requests = []
+
+    def fetch(request, **kwargs):
+        requests.append(request.full_url)
+        if "so.com/s?" in request.full_url:
+            return Response(b'<li class="res-list"><h3><a href="https://example.test/noise">Dictionary</a></h3></li>')
+        return Response('''<rss><channel><item><title>项目甲活动公告</title>
+          <link>https://example.test/notice</link><description>项目甲活动的具体安排。</description>
+          </item></channel></rss>'''.encode())
+
+    monkeypatch.setattr(web, "urlopen", fetch)
+    results = search_web("项目甲 活动", semantic=True, freshness_days=0)
+    assert len(requests) == 2
+    assert results[0].url == "https://example.test/notice"
+
+
+def test_challenge_page_is_logged_and_does_not_count_as_search_results(monkeypatch, caplog):
+    attempts = []
+
+    def fetch(request, **kwargs):
+        attempts.append(request.full_url)
+        if len(attempts) == 1:
+            response = Response(b"<html>challenge</html>")
+            response.url = "https://qcaptcha.so.com/?ret=private-query"
+            return response
+        return Response(b'''<rss><channel><item><title>Found</title>
+          <link>https://example.test/found</link></item></channel></rss>''')
+
+    monkeypatch.setattr(web, "urlopen", fetch)
+    with caplog.at_level("INFO", logger=web.__name__):
+        results = search_web("Found", semantic=True, freshness_days=0, trace_id="test-trace")
+    assert results[0].title == "Found"
+    assert "outcome=challenge" in caplog.text and "test-trace" in caplog.text
+    assert "private-query" not in caplog.text
 
 
 def test_related_search_suggestions_are_not_source_evidence(current_time):

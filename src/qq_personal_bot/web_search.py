@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import calendar
+import hashlib
 import html
 import json
 import logging
@@ -106,6 +107,7 @@ class WebSearchSession:
     required_terms: list[list[str]] = field(default_factory=list)
     semantic: bool = False
     max_searches: int = 2
+    trace_id: str = ""
 
     @property
     def searched(self) -> bool:
@@ -123,10 +125,12 @@ class WebSearchSession:
             options["required_terms"] = self.required_terms
         if self.semantic:
             options["semantic"] = True
+        if self.trace_id:
+            options["trace_id"] = self.trace_id
         found = search_web(query, **options)
         logger.info(
-            "Web search trigger=%s query_number=%s results=%s elapsed_ms=%.1f",
-            "model_tool" if self.tool_called else "automatic", self.searches, len(found),
+            "Web search trace=%s trigger=%s query_number=%s results=%s elapsed_ms=%.1f",
+            self.trace_id, "model_tool" if self.tool_called else "automatic", self.searches, len(found),
             (time.monotonic() - started) * 1000,
         )
         indices = {item.url: index for index, item in enumerate(self.results, 1)}
@@ -162,11 +166,13 @@ def search_web(
     freshness_days: int | None = None,
     required_terms: list[list[str]] | None = None,
     semantic: bool = False,
+    trace_id: str = "",
 ) -> list[WebSearchResult]:
     normalized_query = _search_query(query)
     if not normalized_query:
         return []
     normalized_limit = max(1, min(int(limit), 8))
+    query_id = hashlib.sha256(normalized_query.encode()).hexdigest()[:10]
     clock = beijing_now()
     days = freshness_days
     if days is None:
@@ -183,6 +189,8 @@ def search_web(
         cached = _search_cache.get(cache_key)
         if cached is not None and cached[0] > now:
             _search_cache.move_to_end(cache_key)
+            logger.info("Web search trace=%s query_id=%s cache=hit results=%s",
+                        trace_id, query_id, len(cached[1]))
             return list(cached[1])
 
     results: list[WebSearchResult] = []
@@ -192,6 +200,7 @@ def search_web(
     endpoints.extend((base, {"q": normalized_query, "format": "rss", "setlang": "zh-cn"}, False)
                      for base in _SEARCH_URLS)
     for endpoint_index, (base, params, is_html) in enumerate(endpoints):
+        provider = urlparse(base).hostname
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
@@ -201,26 +210,39 @@ def search_web(
         })
         try:
             with urlopen(request, timeout=min(4.0, remaining)) as response:
+                final_url = urlparse(getattr(response, "url", request.full_url))
+                if (re.search(r"captcha|antispider", final_url.hostname or "")
+                        or re.search(r"captcha|antispider", final_url.path)):
+                    logger.info("Web search trace=%s query_id=%s provider=%s outcome=challenge",
+                                trace_id, query_id, provider)
+                    continue
                 body = response.read(_MAX_RESPONSE_BYTES + 1)
             if len(body) > _MAX_RESPONSE_BYTES:
+                logger.info("Web search trace=%s query_id=%s provider=%s outcome=oversized",
+                            trace_id, query_id, provider)
                 continue
+            candidate_limit = 8 if semantic else normalized_limit
             if is_html:
                 results = _parse_html_results(
-                    body.decode("utf-8", errors="replace"), base, normalized_limit,
+                    body.decode("utf-8", errors="replace"), base, candidate_limit,
                     days, clock, normalized_query, required_terms, semantic,
                 )
             else:
                 results = _parse_results(
-                    ET.fromstring(body), normalized_limit, days, clock, normalized_query, required_terms, semantic,
+                    ET.fromstring(body), candidate_limit, days, clock, normalized_query, required_terms, semantic,
                 )
-        except (OSError, ValueError, ET.ParseError):
+        except (OSError, ValueError, ET.ParseError) as exc:
+            logger.info("Web search trace=%s query_id=%s provider=%s outcome=error error=%s status=%s",
+                        trace_id, query_id, provider, type(exc).__name__, getattr(exc, "code", None))
             continue
+        relevant = sum(_relevant_news(normalized_query, item.title, item.snippet, item.url) for item in results)
+        logger.info("Web search trace=%s query_id=%s provider=%s outcome=parsed results=%s relevant=%s",
+                    trace_id, query_id, provider, len(results), relevant)
         if results:
-            logger.info("Web search provider=%s accepted_results=%s", urlparse(base).hostname, len(results))
             if not semantic:
                 break
             batches.append(results)
-        if semantic and batches and endpoint_index >= len(_HTML_SEARCH_URLS) - 1:
+        if semantic and relevant and endpoint_index >= len(_HTML_SEARCH_URLS) - 1:
             break
     if semantic:
         results = []
@@ -230,8 +252,7 @@ def search_web(
                 if item is not None and item.url not in seen:
                     results.append(item)
                     seen.add(item.url)
-        if required_terms:
-            results.sort(key=lambda item: _focus_score(item, required_terms), reverse=True)
+        results.sort(key=lambda item: _candidate_score(item, normalized_query, required_terms), reverse=True)
         results = results[:normalized_limit]
     with _cache_lock:
         _search_cache[cache_key] = (time.monotonic() + (_CACHE_SECONDS if results else 15), tuple(results))
@@ -305,8 +326,8 @@ def _select_results(
 ) -> list[WebSearchResult]:
     results: list[WebSearchResult] = []
     seen_urls: set[str] = set()
-    if semantic and required_terms:
-        candidates = sorted(candidates, key=lambda item: _focus_score(item, required_terms), reverse=True)
+    if semantic:
+        candidates = sorted(candidates, key=lambda item: _candidate_score(item, query, required_terms), reverse=True)
     for item in candidates:
         title, result_url, snippet, published = item.title, item.url, item.snippet, item.published
         text = re.sub(r"\s+", "", f"{title} {snippet}").casefold()
@@ -344,6 +365,12 @@ def _select_results(
         if len(results) >= limit:
             break
     return results
+
+
+def _candidate_score(item: WebSearchResult, query: str, groups: list[list[str]] | None) -> tuple[int, int, int]:
+    # Rank before truncating; keep aliases as candidates for the model to assess.
+    return (int(_relevant_news(query, item.title, item.snippet, item.url)),
+            *_focus_score(item, groups or []))
 
 
 def _focus_score(item: WebSearchResult, groups: list[list[str]]) -> tuple[int, int]:

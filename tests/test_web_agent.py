@@ -204,6 +204,58 @@ async def test_failed_reads_do_not_consume_the_successful_page_budget(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_insufficient_without_a_next_action_reads_existing_candidates(monkeypatch, caplog):
+    calls, reads = [], []
+    source = result(snippet="摘要尚未包含答案。")
+    quote = "正文说明项目甲在周六上午九点开放。"
+
+    def complete(messages):
+        calls.append(messages)
+        if len(calls) == 1:
+            return json.dumps({"action": "search", "question": "开放安排", "time_scope": "timeless",
+                               "queries": ["项目甲 开放安排"]})
+        if len(calls) == 2:
+            return json.dumps({"status": "insufficient", "next_query": "", "read_sources": []})
+        assert json.loads(messages[-1]["content"])["sources"][0]["text"] == quote
+        return json.dumps({"status": "supported", "answer": "周六上午九点开放。",
+                           "evidence": [{"source": 1, "quote": quote}]})
+
+    def read(items):
+        reads.extend(item.url for item in items)
+        return [quote for _ in items]
+
+    monkeypatch.setattr("qq_personal_bot.web_search.search_web", lambda *a, **kw: [source])
+    monkeypatch.setattr(agent, "read_web_pages", read)
+    with caplog.at_level("INFO", logger=agent.__name__):
+        reply = await agent.generate_web_reply(complete, "角色", [], "项目甲开放安排")
+    assert reply == "周六上午九点开放。"
+    assert reads == [source.url]
+    assert "action=fallback_read" in caplog.text and "evidence=accepted" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_automatic_reads_are_bounded_when_all_pages_fail(monkeypatch, caplog):
+    responses = iter([
+        {"action": "search", "question": "项目安排", "time_scope": "timeless", "queries": ["项目 安排"]},
+        *[{"status": "insufficient"}] * 3,
+    ])
+    sources = [WebSearchResult(f"页面{i}", f"https://example.test/{i}", "摘要缺少所需信息。") for i in range(8)]
+    reads = []
+
+    def read(items):
+        reads.extend(item.url for item in items)
+        return ["" for _ in items]
+
+    monkeypatch.setattr("qq_personal_bot.web_search.search_web", lambda *a, **kw: sources)
+    monkeypatch.setattr(agent, "read_web_pages", read)
+    with caplog.at_level("INFO", logger=agent.__name__):
+        reply = await agent.generate_web_reply(lambda _: json.dumps(next(responses)), "角色", [], "项目安排")
+    assert reply == agent.UNVERIFIED_WEB_REPLY
+    assert len(reads) == len(set(reads)) == 6
+    assert "outcome=unverified" in caplog.text and "reason=model_insufficient" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_plain_or_malformed_answer_cannot_bypass_verification(monkeypatch):
     monkeypatch.setattr("qq_personal_bot.web_search.search_web", lambda *args: pytest.fail("invalid plan"))
     reply = await agent.generate_web_reply(lambda messages: "这个产品尚未推出。", "角色", [], "现在怎么样")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import logging
 import re
 import socket
 from concurrent.futures import ThreadPoolExecutor
@@ -12,6 +13,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 from qq_personal_bot.web_search import WebSearchResult
 
 _MAX_PAGE_BYTES = 1_500_000
+logger = logging.getLogger(__name__)
 
 
 def _public_url(url: str) -> None:
@@ -94,21 +96,29 @@ class _PageText(HTMLParser):
 
 
 def read_web_page(url: str) -> str:
+    host = ""
     try:
+        host = urlsplit(url).hostname or ""
         _public_url(url)
         request = Request(url, headers={"User-Agent": "Mozilla/5.0 QQBot/0.1", "Accept": "text/html"})
         with build_opener(_PublicRedirects()).open(request, timeout=5) as response:
             if "html" not in response.headers.get_content_type():
+                logger.info("Web page host=%s outcome=non_html", host)
                 return ""
             raw = response.read(_MAX_PAGE_BYTES + 1)
             if len(raw) > _MAX_PAGE_BYTES:
+                logger.info("Web page host=%s outcome=oversized", host)
                 return ""
             encoding = response.headers.get_content_charset() or "utf-8"
         parser = _PageText(url)
         parser.feed(raw.decode(encoding, errors="replace"))
         lines = [re.sub(r"\s+", " ", part).strip() for part in "".join(parser.parts).splitlines()]
-        return "\n".join(part for part in lines if part)[:10000]
-    except (OSError, ValueError, LookupError):
+        text = "\n".join(part for part in lines if part)[:10000]
+        logger.info("Web page host=%s outcome=%s chars=%s", host, "read" if text else "empty", len(text))
+        return text
+    except (OSError, ValueError, LookupError) as exc:
+        logger.info("Web page host=%s outcome=error error=%s status=%s",
+                    host, type(exc).__name__, getattr(exc, "code", None))
         return ""
 
 

@@ -7,6 +7,7 @@ import re
 import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
+from uuid import uuid4
 
 from qq_personal_bot.web_reader import read_web_pages
 from qq_personal_bot.web_search import (
@@ -97,23 +98,31 @@ def _plain_question(value: Any) -> str:
     return "\n".join(str(item.get("text", "")) for item in value if isinstance(item, Mapping))[:1000]
 
 
-def _supported_answer(decision: dict, sources: list[dict], current: bool) -> str | None:
+def _evidence_error(decision: dict, sources: list[dict], current: bool) -> str:
     answer, evidence = decision.get("answer"), decision.get("evidence")
-    if (decision.get("status") != "supported" or not isinstance(answer, str) or not answer.strip()
-            or (current and decision.get("time_valid") is not True)
-            or not isinstance(evidence, list) or not evidence or len(evidence) > 10):
-        return None
+    if decision.get("status") != "supported":
+        return "model_insufficient"
+    if not isinstance(answer, str) or not answer.strip():
+        return "empty_answer"
+    if current and decision.get("time_valid") is not True:
+        return "time_unverified"
+    if not isinstance(evidence, list) or not evidence or len(evidence) > 10:
+        return "missing_evidence"
     for item in evidence:
         if not isinstance(item, dict):
-            return None
+            return "invalid_evidence"
         index, quote = item.get("source"), item.get("quote")
         if type(index) is not int or not 1 <= index <= len(sources) or not isinstance(quote, str):
-            return None
+            return "invalid_source"
         source = sources[index - 1]
         original = "\n".join(str(source.get(key) or "") for key in ("title", "snippet", "text"))
         if len(_normalized(quote)) < 8 or _normalized(quote) not in _normalized(original):
-            return None
-    return answer.strip()
+            return "quote_mismatch"
+    return ""
+
+
+def _supported_answer(decision: dict, sources: list[dict], current: bool) -> str | None:
+    return None if _evidence_error(decision, sources, current) else decision["answer"].strip()
 
 
 def _normalized(value: str) -> str:
@@ -129,6 +138,8 @@ async def generate_web_reply(
     recent_context: Sequence[Mapping[str, Any]] = (),
     current_user_id: int | None = None,
 ) -> str | None:
+    trace_id = uuid4().hex[:12]
+    stage = "route"
     clock = f"当前北京时间：{beijing_now():%Y-%m-%d %H:%M}。"
     # User questions supply follow-up context; old assistant assertions cannot anchor the decision.
     user_history = [_plain_question(item.get("content", ""))
@@ -160,7 +171,7 @@ async def generate_web_reply(
             if not repair_budget:
                 raise
             repair_budget -= 1
-            logger.info("Web agent protocol=repair")
+            logger.info("Web agent trace=%s stage=%s protocol=repair", trace_id, stage)
             return _json_object(await asyncio.to_thread(complete, [*messages, {
                 "role": "user", "content": "上次输出未符合JSON对象格式。请根据上述问题和资料重新输出一个合法JSON对象，"
                 "保持原协议字段，字符串正确转义，只输出JSON；不要凭记忆补事实。",
@@ -177,7 +188,7 @@ async def generate_web_reply(
             }:
                 raise ValueError("direct answer has no internal basis")
             answer = action.get("answer")
-            logger.info("Web agent action=%s", action["action"])
+            logger.info("Web agent trace=%s action=%s", trace_id, action["action"])
             return answer.strip() if isinstance(answer, str) and answer.strip() else UNVERIFIED_WEB_REPLY
         question, queries = action.get("question"), action.get("queries")
         scope = action.get("time_scope")
@@ -186,8 +197,8 @@ async def generate_web_reply(
                 or any(not isinstance(query, str) or not 2 <= len(query) <= 160 for query in queries)
                 or scope not in {"current", "historical", "timeless"}):
             raise ValueError("invalid web action")
-        logger.info("Web agent action=search time_scope=%s", scope)
-        session = WebSearchSession(semantic=True, max_searches=3)
+        logger.info("Web agent trace=%s action=search time_scope=%s", trace_id, scope)
+        session = WebSearchSession(semantic=True, max_searches=3, trace_id=trace_id)
         focus = action.get("focus")
         context = _plain_question(prompt) + " ".join(user_history)
         if (isinstance(focus, str) and 2 <= len(focus.strip()) <= 80
@@ -216,6 +227,7 @@ async def generate_web_reply(
                 if not any(item["url"] == result.url for item in sources):
                     sources.append({"index": len(sources) + 1, "title": result.title, "url": result.url,
                                     "snippet": result.snippet, "date_hint": result.published, "text": ""})
+            stage = "ground"
             decision = await structured([
                 {"role": "system", "content": f"{system_prompt}\n\n{clock}{_GROUND}"},
                 {"role": "user", "content": json.dumps({
@@ -227,12 +239,14 @@ async def generate_web_reply(
                 }, ensure_ascii=False)},
             ])
             if answer := _supported_answer(decision, sources, scope == "current"):
-                logger.info("Web agent evidence=accepted sources=%s", len(sources))
+                logger.info("Web agent trace=%s evidence=accepted sources=%s", trace_id, len(sources))
                 return (reply_separator.join(hide_web_sources(part) for part in answer.split(reply_separator))
                         if reply_separator else hide_web_sources(answer))
             followup = decision.get("next_query")
-            logger.info("Web agent evidence=insufficient turn=%s", turn + 1)
+            logger.info("Web agent trace=%s evidence=insufficient turn=%s reason=%s sources=%s",
+                        trace_id, turn + 1, _evidence_error(decision, sources, scope == "current"), len(sources))
             if turn == 2:
+                logger.info("Web agent trace=%s stopped=verification_budget", trace_id)
                 break
             if decision.get("status") == "supported":
                 feedback = "上次结论未通过引用核验：检查来源编号、原文引用和当前有效性。请重核现有资料，不得伪造引用。"
@@ -254,6 +268,18 @@ async def generate_web_reply(
                         sources.append(source)
                     unread.append(source)
             unread = unread[:min(3, max(0, 4 - successful_reads), max(0, 6 - len(read_urls)))]
+            queries = []
+            if (isinstance(followup, str) and 2 <= len(followup) <= 160
+                    and followup not in searched and session.searches < session.max_searches):
+                queries = [followup]
+            if not unread and not queries:
+                # A model may report insufficient evidence without selecting its next action.
+                # Use the remaining page budget before giving up on snippet-only candidates.
+                unread = [item for item in sources if item["url"] not in read_urls][
+                    :min(3, max(0, 4 - successful_reads), max(0, 6 - len(read_urls)))
+                ]
+                if unread:
+                    logger.info("Web agent trace=%s action=fallback_read pages=%s", trace_id, len(unread))
             if unread:
                 texts = await asyncio.to_thread(read_web_pages, [
                     WebSearchResult(item["title"], item["url"], item["snippet"]) for item in unread])
@@ -261,13 +287,16 @@ async def generate_web_reply(
                     read_urls.add(source["url"])
                     successful_reads += bool(text)
                     source.update(text=text, read_status="read" if text else "unavailable")
-            queries = []
-            if (isinstance(followup, str) and 2 <= len(followup) <= 160
-                    and followup not in searched and session.searches < session.max_searches):
-                queries = [followup]
+                logger.info("Web agent trace=%s action=read pages=%s successful=%s",
+                            trace_id, len(unread), sum(bool(text) for text in texts))
             if not unread and not queries:
+                logger.info("Web agent trace=%s stopped=no_next_action searches=%s reads=%s",
+                            trace_id, session.searches, len(read_urls))
                 break
+        logger.info("Web agent trace=%s outcome=unverified sources=%s searches=%s reads=%s",
+                    trace_id, len(sources), session.searches, len(read_urls))
         return UNVERIFIED_WEB_REPLY
     except (ValueError, TypeError, KeyError) as exc:
-        logger.info("Web agent invalid structured response error=%s; no unverified answer sent", type(exc).__name__)
+        logger.info("Web agent trace=%s stage=%s outcome=invalid_response error=%s",
+                    trace_id, stage, type(exc).__name__)
         return UNVERIFIED_WEB_REPLY
