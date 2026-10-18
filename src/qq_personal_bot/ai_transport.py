@@ -5,6 +5,8 @@ import logging
 import ssl
 import threading
 import time
+from contextlib import contextmanager
+from functools import wraps
 from urllib.parse import urlsplit
 from urllib.request import Request
 
@@ -13,8 +15,10 @@ import httpx
 from qq_personal_bot.settings import AppSettings
 
 logger = logging.getLogger(__name__)
-_clients: dict[tuple[str, str, str], httpx.Client] = {}
-_clients_lock = threading.Lock()
+_clients: dict[tuple[str, str, str, str], httpx.Client] = {}
+_clients_lock = threading.RLock()
+_borrowers: dict[httpx.Client, int] = {}
+_retired: set[httpx.Client] = set()
 _RETRY_STATUSES = {408, 429, 500, 502, 503, 504}
 _CONNECT_TIMEOUT = 6.0
 
@@ -23,20 +27,35 @@ class AITransportError(OSError):
     """A sanitized transport error; never includes credentials or request content."""
 
 
-def _ssl_context(tls_mode: str) -> ssl.SSLContext:
+def _ssl_context(tls_mode: str, server_hostname: str = "") -> ssl.SSLContext:
     context = ssl.create_default_context()
     if tls_mode == "tls12":
         context.maximum_version = ssl.TLSVersion.TLSv1_2
+    if server_hostname:
+        # HTTPcore 1.0 ignores sni_hostname for CONNECT tunnels. Bind the upstream
+        # context to its DNS name, preserving certificate checks in both routes.
+        # HTTPS proxies use their own SSL context, so their hostname is unaffected.
+        def bind_hostname(wrap):
+            @wraps(wrap)
+            def verified_wrap(*args, **kwargs):
+                kwargs["server_hostname"] = server_hostname
+                return wrap(*args, **kwargs)
+            return verified_wrap
+
+        context.wrap_socket = bind_hostname(context.wrap_socket)
+        context.wrap_bio = bind_hostname(context.wrap_bio)
     return context
 
 
-def _get_client(url: str, tls_mode: str, proxy_url: str = "") -> httpx.Client:
+def _get_client(
+    url: str, tls_mode: str, proxy_url: str = "", connect_ip: str = "",
+) -> httpx.Client:
     parsed = urlsplit(url)
-    key = (f"{parsed.scheme}://{parsed.netloc}", tls_mode, proxy_url)
+    key = (f"{parsed.scheme}://{parsed.netloc}", tls_mode, proxy_url, connect_ip)
     with _clients_lock:
         client = _clients.get(key)
         if client is None:
-            context = _ssl_context(tls_mode)
+            context = _ssl_context(tls_mode, parsed.hostname if connect_ip else "")
             limits = httpx.Limits(
                 max_connections=16, max_keepalive_connections=8, keepalive_expiry=120,
             )
@@ -54,10 +73,43 @@ def _get_client(url: str, tls_mode: str, proxy_url: str = "") -> httpx.Client:
         return client
 
 
+@contextmanager
+def _borrow_client(url: str, settings: AppSettings, connect_ip: str):
+    with _clients_lock:
+        client = _get_client(url, settings.dsapi_tls_mode, settings.ai_proxy_url, connect_ip)
+        _borrowers[client] = _borrowers.get(client, 0) + 1
+    try:
+        yield client
+    finally:
+        with _clients_lock:
+            remaining = _borrowers[client] - 1
+            if remaining:
+                _borrowers[client] = remaining
+            else:
+                del _borrowers[client]
+            close = not remaining and client in _retired
+            if close:
+                _retired.remove(client)
+        if close:
+            client.close()
+
+
+def _retire_client(client: httpx.Client) -> None:
+    # A failed CONNECT TLS handshake can leave an unusable ACTIVE tunnel in
+    # HTTPcore's pool. Stop lending that pool; close after its real users finish.
+    with _clients_lock:
+        keys = [key for key, cached in _clients.items() if cached is client]
+        for key in keys:
+            del _clients[key]
+        if keys:
+            _retired.add(client)
+
+
 def close_ai_clients() -> None:
     with _clients_lock:
-        clients = list(_clients.values())
+        clients = set(_clients.values()) | _retired
         _clients.clear()
+        _retired.clear()
     for client in clients:
         client.close()
 
@@ -98,7 +150,12 @@ def request_ai_bytes(request: Request, settings: AppSettings) -> bytes:
     """Reuse verified connections and give retries only the remaining request budget."""
     started = time.monotonic()
     deadline = started + settings.dsapi_timeout_seconds
-    client = _get_client(request.full_url, settings.dsapi_tls_mode, settings.ai_proxy_url)
+    original_url = httpx.URL(request.full_url)
+    connect_ip = dict(settings.ai_host_overrides).get(original_url.host.rstrip("."), "")
+    target_url = original_url.copy_with(host=connect_ip) if connect_ip else original_url
+    headers = httpx.Headers(request.header_items())
+    if connect_ip:
+        headers["Host"] = original_url.netloc.decode("ascii")
     method = request.get_method()
     last_error = "request timed out"
     operation = "models" if method == "GET" else "completion"
@@ -112,14 +169,19 @@ def request_ai_bytes(request: Request, settings: AppSettings) -> bytes:
         retry = False
         status: int | None = None
         try:
-            response = client.request(
-                method, request.full_url, content=request.data, headers=request.header_items(),
-                timeout=httpx.Timeout(
-                    remaining, connect=min(_CONNECT_TIMEOUT, remaining),
-                    write=min(30, remaining), pool=min(5, remaining),
-                ),
-                extensions={"trace": trace},
-            )
+            with _borrow_client(request.full_url, settings, connect_ip) as client:
+                try:
+                    response = client.request(
+                        method, target_url, content=request.data, headers=headers,
+                        timeout=httpx.Timeout(
+                            remaining, connect=min(_CONNECT_TIMEOUT, remaining),
+                            write=min(30, remaining), pool=min(5, remaining),
+                        ),
+                        extensions={"trace": trace},
+                    )
+                except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ProxyError):
+                    _retire_client(client)
+                    raise
             status = response.status_code
             if 200 <= status < 300:
                 return response.content
@@ -141,6 +203,8 @@ def request_ai_bytes(request: Request, settings: AppSettings) -> bytes:
             last_error = f"request timed out during {trace.error_phase}"
             # A long POST may already be generating; don't queue another full generation.
             retry = method == "GET"
+        except httpx.PoolTimeout:
+            last_error = "AI connection pool is busy; please retry shortly"
         except httpx.TimeoutException:
             last_error = f"request timed out during {trace.error_phase}"
         except httpx.ProxyError:
@@ -150,10 +214,10 @@ def request_ai_bytes(request: Request, settings: AppSettings) -> bytes:
         finally:
             logger.info(
                 "AI transport provider=%s operation=%s attempt=%s status=%s phase=%s request_bytes=%s "
-                "elapsed_ms=%.1f reused_connection=%s via_proxy=%s phases_ms=%s",
+                "elapsed_ms=%.1f reused_connection=%s via_proxy=%s connect_ip=%s phases_ms=%s",
                 settings.dsapi_provider_id, operation, attempt + 1, status, trace.error_phase, len(request.data or b""),
                 (time.monotonic() - attempt_started) * 1000,
-                trace.reused_connection, bool(settings.ai_proxy_url), trace.phases,
+                trace.reused_connection, bool(settings.ai_proxy_url), connect_ip or "dns", trace.phases,
             )
         if attempt or not retry or deadline - time.monotonic() <= 0.25:
             break

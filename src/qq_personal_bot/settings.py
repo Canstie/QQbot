@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
+from ipaddress import IPv4Address
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -47,6 +48,27 @@ def _env_int(value: str | None, default: int) -> int:
     return int(value)
 
 
+def _host_overrides(value: str) -> tuple[tuple[str, str], ...]:
+    overrides = {}
+    for item in value.split(","):
+        if not item.strip():
+            continue
+        host, separator, address = item.strip().partition("=")
+        host = host.strip().lower().rstrip(".")
+        try:
+            labels = host.split(".")
+            if not separator or not host.isascii() or len(host) > 253 or any(
+                not 1 <= len(label) <= 63 or label.startswith("-") or label.endswith("-")
+                or not label.replace("-", "").isalnum() for label in labels
+            ):
+                raise ValueError
+            address = str(IPv4Address(address.strip()))
+        except ValueError:
+            raise ValueError("QQBOT_AI_HOST_OVERRIDES must contain hostname=IPv4 pairs") from None
+        overrides[host] = address
+    return tuple(sorted(overrides.items()))
+
+
 @dataclass(frozen=True)
 class AppSettings:
     db_path: Path
@@ -80,6 +102,7 @@ class AppSettings:
     dsapi_api_format: str = "deepseek"
     dsapi_tls_mode: str = "auto"
     ai_proxy_url: str = ""
+    ai_host_overrides: tuple[tuple[str, str], ...] = ()
     twitter_proxy_url: str = ""
     ai_proxy_resolved: bool = False
     dsapi_provider_id: int = 0
@@ -159,6 +182,7 @@ class AppSettings:
                 or "deepseek-flash"
             ),
             ai_proxy_url=env.get("QQBOT_AI_PROXY_URL", "").strip(),
+            ai_host_overrides=_host_overrides(env.get("QQBOT_AI_HOST_OVERRIDES", "")),
             twitter_proxy_url=(env.get("QQBOT_TWITTER_PROXY_URL") or env.get("QQBOT_AI_PROXY_URL") or "").strip(),
             dsapi_timeout_seconds=_env_float(env.get("QQBOT_DSAPI_TIMEOUT_SECONDS"), 30.0),
             dsapi_max_tokens=_env_int(env.get("QQBOT_DSAPI_MAX_TOKENS"), 80),

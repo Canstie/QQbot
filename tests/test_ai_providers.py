@@ -27,6 +27,7 @@ def context(tmp_path, monkeypatch):
     monkeypatch.setenv("QQBOT_DSAPI_BASE_URL", "https://api.deepseek.com")
     monkeypatch.setenv("QQBOT_DSAPI_MODEL", "deepseek-flash")
     monkeypatch.delenv("QQBOT_AI_PROXY_URL", raising=False)
+    monkeypatch.delenv("QQBOT_AI_HOST_OVERRIDES", raising=False)
     reset_runtime()
     client = TestClient(create_app())
     yield client, get_store(), get_settings()

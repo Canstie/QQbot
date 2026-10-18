@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import socket
 import ssl
 import threading
 from dataclasses import replace
@@ -360,3 +361,200 @@ def test_https_uses_connect_and_proxy_failure_does_not_fall_back_to_direct(caplo
         server.shutdown()
         server.server_close()
         thread.join(timeout=3)
+
+
+def test_ai_host_override_env_normalizes_and_validates_addresses():
+    configured = AppSettings.from_env({
+        "QQBOT_AI_HOST_OVERRIDES": " API.IOWNMIKU.TOP.=172.67.139.157,other.example=127.0.0.1 ",
+    })
+    assert configured.ai_host_overrides == (
+        ("api.iownmiku.top", "172.67.139.157"), ("other.example", "127.0.0.1"),
+    )
+    assert not AppSettings.from_env({}).ai_host_overrides
+
+
+@pytest.mark.parametrize("value", [
+    "gateway.example", "=127.0.0.1", "https://gateway.example=127.0.0.1",
+    "gateway.example=private-secret", "gateway.example=172.67.139.157:443",
+    "gateway.example/path=127.0.0.1", "-bad.example=127.0.0.1",
+    "gateway.example=::1",
+])
+def test_invalid_host_override_fails_without_echoing_input(value):
+    with pytest.raises(ValueError, match="QQBOT_AI_HOST_OVERRIDES") as error:
+        AppSettings.from_env({"QQBOT_AI_HOST_OVERRIDES": value})
+    assert value not in str(error.value)
+
+
+@pytest.mark.parametrize("mode", ["auto", "tls12"])
+def test_pinned_tls_socket_and_bio_verify_the_original_domain(mode):
+    context = transport._ssl_context(mode, "gateway.example")
+    incoming, outgoing = ssl.MemoryBIO(), ssl.MemoryBIO()
+    tls = context.wrap_bio(incoming, outgoing, server_hostname="172.67.139.157")
+    assert tls.server_hostname == "gateway.example"
+    first, second = socket.socketpair()
+    try:
+        with context.wrap_socket(
+            first, server_hostname="172.67.139.157", do_handshake_on_connect=False,
+        ) as tls_socket:
+            assert tls_socket.server_hostname == "gateway.example"
+    finally:
+        first.close()
+        second.close()
+    assert context.check_hostname and context.verify_mode == ssl.CERT_REQUIRED
+
+
+def test_pinned_ip_changes_get_and_post_target_without_changing_other_providers(mock_gateway):
+    seen = []
+
+    def handle(req):
+        seen.append((req.method, str(req.url), req.headers["host"]))
+        return httpx.Response(200, content=b"OK")
+
+    mock_gateway(handle)
+    configured = settings(ai_host_overrides=(("gateway.example", "172.67.139.157"),))
+    for method in ("GET", "POST"):
+        req = request(method=method)
+        req.full_url = "https://gateway.example:8443/v1/models?keep=1"
+        assert transport.request_ai_bytes(req, configured) == b"OK"
+    transport.request_ai_bytes(request(), settings())
+    assert seen == [
+        ("GET", "https://172.67.139.157:8443/v1/models?keep=1", "gateway.example:8443"),
+        ("POST", "https://172.67.139.157:8443/v1/models?keep=1", "gateway.example:8443"),
+        ("POST", "https://gateway.example/v1/chat/completions", "gateway.example"),
+    ]
+
+
+def test_pinned_and_dns_pools_are_separate():
+    url = "https://gateway.example/v1/models"
+    dns = transport._get_client(url, "auto")
+    pinned = transport._get_client(url, "auto", "", "172.67.139.157")
+    assert pinned is not dns
+    assert transport._get_client(url, "auto", "", "172.67.139.157") is pinned
+
+
+def test_legacy_provider_with_pin_uses_verified_transport_for_models_and_completions(mock_gateway):
+    observed = []
+
+    def handle(req):
+        observed.append((req.method, req.url.host, req.headers["host"]))
+        body = ({"data": [{"id": "pinned-model"}]} if req.method == "GET" else
+                {"choices": [{"message": {"content": "OK"}, "finish_reason": "stop"}]})
+        return httpx.Response(200, json=body)
+
+    mock_gateway(handle)
+    configured = replace(
+        settings(ai_host_overrides=(("gateway.example", "172.67.139.157"),)),
+        dsapi_provider_managed=False, dsapi_base_url="https://gateway.example/v1",
+    )
+    assert fetch_dsapi_models(configured)[0]["id"] == "pinned-model"
+    assert _request_chat_completion(configured, [{"role": "user", "content": "hello"}]) == "OK"
+    assert observed == [
+        ("GET", "172.67.139.157", "gateway.example"),
+        ("POST", "172.67.139.157", "gateway.example"),
+    ]
+
+
+def test_proxy_connect_uses_pinned_ip_but_upstream_host_and_verified_sni_stay_original(monkeypatch):
+    observed, tls = [], []
+
+    def fake_tls(context, sock, **kwargs):
+        # Keep a local test proxy in plaintext, while checking the actual TLS
+        # boundary receives the DNS name and mandatory certificate validation.
+        tls.append((kwargs["server_hostname"], context.check_hostname, context.verify_mode))
+        return sock
+
+    monkeypatch.setattr(ssl.SSLContext, "wrap_socket", fake_tls)
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_CONNECT(self):
+            observed.append(("CONNECT", self.path, self.headers.get("Authorization")))
+            self.send_response(200)
+            self.end_headers()
+
+        def do_POST(self):
+            observed.append(("POST", self.headers["Host"], self.headers["Authorization"]))
+            self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"OK")
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        configured = settings(
+            ai_proxy_url=f"http://127.0.0.1:{server.server_port}",
+            ai_host_overrides=(("gateway.example", "172.67.139.157"),),
+        )
+        assert transport.request_ai_bytes(request(), configured) == b"OK"
+        assert observed == [
+            ("CONNECT", "172.67.139.157:443", None),
+            ("POST", "gateway.example", "Bearer private-key"),
+        ]
+        assert tls == [("gateway.example", True, ssl.CERT_REQUIRED)]
+    finally:
+        transport.close_ai_clients()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+
+
+def test_failed_proxy_tls_tunnels_do_not_poison_the_pool(monkeypatch):
+    attempts = []
+    original_limits = httpx.Limits
+
+    def one_connection(**kwargs):
+        return original_limits(**{**kwargs, "max_connections": 1, "max_keepalive_connections": 1})
+
+    monkeypatch.setattr(transport.httpx, "Limits", one_connection)
+    monkeypatch.setattr(transport.time, "sleep", lambda _: None)
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_CONNECT(self):
+            attempts.append(self.path)
+            self.send_response(200)
+            self.end_headers()
+            # Drop the tunnel during the TLS handshake, reproducing the pool leak.
+            self.close_connection = True
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        configured = settings(
+            ai_proxy_url=f"http://127.0.0.1:{server.server_port}", dsapi_timeout_seconds=2,
+        )
+        for _ in range(3):
+            with pytest.raises(transport.AITransportError, match="start_tls"):
+                transport.request_ai_bytes(request(), configured)
+        assert len(attempts) == 6
+        assert not transport._clients
+        assert not transport._retired
+        assert not transport._borrowers
+    finally:
+        transport.close_ai_clients()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+
+
+def test_retired_pool_waits_for_other_users_before_close():
+    configured = settings()
+    url = request().full_url
+    with transport._borrow_client(url, configured, "") as first:
+        with transport._borrow_client(url, configured, "") as second:
+            assert first is second
+            transport._retire_client(first)
+            assert not first.is_closed
+        assert not first.is_closed
+        assert transport._get_client(url, "auto") is not first
+    assert first.is_closed
