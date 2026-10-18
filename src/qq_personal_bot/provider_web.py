@@ -4,9 +4,13 @@ import asyncio
 import time
 
 from fastapi import HTTPException, Request
-from pydantic import BaseModel, SecretStr
+from pydantic import BaseModel, SecretStr, StrictBool
 
-from qq_personal_bot.ai_providers import provider_settings
+from qq_personal_bot.ai_providers import (
+    ai_proxy_state,
+    provider_settings,
+    resolve_ai_proxy_settings,
+)
 from qq_personal_bot.dsapi import DSAPIError, _request_chat_completion, fetch_dsapi_models
 
 
@@ -24,6 +28,10 @@ class ProviderTestPayload(BaseModel):
     model: str | None = None
 
 
+class AIProxyPayload(BaseModel):
+    enabled: StrictBool
+
+
 def register_ai_provider_routes(app, get_settings, get_store, require_token):
     def public_state():
         store = get_store()
@@ -31,7 +39,16 @@ def register_ai_provider_routes(app, get_settings, get_store, require_token):
             "providers": store.list_ai_providers(),
             "active_provider_id": int(store.get_setting("ai_active_provider_id", "0")),
             "managed": store.ai_provider_managed(),
+            **ai_proxy_state(get_settings(), store),
         }
+
+    @app.put("/api/dsapi/proxy")
+    async def update_proxy(payload: AIProxyPayload, request: Request):
+        require_token(request)
+        if payload.enabled and not get_settings().ai_proxy_url:
+            raise HTTPException(400, "服务器尚未配置 AI 代理地址")
+        get_store().set_ai_proxy_enabled(payload.enabled)
+        return ai_proxy_state(get_settings(), get_store())
 
     @app.get("/api/dsapi/providers")
     async def list_providers(request: Request):
@@ -92,7 +109,7 @@ def register_ai_provider_routes(app, get_settings, get_store, require_token):
         require_token(request)
         try:
             provider = get_store().get_ai_provider(provider_id)
-            settings = provider_settings(get_settings(), provider)
+            settings = provider_settings(resolve_ai_proxy_settings(get_settings(), get_store()), provider)
             models = await asyncio.to_thread(fetch_dsapi_models, settings)
             get_store().save_ai_provider_models(
                 provider_id, models, expected_updated_at=provider["updated_at"]
@@ -108,7 +125,7 @@ def register_ai_provider_routes(app, get_settings, get_store, require_token):
         require_token(request)
         try:
             provider = get_store().get_ai_provider(provider_id)
-            settings = provider_settings(get_settings(), provider)
+            settings = provider_settings(resolve_ai_proxy_settings(get_settings(), get_store()), provider)
             model = payload.model or settings.dsapi_model
             start = time.monotonic()
             reply = await asyncio.to_thread(

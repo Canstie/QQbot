@@ -5,6 +5,27 @@ from dataclasses import replace
 from qq_personal_bot.settings import AppSettings
 
 
+def ai_proxy_state(settings: AppSettings, store) -> dict[str, bool]:
+    configured = bool(settings.ai_proxy_url)
+    enabled = (
+        store.get_ai_proxy_enabled(default=configured)
+        if hasattr(store, "get_ai_proxy_enabled") else configured
+    )
+    return {"ai_proxy_configured": configured, "ai_proxy_enabled": configured and enabled}
+
+
+def resolve_ai_proxy_settings(settings: AppSettings, store) -> AppSettings:
+    if settings.ai_proxy_resolved:
+        return settings
+    if not settings.ai_proxy_url and (
+        not hasattr(store, "get_setting") or not store.get_setting("ai_proxy_enabled", "")
+    ):
+        return settings
+    enabled = ai_proxy_state(settings, store)["ai_proxy_enabled"]
+    return replace(settings, ai_proxy_url=settings.ai_proxy_url if enabled else "",
+                   ai_proxy_resolved=True)
+
+
 def provider_settings(
     settings: AppSettings, provider: dict, *, managed: bool = True
 ) -> AppSettings:
@@ -26,6 +47,7 @@ def provider_settings(
 
 def resolve_ai_settings(settings: AppSettings, store) -> AppSettings:
     # A request keeps its provider snapshot, even if the UI switches during generation.
+    settings = resolve_ai_proxy_settings(settings, store)
     if settings.dsapi_provider_id or not hasattr(store, "get_active_ai_provider"):
         return settings
     if not store.ai_provider_managed():

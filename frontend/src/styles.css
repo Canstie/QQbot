@@ -53,6 +53,13 @@
 .provider-route { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 14px 16px; margin-bottom: 20px; border-radius: 10px; color: var(--blue-deep); background: var(--blue-wash); border-left: 4px solid var(--blue); }
 .provider-route code { overflow-wrap: anywhere; font-family: "JetBrains Mono", monospace; font-size: 12px; }
 .provider-route .status { margin-left: auto; }
+.provider-proxy { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 14px 16px; margin-bottom: 20px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.provider-proxy label { display: flex; align-items: center; gap: 11px; flex: 1; cursor: pointer; }
+.provider-proxy input { width: 18px; height: 18px; min-height: 0; flex: 0 0 18px; accent-color: var(--blue); }
+.provider-proxy strong, .provider-proxy small { display: block; }
+.provider-proxy strong { font-size: 13px; }
+.provider-proxy small, .provider-proxy p { margin: 4px 0 0; font-size: 12px; color: var(--ink-soft); }
+.provider-proxy p { width: 100%; }
 .provider-workspace { display: grid; grid-template-columns: minmax(190px, 260px) minmax(0, 1fr); gap: 22px; align-items: start; }
 .provider-list { display: grid; gap: 10px; }
 .provider-card { display: grid; gap: 8px; width: 100%; padding: 15px; text-align: left; border: 1px solid var(--line); border-radius: 11px; background: var(--surface); cursor: pointer; }

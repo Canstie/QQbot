@@ -94,7 +94,7 @@ class DSAPIImageError(DSAPIError):
 
 
 def _open_ai_request(request: Request, settings: AppSettings):
-    if settings.dsapi_provider_managed or settings.ai_proxy_url:
+    if settings.dsapi_provider_managed or settings.ai_proxy_url or settings.ai_proxy_resolved:
         try:
             return BytesIO(request_ai_bytes(request, settings))
         except AITransportError as exc:

@@ -28,7 +28,7 @@ from nonebot.adapters.onebot.v11 import Message, MessageSegment
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
-from qq_personal_bot.ai_providers import active_ai_model, resolve_ai_settings
+from qq_personal_bot.ai_providers import active_ai_model, ai_proxy_state, resolve_ai_settings
 from qq_personal_bot.classic_sharing import (
     bind_classic_group,
     classic_lock,
@@ -428,6 +428,7 @@ def create_app():
             "providers": get_store().list_ai_providers(),
             "active_provider_id": int(get_store().get_setting("ai_active_provider_id", "0")),
             "provider_managed": settings.dsapi_provider_managed,
+            **ai_proxy_state(get_settings(), get_store()),
         }
 
     @app.post("/api/dsapi")

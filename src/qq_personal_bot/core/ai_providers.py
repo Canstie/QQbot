@@ -102,6 +102,17 @@ class AIProviderStore:
     def ai_provider_managed(self) -> bool:
         return self.get_setting("ai_provider_managed", "false") == "true"
 
+    def get_ai_proxy_enabled(self, *, default: bool = False) -> bool:
+        return self.get_setting("ai_proxy_enabled", "true" if default else "false") == "true"
+
+    def set_ai_proxy_enabled(self, enabled: bool, *, actor_id: int = 0) -> None:
+        if type(enabled) is not bool:
+            raise TypeError("代理开关须为布尔值")
+        with self._connect() as conn:
+            self.set_setting("ai_proxy_enabled", "true" if enabled else "false", conn=conn)
+            self.audit(actor_id, "set_ai_proxy_enabled", "ai", {"enabled": enabled}, conn=conn)
+        self._invalidate_runtime_cache()
+
     def get_ai_model_options(self) -> list[dict]:
         if not self.ai_provider_managed():
             return public_dsapi_model_options()

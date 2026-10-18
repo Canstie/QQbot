@@ -26,6 +26,7 @@ def context(tmp_path, monkeypatch):
     monkeypatch.setenv("QQBOT_DSAPI_API_KEY", "old-secret")
     monkeypatch.setenv("QQBOT_DSAPI_BASE_URL", "https://api.deepseek.com")
     monkeypatch.setenv("QQBOT_DSAPI_MODEL", "deepseek-flash")
+    monkeypatch.delenv("QQBOT_AI_PROXY_URL", raising=False)
     reset_runtime()
     client = TestClient(create_app())
     yield client, get_store(), get_settings()
@@ -92,6 +93,101 @@ def test_global_ai_proxy_survives_provider_switch(context):
         routed = resolve_ai_settings(settings, store)
         assert routed.ai_proxy_url == settings.ai_proxy_url
         assert routed.dsapi_provider_id == provider_id
+
+
+@pytest.mark.parametrize("managed", [False, True])
+def test_web_proxy_toggle_is_persistent_immediate_and_keeps_request_snapshot(
+    context, monkeypatch, managed,
+):
+    client, _, _ = context
+    monkeypatch.setenv("QQBOT_AI_PROXY_URL", "http://127.0.0.1:20171")
+    reset_runtime()
+    store, settings = get_store(), get_settings()
+    if managed:
+        store.activate_ai_provider(add_provider(store))
+    initial = client.get("/api/dsapi").json()
+    assert initial["ai_proxy_configured"] is True
+    assert initial["ai_proxy_enabled"] is True
+    snapshot = resolve_ai_settings(settings, store)
+    response = client.put("/api/dsapi/proxy", json={"enabled": False})
+    assert response.status_code == 200
+    assert response.json() == {"ai_proxy_configured": True, "ai_proxy_enabled": False}
+    assert resolve_ai_settings(settings, store).ai_proxy_url == ""
+    assert resolve_ai_settings(snapshot, store).ai_proxy_url == settings.ai_proxy_url
+    store.activate_ai_provider(add_provider(store, "Second", "qwen3.8-max"))
+    assert resolve_ai_settings(settings, store).ai_proxy_url == ""
+    restarted = PolicyStore(settings.db_path)
+    restarted.initialize(settings)
+    assert resolve_ai_settings(settings, restarted).ai_proxy_url == ""
+    assert client.put("/api/dsapi/proxy", json={"enabled": True}).status_code == 200
+    assert resolve_ai_settings(settings, store).ai_proxy_url == settings.ai_proxy_url
+    assert client.get("/api/dsapi/providers").json()["ai_proxy_enabled"] is True
+
+
+def test_proxy_toggle_never_exposes_credentials_and_rejects_unconfigured_proxy(context, monkeypatch):
+    client, _, _ = context
+    assert client.get("/api/dsapi").json()["ai_proxy_configured"] is False
+    assert client.put("/api/dsapi/proxy", json={"enabled": True}).status_code == 400
+    assert client.put("/api/dsapi/proxy", json={"enabled": "false"}).status_code == 422
+    monkeypatch.setenv("QQBOT_AI_PROXY_URL", "http://proxy-user:proxy-secret@127.0.0.1:20171")
+    reset_runtime()
+    for path in ("/api/dsapi", "/api/dsapi/providers"):
+        response = client.get(path)
+        assert response.json()["ai_proxy_configured"] is True
+        assert "proxy-secret" not in response.text
+        assert "proxy-user" not in response.text
+    assert client.put("/api/dsapi/proxy", json={"enabled": False}).status_code == 200
+    with get_store()._connect() as conn:
+        logs = json.dumps([tuple(row) for row in conn.execute("SELECT * FROM audit_log")])
+    assert "proxy-secret" not in logs
+
+
+def test_models_and_connection_test_follow_the_global_proxy_toggle(context, monkeypatch):
+    client, _, _ = context
+    monkeypatch.setenv("QQBOT_AI_PROXY_URL", "http://127.0.0.1:20171")
+    reset_runtime()
+    store = get_store()
+    provider_id = add_provider(store)
+    routes = []
+
+    def models(settings):
+        routes.append(settings.ai_proxy_url)
+        return [catalog_model_option("gemini-3.8-flash-high")]
+
+    def complete(settings, *args, **kwargs):
+        routes.append(settings.ai_proxy_url)
+        return "OK"
+
+    monkeypatch.setattr(provider_web, "fetch_dsapi_models", models)
+    monkeypatch.setattr(provider_web, "_request_chat_completion", complete)
+    for enabled in (False, True):
+        assert client.put("/api/dsapi/proxy", json={"enabled": enabled}).status_code == 200
+        assert client.post(f"/api/dsapi/providers/{provider_id}/models/refresh").status_code == 200
+        assert client.post(f"/api/dsapi/providers/{provider_id}/test", json={}).status_code == 200
+    assert routes == ["", "", "http://127.0.0.1:20171", "http://127.0.0.1:20171"]
+
+
+def test_explicit_direct_choice_uses_transport_without_inheriting_system_proxy(context, monkeypatch):
+    _, store, settings = context
+    settings = replace(settings, ai_proxy_url="http://127.0.0.1:20171")
+    store.set_ai_proxy_enabled(False)
+    routed = resolve_ai_settings(settings, store)
+    assert routed.ai_proxy_url == ""
+    assert not routed.dsapi_provider_managed
+    observed = []
+
+    def request(req, settings):
+        observed.append(settings.ai_proxy_url)
+        return b'{"choices":[{"message":{"content":"OK"},"finish_reason":"stop"}]}'
+
+    def legacy_request(*args, **kwargs):
+        raise AssertionError("explicit direct must not inherit urllib system proxy settings")
+
+    monkeypatch.setenv("HTTPS_PROXY", "http://unrelated.invalid:1234")
+    monkeypatch.setattr(dsapi, "request_ai_bytes", request)
+    monkeypatch.setattr(dsapi, "urlopen", legacy_request)
+    assert dsapi._request_chat_completion(routed, [{"role": "user", "content": "hello"}]) == "OK"
+    assert observed == [""]
 
 
 @pytest.mark.parametrize(
@@ -183,6 +279,7 @@ def test_all_provider_endpoints_require_admin_session(context, monkeypatch):
         ("POST", "/api/dsapi/providers/1/activate", {}),
         ("POST", "/api/dsapi/providers/1/models/refresh", {}),
         ("POST", "/api/dsapi/providers/1/test", {}),
+        ("PUT", "/api/dsapi/proxy", {"enabled": False}),
     ]:
         assert client.request(method, path, json=body).status_code == 401
 
@@ -292,10 +389,13 @@ def test_provisioning_tests_catalog_before_switch_and_does_not_change_route_on_f
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("proxy_enabled", [False, True])
 async def test_every_ai_entry_uses_selected_provider_and_model_without_deepseek_parameters(
-    context, monkeypatch
+    context, monkeypatch, proxy_enabled,
 ):
     _, store, settings = context
+    settings = replace(settings, ai_proxy_url="http://127.0.0.1:20171")
+    store.set_ai_proxy_enabled(proxy_enabled)
     provider_id = add_provider(store)
     store.activate_ai_provider(provider_id)
     store.set_group_enabled(123, True, actor_id=0)
@@ -327,6 +427,7 @@ async def test_every_ai_entry_uses_selected_provider_and_model_without_deepseek_
                 "auth": req.headers["Authorization"],
                 "body": json.loads(req.data),
                 "timeout": settings.dsapi_timeout_seconds,
+                "proxy": settings.ai_proxy_url,
             }
         )
         return Response()
@@ -397,6 +498,7 @@ async def test_every_ai_entry_uses_selected_provider_and_model_without_deepseek_
     assert await memory_graph.refresh_memory_graph(store, settings, 123, force=True)
     assert len(requests) == 5
     for item in requests:
+        assert item["proxy"] == ("http://127.0.0.1:20171" if proxy_enabled else "")
         assert item["url"] == "https://gateway.example/v1/chat/completions"
         assert item["auth"] == "Bearer new-secret"
         assert item["body"]["model"] == "gemini-3.8-flash-high"

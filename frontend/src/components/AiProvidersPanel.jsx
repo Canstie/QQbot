@@ -17,6 +17,7 @@ export default function AiProvidersPanel({ data, onChanged }) {
   const [search, setSearch] = useState("");
   const [busy, setBusy] = useState(null);
   const [notice, setNotice] = useState("选择供应商，或添加新的接口。");
+  const [proxyNotice, setProxyNotice] = useState("");
   const providers = data?.providers || [];
   const selected = providers.find((item) => item.id === selectedId);
   const active = providers.find((item) => item.active);
@@ -69,6 +70,16 @@ export default function AiProvidersPanel({ data, onChanged }) {
     await onChanged();
     setNotice("供应商已删除");
   });
+  const toggleProxy = async (enabled) => {
+    setBusy("proxy");
+    setProxyNotice("");
+    try {
+      await put("/dsapi/proxy", { enabled });
+      await onChanged();
+      setProxyNotice(enabled ? "已保存，新的 AI 请求使用代理线路。" : "已保存，新的 AI 请求直接连接接口。");
+    } catch (error) { setProxyNotice(error.message); }
+    finally { setBusy(null); }
+  };
 
   return <Panel title="AI 供应商切换" eyebrow="Provider switch" className="ai-providers" actions={
     <Button tone="secondary" icon={Plus} disabled={Boolean(busy)} onClick={() => {
@@ -76,6 +87,11 @@ export default function AiProvidersPanel({ data, onChanged }) {
     }}>添加供应商</Button>
   }>
     <div className="provider-route"><Network size={18} /><strong>{active?.name || "未配置"}</strong><span>→</span><code>{data?.model || "选择模型"}</code><Status tone={data?.api_configured ? "ok" : "error"}>{data?.api_configured ? "当前使用" : "缺少密钥"}</Status></div>
+    <div className="provider-proxy">
+      <label><input type="checkbox" checked={Boolean(data?.ai_proxy_enabled)} disabled={Boolean(busy) || !data?.ai_proxy_configured} onChange={(event) => toggleProxy(event.target.checked)} /><span><strong>显式代理</strong><small>{data?.ai_proxy_configured ? "勾选后所有 AI 请求走代理，取消后直连；切换供应商和知识库时保留。" : "服务器尚未配置 AI 代理地址。"}</small></span></label>
+      <Status tone={data?.ai_proxy_enabled ? "ok" : "neutral"}>{busy === "proxy" ? "保存中" : data?.ai_proxy_enabled ? "代理线路" : "直连线路"}</Status>
+      {proxyNotice && <p role="status" aria-live="polite">{proxyNotice}</p>}
+    </div>
     <div className="provider-workspace">
       <div className="provider-list" aria-label="供应商列表">
         {providers.map((item) => <button type="button" key={item.id} disabled={Boolean(busy)} className={`provider-card ${selectedId === item.id ? "is-selected" : ""}`} onClick={() => setSelectedId(item.id)}>

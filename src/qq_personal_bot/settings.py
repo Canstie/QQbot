@@ -80,6 +80,7 @@ class AppSettings:
     dsapi_api_format: str = "deepseek"
     dsapi_tls_mode: str = "auto"
     ai_proxy_url: str = ""
+    ai_proxy_resolved: bool = False
     dsapi_provider_id: int = 0
     dsapi_provider_managed: bool = False
     dsapi_vision_enabled: bool = False
