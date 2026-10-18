@@ -11,7 +11,7 @@ const draftFrom = (provider = {}) => ({
   tls_mode: provider.tls_mode || "auto",
 });
 
-export default function AiProvidersPanel({ data, onChanged }) {
+export default function AiProvidersPanel({ data, onChanged, onProxyChanged }) {
   const [selectedId, setSelectedId] = useState(null);
   const [draft, setDraft] = useState(draftFrom());
   const [search, setSearch] = useState("");
@@ -74,8 +74,9 @@ export default function AiProvidersPanel({ data, onChanged }) {
     setBusy("proxy");
     setProxyNotice("");
     try {
-      await put("/dsapi/proxy", { enabled });
-      await onChanged();
+      const result = await put("/dsapi/proxy", { enabled });
+      if (onProxyChanged) onProxyChanged(result);
+      else await onChanged();
       setProxyNotice(enabled ? "已保存，新的 AI 请求使用代理线路。" : "已保存，新的 AI 请求直接连接接口。");
     } catch (error) { setProxyNotice(error.message); }
     finally { setBusy(null); }
