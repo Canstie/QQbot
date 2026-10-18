@@ -677,6 +677,46 @@ async def test_web_entry_points_separate_current_message_from_group_background(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("text", ["", "[CQ:at,qq=999]"])
+async def test_bare_mention_is_an_attention_request_not_a_repeat_of_old_question(
+    tmp_path, monkeypatch, text,
+):
+    store = make_store(tmp_path)
+    enable_web_search(store)
+    knowledge_id = store.get_dsapi_config()["active_knowledge_id"]
+    store.record_dsapi_exchange(group_id=123, user_content="泡水灵梦是什么梗",
+        assistant_content="这个问题已经回答过了。", history_turns=2, knowledge_id=knowledge_id)
+    store.record_dsapi_group_message(group_id=123, user_id=789, content="刚才在聊旧话题",
+        knowledge_id=knowledge_id)
+
+    def post(settings, body):
+        data = json.loads(body["messages"][-1]["content"])
+        assert data["current_request"] == "（用户仅 @ 了你，没有附带问题或其他内容。）"
+        assert data["previous_user_questions"] == ["泡水灵梦是什么梗"]
+        return completion(json.dumps({"action": "answer", "basis": "conversation", "answer": "在呢，什么事？"}))
+
+    monkeypatch.setattr(dsapi_module, "_post_chat_body", post)
+    monkeypatch.setattr("qq_personal_bot.web_search.search_web", lambda *a, **kw: pytest.fail("unneeded search"))
+    bot = FakeBot()
+    event = make_event(text=text, segments=({"type": "at", "data": {"qq": "999"}},))
+    assert await generate_mention_reply(bot, event, make_settings(tmp_path), store) == "在呢，什么事？"
+    assert bot.calls == []
+
+
+@pytest.mark.asyncio
+async def test_bare_mention_with_quote_still_responds_to_the_quoted_message():
+    bot = FakeBot({"message": [{"type": "text", "data": {"text": "被引用的新话题"}}]})
+    event = make_event(text="[CQ:reply,id=42][CQ:at,qq=999]", segments=(
+        {"type": "reply", "data": {"id": "42"}}, {"type": "at", "data": {"qq": "999"}},
+    ))
+    prompt = await build_mention_prompt(bot, event)
+    assert "被引用的新话题" in prompt
+    assert "请回复这条被引用的消息。" in prompt
+    assert "[CQ:" not in prompt
+    assert "没有附带问题" not in prompt
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("response_mode", ["short", "normal", "detailed"])
 async def test_web_source_appendices_are_hidden_in_each_reply(tmp_path, monkeypatch, response_mode):
     store = make_store(tmp_path)

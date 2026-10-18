@@ -743,6 +743,9 @@ async def build_mention_prompt(
         return None
 
     current_text = event.raw_message.strip()
+    # OneBot falls back to CQ markup when a message has no text segments.
+    if event.is_at_bot and re.fullmatch(r"(?:\s*\[CQ:(?:at|reply),[^\]]+\]\s*)+", current_text):
+        current_text = ""
     quoted_segments = _embedded_reply_segments(event.segments)
     reply_id = _reply_message_id(event.segments)
 
@@ -769,7 +772,7 @@ async def build_mention_prompt(
                 raise DSAPIImageError("failed to resolve quoted image")
 
     if not current_text and not quoted_text and not image_sources:
-        return None
+        return "（用户仅 @ 了你，没有附带问题或其他内容。）" if event.is_at_bot else None
     if not quoted_text and not image_sources:
         return current_text
 
