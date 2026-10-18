@@ -43,6 +43,7 @@ def test_format_general_scores_latest_comments_and_missing_values():
     empty["scores"] = {}
     assert "质量:暂无" in teachers.format_teacher(empty, "何宣")
     assert "暂无评论" in teachers.format_teacher(empty, "何宣")
+    assert "完整评价：https://cancir.xyz" in text
 
 
 @pytest.mark.asyncio
@@ -128,11 +129,11 @@ async def test_partial_failure_deadline_and_concurrency(monkeypatch, expire):
         active += 1
         peak = max(peak, active)
         try:
+            await asyncio.sleep(0.001)
             if name == "1":
                 if expire:
                     await asyncio.Event().wait()
                 return httpx.Response(503)
-            await asyncio.sleep(0.001)
             return httpx.Response(200, json=detail(name))
         finally:
             active -= 1
@@ -145,3 +146,79 @@ async def test_partial_failure_deadline_and_concurrency(monkeypatch, expire):
     assert "未能获取：1" in result[-1]
     assert [text.splitlines()[0] for text in result[:-1]] == [
         f"🧬 教师画像：{n}" for n in ("0", "2", "3", "4")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_path", ["/api/teachers", "/api/detail/龙文杰"])
+@pytest.mark.parametrize("failure", ["tls_timeout", "read_timeout", "reset", 503])
+async def test_current_api_query_recovers_from_transient_failures(
+    monkeypatch, failure_path, failure,
+):
+    attempts = {}
+    monkeypatch.setattr(teachers, "RETRY_DELAY", 0)
+
+    def handler(request):
+        path = request.url.path
+        attempts[path] = attempts.get(path, 0) + 1
+        if path == failure_path and attempts[path] == 1:
+            if failure == "tls_timeout":
+                raise httpx.ConnectTimeout("TLS handshake timed out", request=request)
+            if failure == "read_timeout":
+                raise httpx.ReadTimeout("response body timed out", request=request)
+            if failure == "reset":
+                raise httpx.ReadError("connection reset", request=request)
+            return httpx.Response(failure)
+        if path == "/api/teachers":
+            assert request.url.scheme == "https"
+            assert request.url.host == "cancir.xyz"
+            assert dict(request.url.params) == {
+                "q_p": "龙文杰", "q_c": "", "sort": "默认排序", "offset": "0", "limit": "24",
+            }
+            # Current list fields differ from the detail's scores/comments structure.
+            return httpx.Response(200, json={
+                "items": [{"prof": "龙文杰", "rating": 6.1, "reviewCount": 97,
+                           "courseCount": 3, "courses": ["模拟电子技术实验"]}],
+                "total": 1, "has_more": False,
+            })
+        assert path == "/api/detail/龙文杰"
+        return httpx.Response(200, json=detail("龙文杰", [
+            {"comment": "评价示例", "overall": 8, "updatedAt": "2026-09-08",
+             "course": "模拟电子技术实验", "source": "user"},
+        ]))
+
+    install_client(monkeypatch, handler)
+    reply = await teachers.query_teachers("龙文杰")
+    assert len(reply) == 1
+    assert "教师画像：龙文杰" in reply[0]
+    assert "评价示例" in reply[0]
+    assert attempts[failure_path] == 2
+    assert sum(attempts.values()) == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [400, 403, 404, 429])
+async def test_permanent_teacher_api_error_does_not_retry(monkeypatch, status):
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(status)
+
+    install_client(monkeypatch, handler)
+    assert await teachers.query_teachers("龙文杰") == [teachers.FAILURE]
+    assert len(requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_teacher_retry_does_not_extend_query_deadline(monkeypatch):
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        raise httpx.ConnectTimeout("TLS handshake timed out", request=request)
+
+    install_client(monkeypatch, handler)
+    monkeypatch.setattr(teachers, "QUERY_TIMEOUT", 0.03)
+    assert await teachers.query_teachers("龙文杰") == [teachers.FAILURE]
+    # The outer deadline cancels the retry backoff; no second request is sent.
+    assert len(requests) == 1

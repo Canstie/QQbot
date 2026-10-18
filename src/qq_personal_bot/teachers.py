@@ -9,10 +9,12 @@ from urllib.parse import quote
 
 import httpx
 
-
 logger = logging.getLogger(__name__)
 QUERY_TIMEOUT = 25.0
 REQUEST_TIMEOUT = 10.0
+CONNECT_TIMEOUT = 4.0
+RETRY_DELAY = 0.25
+_RETRY_STATUSES = {408, 500, 502, 503, 504}
 FAILURE = "教师查询失败，请稍后再试"
 USAGE = "用法：~查老师 <姓名> [课程]，例如 ~查老师 吴晓 或 ~查老师 龙 模拟电子技术"
 SEPARATOR = "━━━━━━━━━━━━━━━"
@@ -48,7 +50,7 @@ def format_teacher(data: dict, name: str, course: str = "") -> str:
     if data.get("prof") != name or not isinstance(data.get("scores"), dict):
         raise ValueError("invalid teacher detail")
     if not isinstance(data.get("comments"), list):
-        raise ValueError("invalid teacher comments")
+        raise TypeError("invalid teacher comments")
     scores = data["scores"]
     comments = [
         row for row in data["comments"]
@@ -65,8 +67,8 @@ def format_teacher(data: dict, name: str, course: str = "") -> str:
         SEPARATOR,
         f"⭐ 综合评分：{_score(scores.get('overall'))} / 15",
         "───── 分项指标 (各5分) ─────",
-        f"质量:{_score(scores.get('quality'))} | 给分:{_score(scores.get('grading'))}"
-        f" | 负荷:{_score(scores.get('load'))}",
+        (f"质量:{_score(scores.get('quality'))} | 给分:{_score(scores.get('grading'))}"
+         f" | 负荷:{_score(scores.get('load'))}"),
         SEPARATOR,
         f"💬 最新评论 (共{count_text}条，展示{len(newest)}条)：",
     ])
@@ -76,17 +78,31 @@ def format_teacher(data: dict, name: str, course: str = "") -> str:
     )
     if not newest:
         lines.append("暂无评论")
-    lines.extend([SEPARATOR, "🌐 完整评价：http://cancir.xyz"])
+    lines.extend([SEPARATOR, "🌐 完整评价：https://cancir.xyz"])
     return "\n".join(lines)
 
 
 async def _get_json(client: httpx.AsyncClient, path: str, **kwargs: Any) -> dict:
-    response = await asyncio.wait_for(client.get(path, **kwargs), REQUEST_TIMEOUT)
-    response.raise_for_status()
-    data = response.json()
-    if not isinstance(data, dict):
-        raise ValueError("invalid teacher API response")
-    return data
+    # Both endpoints are read-only GETs. The caller's query deadline also bounds retries.
+    for attempt in range(2):
+        try:
+            response = await asyncio.wait_for(client.get(path, **kwargs), REQUEST_TIMEOUT)
+            response.raise_for_status()
+            data = response.json()
+            if not isinstance(data, dict):
+                raise TypeError("invalid teacher API response")
+            return data
+        except httpx.HTTPStatusError as exc:
+            if attempt or exc.response.status_code not in _RETRY_STATUSES:
+                raise
+            reason = f"HTTP {exc.response.status_code}"
+        except (TimeoutError, httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
+            if attempt:
+                raise
+            reason = type(exc).__name__
+        logger.warning("Teacher API retry path=%s reason=%s", path, reason)
+        await asyncio.sleep(RETRY_DELAY)
+    raise RuntimeError("unreachable teacher retry state")
 
 
 async def query_teachers(name: str, course: str = "") -> list[str]:
@@ -94,7 +110,8 @@ async def query_teachers(name: str, course: str = "") -> list[str]:
         return [USAGE]
     deadline = asyncio.get_running_loop().time() + QUERY_TIMEOUT
     async with httpx.AsyncClient(
-        base_url="https://cancir.xyz", timeout=REQUEST_TIMEOUT,
+        base_url="https://cancir.xyz",
+        timeout=httpx.Timeout(REQUEST_TIMEOUT, connect=CONNECT_TIMEOUT),
         follow_redirects=False,
     ) as client:
         try:
@@ -108,7 +125,7 @@ async def query_teachers(name: str, course: str = "") -> list[str]:
             names = []
             for item in items:
                 if not isinstance(item, dict) or not isinstance(item.get("prof"), str):
-                    raise ValueError("invalid teacher name")
+                    raise TypeError("invalid teacher name")
                 prof = item["prof"].strip()
                 if not prof:
                     raise ValueError("empty teacher name")
@@ -126,7 +143,7 @@ async def query_teachers(name: str, course: str = "") -> list[str]:
                     + "候选姓名：" + "、".join(names[:24])
                     + ("\n还有更多结果未列出。" if more or total > len(names) else "")
                 ]
-        except (httpx.HTTPError, ValueError, asyncio.TimeoutError) as exc:
+        except (TimeoutError, httpx.HTTPError, ValueError, TypeError) as exc:
             logger.warning("Teacher search failed: %s", type(exc).__name__)
             return [FAILURE]
 
@@ -137,7 +154,7 @@ async def query_teachers(name: str, course: str = "") -> list[str]:
                 try:
                     data = await _get_json(client, "/api/detail/" + quote(prof, safe=""))
                     return format_teacher(data, prof, course)
-                except (httpx.HTTPError, ValueError, asyncio.TimeoutError) as exc:
+                except (TimeoutError, httpx.HTTPError, ValueError, TypeError) as exc:
                     logger.warning("Teacher detail failed for %s: %s", prof, type(exc).__name__)
                     return None
 
