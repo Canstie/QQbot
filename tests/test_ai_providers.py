@@ -82,6 +82,18 @@ def test_providers_survive_restart_and_switches_are_immediate_and_keep_request_s
         restarted.get_ai_provider(a)
 
 
+def test_global_ai_proxy_survives_provider_switch(context):
+    _, store, settings = context
+    settings = replace(settings, ai_proxy_url="http://127.0.0.1:20171")
+    first = add_provider(store)
+    second = add_provider(store, "Second", "qwen3.8-max")
+    for provider_id in (first, second):
+        store.activate_ai_provider(provider_id)
+        routed = resolve_ai_settings(settings, store)
+        assert routed.ai_proxy_url == settings.ai_proxy_url
+        assert routed.dsapi_provider_id == provider_id
+
+
 @pytest.mark.parametrize(
     "url", ["file:///secret", "https://user:pass@example.com", "https://example.com/?key=secret"]
 )

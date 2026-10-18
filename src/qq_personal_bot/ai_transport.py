@@ -13,7 +13,7 @@ import httpx
 from qq_personal_bot.settings import AppSettings
 
 logger = logging.getLogger(__name__)
-_clients: dict[tuple[str, str], httpx.Client] = {}
+_clients: dict[tuple[str, str, str], httpx.Client] = {}
 _clients_lock = threading.Lock()
 _RETRY_STATUSES = {408, 429, 500, 502, 503, 504}
 _CONNECT_TIMEOUT = 6.0
@@ -30,9 +30,9 @@ def _ssl_context(tls_mode: str) -> ssl.SSLContext:
     return context
 
 
-def _get_client(url: str, tls_mode: str) -> httpx.Client:
+def _get_client(url: str, tls_mode: str, proxy_url: str = "") -> httpx.Client:
     parsed = urlsplit(url)
-    key = (f"{parsed.scheme}://{parsed.netloc}", tls_mode)
+    key = (f"{parsed.scheme}://{parsed.netloc}", tls_mode, proxy_url)
     with _clients_lock:
         client = _clients.get(key)
         if client is None:
@@ -44,9 +44,11 @@ def _get_client(url: str, tls_mode: str) -> httpx.Client:
                 verify=context,
                 transport=httpx.HTTPTransport(
                     verify=context, limits=limits, local_address="0.0.0.0", retries=0,
+                    proxy=proxy_url or None, trust_env=False,
                 ),
                 limits=limits,
                 follow_redirects=False,
+                trust_env=False,
             )
             _clients[key] = client
         return client
@@ -96,7 +98,7 @@ def request_ai_bytes(request: Request, settings: AppSettings) -> bytes:
     """Reuse verified connections and give retries only the remaining request budget."""
     started = time.monotonic()
     deadline = started + settings.dsapi_timeout_seconds
-    client = _get_client(request.full_url, settings.dsapi_tls_mode)
+    client = _get_client(request.full_url, settings.dsapi_tls_mode, settings.ai_proxy_url)
     method = request.get_method()
     last_error = "request timed out"
     operation = "models" if method == "GET" else "completion"
@@ -141,15 +143,17 @@ def request_ai_bytes(request: Request, settings: AppSettings) -> bytes:
             retry = method == "GET"
         except httpx.TimeoutException:
             last_error = f"request timed out during {trace.error_phase}"
+        except httpx.ProxyError:
+            last_error = f"proxy connection failed during {trace.error_phase}"
         except httpx.RequestError:
             last_error = f"network error during {trace.error_phase}"
         finally:
             logger.info(
                 "AI transport provider=%s operation=%s attempt=%s status=%s phase=%s request_bytes=%s "
-                "elapsed_ms=%.1f reused_connection=%s phases_ms=%s",
+                "elapsed_ms=%.1f reused_connection=%s via_proxy=%s phases_ms=%s",
                 settings.dsapi_provider_id, operation, attempt + 1, status, trace.error_phase, len(request.data or b""),
                 (time.monotonic() - attempt_started) * 1000,
-                trace.reused_connection, trace.phases,
+                trace.reused_connection, bool(settings.ai_proxy_url), trace.phases,
             )
         if attempt or not retry or deadline - time.monotonic() <= 0.25:
             break

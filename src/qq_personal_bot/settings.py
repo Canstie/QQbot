@@ -4,6 +4,7 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
@@ -78,6 +79,7 @@ class AppSettings:
     dsapi_model: str = "deepseek-flash"
     dsapi_api_format: str = "deepseek"
     dsapi_tls_mode: str = "auto"
+    ai_proxy_url: str = ""
     dsapi_provider_id: int = 0
     dsapi_provider_managed: bool = False
     dsapi_vision_enabled: bool = False
@@ -154,6 +156,7 @@ class AppSettings:
                 env.get("QQBOT_DSAPI_MODEL", "deepseek-flash").strip()
                 or "deepseek-flash"
             ),
+            ai_proxy_url=env.get("QQBOT_AI_PROXY_URL", "").strip(),
             dsapi_timeout_seconds=_env_float(env.get("QQBOT_DSAPI_TIMEOUT_SECONDS"), 30.0),
             dsapi_max_tokens=_env_int(env.get("QQBOT_DSAPI_MAX_TOKENS"), 80),
             dsapi_history_idle_seconds=_env_int(
@@ -194,6 +197,21 @@ class AppSettings:
             raise ValueError("QQBOT_MENU_PROVIDER must be auto, local, or jisu")
         if self.dsapi_timeout_seconds <= 0:
             raise ValueError("QQBOT_DSAPI_TIMEOUT_SECONDS must be > 0")
+        if self.ai_proxy_url:
+            try:
+                proxy = urlsplit(self.ai_proxy_url)
+                valid = (
+                    proxy.scheme in {"http", "https"}
+                    and bool(proxy.hostname)
+                    and proxy.port != 0
+                    and proxy.path in {"", "/"}
+                    and not proxy.query
+                    and not proxy.fragment
+                )
+            except ValueError:
+                valid = False
+            if not valid:
+                raise ValueError("QQBOT_AI_PROXY_URL must be an HTTP(S) proxy URL") from None
         if self.dsapi_max_tokens <= 0:
             raise ValueError("QQBOT_DSAPI_MAX_TOKENS must be > 0")
         if self.dsapi_history_idle_seconds <= 0:

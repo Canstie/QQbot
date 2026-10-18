@@ -4,6 +4,7 @@ import json
 import logging
 import ssl
 import threading
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.request import Request
@@ -12,7 +13,7 @@ import httpx
 import pytest
 
 from qq_personal_bot import ai_transport as transport
-from qq_personal_bot.dsapi import DSAPIError, _request_chat_completion
+from qq_personal_bot.dsapi import DSAPIError, _request_chat_completion, fetch_dsapi_models
 from qq_personal_bot.settings import AppSettings
 
 
@@ -54,7 +55,9 @@ def mock_gateway(monkeypatch):
         client.close()
 
 
-def test_reuses_tcp_connection_without_storing_auth_or_payload_in_logs(caplog):
+def test_reuses_tcp_connection_without_storing_auth_or_payload_in_logs(caplog, monkeypatch):
+    monkeypatch.setenv("HTTP_PROXY", "http://unrelated.invalid:1234")
+    monkeypatch.setenv("NO_PROXY", "")
     observed = []
 
     class Handler(BaseHTTPRequestHandler):
@@ -88,6 +91,7 @@ def test_reuses_tcp_connection_without_storing_auth_or_payload_in_logs(caplog):
             "Bearer first-private-key", "Bearer second-private-key",
         ]
         assert "reused_connection=True" in caplog.text
+        assert "via_proxy=False" in caplog.text
         assert "private-key" not in caplog.text
         assert "user message" not in caplog.text
     finally:
@@ -232,3 +236,127 @@ def test_provider_tls_modes_get_separate_connection_pools():
     first = transport._get_client(url, "auto")
     assert transport._get_client(url, "auto") is first
     assert transport._get_client(url, "tls12") is not first
+
+
+def test_proxy_configuration_from_env_and_validation():
+    assert AppSettings.from_env({}).ai_proxy_url == ""
+    configured = AppSettings.from_env({"QQBOT_AI_PROXY_URL": " http://127.0.0.1:20171 "})
+    assert configured.ai_proxy_url == "http://127.0.0.1:20171"
+    configured.validate()
+    replace(configured, ai_proxy_url="https://user:secret@proxy.example:443").validate()
+
+
+@pytest.mark.parametrize("url", [
+    "127.0.0.1:20171", "socks5://127.0.0.1:20171", "http://", "http://[invalid",
+    "http://user:private-secret@proxy.example:wrong", "http://proxy.example:70000",
+    "http://proxy.example:0", "http://proxy.example/path", "http://proxy.example/?key=secret",
+])
+def test_invalid_proxy_settings_fail_without_exposing_credentials(url):
+    with pytest.raises(ValueError, match="QQBOT_AI_PROXY_URL") as error:
+        settings(ai_proxy_url=url).validate()
+    assert url not in str(error.value)
+    assert "private-secret" not in str(error.value)
+
+
+def test_direct_and_different_proxies_use_separate_pools_despite_environment(monkeypatch):
+    # An unrelated process-wide proxy/NO_PROXY must not override the explicit AI route.
+    monkeypatch.setenv("HTTP_PROXY", "http://unrelated.invalid:1234")
+    monkeypatch.setenv("HTTPS_PROXY", "http://unrelated.invalid:1234")
+    monkeypatch.setenv("NO_PROXY", "*")
+    url = "https://gateway.example/v1/models"
+    direct = transport._get_client(url, "auto")
+    proxy = transport._get_client(url, "auto", "http://127.0.0.1:20171")
+    assert proxy is not direct
+    assert transport._get_client(url, "auto", "http://127.0.0.1:20171") is proxy
+    assert transport._get_client(url, "auto", "http://127.0.0.1:20172") is not proxy
+    assert transport._get_client(url, "tls12", "http://127.0.0.1:20171") is not proxy
+
+
+@pytest.mark.parametrize("managed", [True, False])
+def test_models_and_completion_reach_explicit_proxy_even_for_legacy_provider(
+    managed, monkeypatch, caplog,
+):
+    observed = []
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def respond(self, body):
+            observed.append((self.command, self.path, dict(self.headers)))
+            self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            payload = json.dumps(body).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def do_GET(self):
+            self.respond({"data": [{"id": "proxy-model"}]})
+
+        def do_POST(self):
+            self.respond({"choices": [{"message": {"content": "OK"}, "finish_reason": "stop"}]})
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        monkeypatch.setenv("HTTP_PROXY", "http://unrelated.invalid:1234")
+        monkeypatch.setenv("NO_PROXY", "*")
+        configured = replace(
+            settings(), dsapi_provider_managed=managed,
+            dsapi_base_url="http://ai-upstream.invalid/v1",
+            ai_proxy_url=f"http://proxy-user:proxy-secret@127.0.0.1:{server.server_port}",
+        )
+        caplog.set_level(logging.INFO, logger=transport.__name__)
+        assert fetch_dsapi_models(configured)[0]["id"] == "proxy-model"
+        assert _request_chat_completion(configured, [{"role": "user", "content": "hello"}]) == "OK"
+        assert [(method, url) for method, url, _ in observed] == [
+            ("GET", "http://ai-upstream.invalid/v1/models"),
+            ("POST", "http://ai-upstream.invalid/v1/chat/completions"),
+        ]
+        assert all(headers["Authorization"] == "Bearer private-key" for _, _, headers in observed)
+        assert all("Proxy-Authorization" in headers for _, _, headers in observed)
+        assert "via_proxy=True" in caplog.text
+        assert "private-key" not in caplog.text
+        assert "proxy-secret" not in caplog.text
+    finally:
+        transport.close_ai_clients()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+
+
+def test_https_uses_connect_and_proxy_failure_does_not_fall_back_to_direct(caplog):
+    observed = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_CONNECT(self):
+            observed.append((self.path, dict(self.headers)))
+            self.send_error(502, "private proxy details")
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        configured = settings(ai_proxy_url=f"http://127.0.0.1:{server.server_port}")
+        caplog.set_level(logging.INFO, logger=transport.__name__)
+        with pytest.raises(transport.AITransportError, match="proxy connection failed") as error:
+            transport.request_ai_bytes(request(), configured)
+        assert len(observed) == 1
+        assert observed[0][0] == "gateway.example:443"
+        # AI credentials belong inside TLS, never in the CONNECT handshake.
+        assert "Authorization" not in observed[0][1]
+        assert "private" not in str(error.value)
+        assert "private proxy details" not in caplog.text
+        assert "via_proxy=True" in caplog.text
+    finally:
+        transport.close_ai_clients()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
