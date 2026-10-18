@@ -19,6 +19,7 @@ from qq_personal_bot.miniapp import (
 )
 from qq_personal_bot.plugins import chat
 from qq_personal_bot.settings import AppSettings
+from qq_personal_bot.twitter import CachedTwitterImages, TwitterImageError
 from qq_personal_bot.xiaoheihe_captcha import get_xiaoheihe_captcha_store
 
 
@@ -740,6 +741,67 @@ async def test_miniapp_sends_only_image_collection(monkeypatch, tmp_path):
     assert matcher.calls[0][0] == "finish"
     assert [segment.type for segment in matcher.calls[0][1]] == ["image", "image"]
     assert not directory.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("result", ["images", "no_images", "failed"])
+async def test_twitter_post_is_sent_as_all_images_without_a_second_ai_reply(monkeypatch, tmp_path, result):
+    directory = tmp_path / "twitter"
+    directory.mkdir()
+    paths = tuple(directory / f"{i}.png" for i in range(4))
+    for path in paths:
+        path.write_bytes(b"image")
+    source = MiniAppImageSource(source_url="https://x.com/i/status/123", platform="twitter")
+    internal = SimpleNamespace(segments=(), group_id=123)
+    monkeypatch.setattr(chat, "onebot_to_internal", lambda event, self_id: internal)
+    monkeypatch.setattr(chat, "_record_group_activity", lambda *a, **kw: None)
+    monkeypatch.setattr(chat, "extract_miniapp_image_source", lambda segments: source)
+    monkeypatch.setattr(chat, "_automatic_reply_allowed", lambda event: True)
+    monkeypatch.setattr(chat, "get_store", lambda: SimpleNamespace(is_feature_enabled=lambda feature: True))
+    monkeypatch.setattr(chat, "get_settings", lambda: SimpleNamespace(twitter_proxy_url="http://127.0.0.1:20171"))
+    monkeypatch.setattr(chat, "get_policy_engine", lambda: pytest.fail("must finish after parsing"))
+    finish = AsyncMock()
+    monkeypatch.setattr(chat, "_finish_with_response", finish)
+
+    async def cache(url, *, proxy_url):
+        assert url == source.source_url and proxy_url == "http://127.0.0.1:20171"
+        if result == "failed":
+            raise TwitterImageError("推特解析接口暂不可用，请稍后重试。")
+        return CachedTwitterImages(directory=directory, paths=paths if result == "images" else ())
+
+    monkeypatch.setattr(chat, "cache_twitter_images", cache)
+    await chat._dispatch_onebot_message(SimpleNamespace(), SimpleNamespace(self_id=999), SimpleNamespace())
+    finish.assert_awaited_once()
+    response = finish.call_args.args[3]
+    if result == "images":
+        assert [segment.type for segment in response] == ["image"] * 4
+        assert [segment.data["file"] for segment in response] == [path.resolve().as_uri() for path in paths]
+    elif result == "no_images":
+        assert "没有可解析的图片" in response
+    else:
+        assert "接口暂不可用" in response
+    if result != "failed":
+        assert not directory.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("gate", ["feature", "group"])
+async def test_twitter_feature_and_group_policy_prevent_network_requests(monkeypatch, gate):
+    internal = SimpleNamespace(segments=(), group_id=123, is_at_bot=False)
+    source = MiniAppImageSource(source_url="https://x.com/i/status/123", platform="twitter")
+    monkeypatch.setattr(chat, "onebot_to_internal", lambda event, self_id: internal)
+    monkeypatch.setattr(chat, "_record_group_activity", lambda *a, **kw: None)
+    monkeypatch.setattr(chat, "extract_miniapp_image_source", lambda segments: source)
+    monkeypatch.setattr(chat, "_automatic_reply_allowed", lambda event: gate != "group")
+    store = SimpleNamespace(is_feature_enabled=lambda feature: feature == "cards.twitter" and gate != "feature")
+    monkeypatch.setattr(chat, "get_store", lambda: store)
+    monkeypatch.setattr(chat, "cache_twitter_images", AsyncMock(side_effect=AssertionError("must not connect")))
+    monkeypatch.setattr(chat, "pending_lua_command", lambda event: None)
+    monkeypatch.setattr(chat, "handle_custom_flow", lambda event: None)
+    monkeypatch.setattr(chat, "get_policy_engine", lambda: SimpleNamespace(
+        evaluate=lambda *a, **kw: PolicyDecision(False, "no_trigger")))
+    await chat._dispatch_onebot_message(SimpleNamespace(), SimpleNamespace(self_id=999), SimpleNamespace())
+    chat.cache_twitter_images.assert_not_awaited()
 
 
 @pytest.mark.asyncio

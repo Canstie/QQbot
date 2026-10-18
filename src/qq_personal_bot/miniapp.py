@@ -24,6 +24,7 @@ from qq_personal_bot.bilibili_card import (
     is_bilibili_preview_url,
     is_bilibili_share_url,
 )
+from qq_personal_bot.twitter import twitter_status_url
 
 _MINIAPP_PROMPT_PREFIX = "[QQ小程序]"
 _URL_KEYS = (
@@ -127,6 +128,8 @@ def extract_miniapp_image_source(
             source_url = _source_url(match)
             if is_bilibili_share_url(source_url):
                 return MiniAppImageSource(source_url=source_url, platform="bilibili")
+            if twitter_url := twitter_status_url(source_url):
+                return MiniAppImageSource(source_url=twitter_url, platform="twitter")
     return None
 
 
@@ -210,6 +213,8 @@ def _find_supported_image_source(payload: Mapping[str, Any]) -> MiniAppImageSour
                 candidates.append((priority, "xiaoheihe", source_url))
             elif is_bilibili_share_url(source_url):
                 candidates.append((priority, "bilibili", source_url))
+            elif twitter_url := twitter_status_url(source_url):
+                candidates.append((priority, "twitter", twitter_url))
     if not candidates:
         return None
     candidates.sort(key=lambda item: item[0])

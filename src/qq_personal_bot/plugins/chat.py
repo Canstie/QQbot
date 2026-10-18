@@ -56,6 +56,7 @@ from qq_personal_bot.random_gallery import (
 from qq_personal_bot.replies import build_reply
 from qq_personal_bot.runtime import get_policy_engine, get_settings, get_store
 from qq_personal_bot.teachers import parse_teacher_command, query_teachers
+from qq_personal_bot.twitter import CachedTwitterImages, TwitterImageError, cache_twitter_images
 from qq_personal_bot.xiaoheihe_captcha import (
     XIAOHEIHE_CAPTCHA_TTL_SECONDS,
     build_xiaoheihe_captcha_url,
@@ -145,7 +146,7 @@ def _build_random_group_response(response: str | Path) -> str | MessageSegment:
     return response
 
 
-def _build_miniapp_image_response(cached: CachedMiniAppImages) -> Message:
+def _build_miniapp_image_response(cached: CachedMiniAppImages | CachedTwitterImages) -> Message:
     response = Message()
     for path in cached.paths:
         response += MessageSegment.image(path.resolve().as_uri())
@@ -350,7 +351,18 @@ async def _dispatch_onebot_message(
     ):
         try:
             with latency_phase("miniapp_fetch"):
-                cached_images = await cache_miniapp_images(miniapp_image_source)
+                if miniapp_image_source.platform == "twitter":
+                    cached_images = await cache_twitter_images(
+                        miniapp_image_source.source_url, proxy_url=get_settings().twitter_proxy_url,
+                    )
+                else:
+                    cached_images = await cache_miniapp_images(miniapp_image_source)
+        except TwitterImageError as exc:
+            logger.warning("Twitter image parsing failed: %s", exc)
+            await _finish_with_response(
+                matcher, bot, event, str(exc), explicit_group_send=explicit_group_send,
+            )
+            return
         except XiaoheiheCaptchaRequired as exc:
             await _send_xiaoheihe_captcha_to_group(
                 bot,
@@ -371,8 +383,15 @@ async def _dispatch_onebot_message(
                     _build_miniapp_image_response(cached_images),
                     explicit_group_send=explicit_group_send,
                 )
+            elif miniapp_image_source.platform == "twitter":
+                await _finish_with_response(
+                    matcher, bot, event, "这条推文没有可解析的图片，暂不处理视频或动图。",
+                    explicit_group_send=explicit_group_send,
+                )
         finally:
             cached_images.cleanup()
+        if miniapp_image_source.platform == "twitter":
+            return
 
     pending_command = pending_lua_command(internal_event)
     if pending_command is not None:

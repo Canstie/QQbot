@@ -24,6 +24,7 @@ STATIC_FEATURES: tuple[FeatureDefinition, ...] = (
     FeatureDefinition("cards.bilibili", "卡片解析", "B站卡片", "解析 B站小程序和视频直链并发送图片卡片。"),
     FeatureDefinition("cards.xiaohongshu", "卡片解析", "小红书卡片", "提取小红书分享中的图片。"),
     FeatureDefinition("cards.xiaoheihe", "卡片解析", "小黑盒卡片", "提取小黑盒分享中的图片。"),
+    FeatureDefinition("cards.twitter", "卡片解析", "推特图片解析", "通过显式代理解析 X/Twitter 推文并发送全部图片。"),
     FeatureDefinition("replies.fixed", "消息回复", "固定回复", "使用 replies.json 中的回复规则。"),
     FeatureDefinition("teacher.lookup", "消息回复", "查老师", "查询教师评分和评价。"),
     FeatureDefinition("gallery.random", "图片功能", "随机图库", "响应涩图命令并发送轮换图片。"),
@@ -96,4 +97,6 @@ def feature_id_for_platform(platform: str) -> str | None:
         return "cards.xiaohongshu"
     if "xiaoheihe" in value or "maxjia" in value:
         return "cards.xiaoheihe"
+    if value in {"twitter", "x"}:
+        return "cards.twitter"
     return None

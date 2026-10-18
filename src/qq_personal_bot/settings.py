@@ -80,6 +80,7 @@ class AppSettings:
     dsapi_api_format: str = "deepseek"
     dsapi_tls_mode: str = "auto"
     ai_proxy_url: str = ""
+    twitter_proxy_url: str = ""
     ai_proxy_resolved: bool = False
     dsapi_provider_id: int = 0
     dsapi_provider_managed: bool = False
@@ -158,6 +159,7 @@ class AppSettings:
                 or "deepseek-flash"
             ),
             ai_proxy_url=env.get("QQBOT_AI_PROXY_URL", "").strip(),
+            twitter_proxy_url=(env.get("QQBOT_TWITTER_PROXY_URL") or env.get("QQBOT_AI_PROXY_URL") or "").strip(),
             dsapi_timeout_seconds=_env_float(env.get("QQBOT_DSAPI_TIMEOUT_SECONDS"), 30.0),
             dsapi_max_tokens=_env_int(env.get("QQBOT_DSAPI_MAX_TOKENS"), 80),
             dsapi_history_idle_seconds=_env_int(
@@ -198,9 +200,12 @@ class AppSettings:
             raise ValueError("QQBOT_MENU_PROVIDER must be auto, local, or jisu")
         if self.dsapi_timeout_seconds <= 0:
             raise ValueError("QQBOT_DSAPI_TIMEOUT_SECONDS must be > 0")
-        if self.ai_proxy_url:
+        for name, proxy_url in (("QQBOT_AI_PROXY_URL", self.ai_proxy_url),
+                                ("QQBOT_TWITTER_PROXY_URL", self.twitter_proxy_url)):
+            if not proxy_url:
+                continue
             try:
-                proxy = urlsplit(self.ai_proxy_url)
+                proxy = urlsplit(proxy_url)
                 valid = (
                     proxy.scheme in {"http", "https"}
                     and bool(proxy.hostname)
@@ -212,7 +217,7 @@ class AppSettings:
             except ValueError:
                 valid = False
             if not valid:
-                raise ValueError("QQBOT_AI_PROXY_URL must be an HTTP(S) proxy URL") from None
+                raise ValueError(f"{name} must be an HTTP(S) proxy URL") from None
         if self.dsapi_max_tokens <= 0:
             raise ValueError("QQBOT_DSAPI_MAX_TOKENS must be > 0")
         if self.dsapi_history_idle_seconds <= 0:

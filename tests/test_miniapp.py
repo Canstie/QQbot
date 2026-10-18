@@ -14,6 +14,17 @@ from qq_personal_bot.miniapp import (
 )
 
 
+@pytest.mark.parametrize("structured", [False, True])
+def test_extracts_twitter_post_links_from_text_and_share_cards(structured):
+    link = "https://x.com/Kyzen6mhr/status/2111677165825933692?s=20"
+    segment = ({"type": "json", "data": {"data": json.dumps({"prompt": "[QQ小程序]推文",
+                "meta": {"detail_1": {"qqdocurl": link}}})}} if structured else
+               {"type": "text", "data": {"text": f"分享图片：{link}。"}})
+    source = extract_miniapp_image_source((segment,))
+    assert source is not None and source.platform == "twitter"
+    assert source.source_url == "https://x.com/i/status/2111677165825933692"
+
+
 def test_extracts_xiaohongshu_image_source_from_qq_miniapp():
     payload = {
         "ver": "1.0.0.19",
