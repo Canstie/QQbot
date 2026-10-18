@@ -2,8 +2,16 @@ import asyncio
 
 import httpx
 import pytest
+import pytest_asyncio
 
 from qq_personal_bot import teachers
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def clean_clients():
+    await teachers.close_teacher_client()
+    yield
+    await teachers.close_teacher_client()
 
 
 def detail(name, comments=None):
@@ -222,3 +230,32 @@ async def test_teacher_retry_does_not_extend_query_deadline(monkeypatch):
     assert await teachers.query_teachers("龙文杰") == [teachers.FAILURE]
     # The outer deadline cancels the retry backoff; no second request is sent.
     assert len(requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_consecutive_teacher_commands_reuse_client_and_shutdown_closes_it(monkeypatch):
+    clients = []
+    factory = httpx.AsyncClient
+
+    def handler(request):
+        if request.url.path == "/api/teachers":
+            name = request.url.params["q_p"]
+            return httpx.Response(200, json={
+                "items": [{"prof": name}], "total": 1, "has_more": False,
+            })
+        return httpx.Response(200, json=detail(request.url.path.rsplit("/", 1)[1]))
+
+    def client(**kwargs):
+        instance = factory(**kwargs, transport=httpx.MockTransport(handler))
+        clients.append(instance)
+        return instance
+
+    monkeypatch.setattr(teachers.httpx, "AsyncClient", client)
+    for name in ("龙文杰", "吴晓"):
+        assert (await teachers.query_teachers(name))[0].startswith(f"🧬 教师画像：{name}")
+    assert len(clients) == 1
+    assert not clients[0].is_closed
+    await teachers.close_teacher_client()
+    assert clients[0].is_closed
+    assert (await teachers.query_teachers("龙文杰"))[0].startswith("🧬 教师画像：龙文杰")
+    assert len(clients) == 2

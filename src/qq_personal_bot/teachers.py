@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any
 from urllib.parse import quote
@@ -12,12 +14,35 @@ import httpx
 logger = logging.getLogger(__name__)
 QUERY_TIMEOUT = 25.0
 REQUEST_TIMEOUT = 10.0
-CONNECT_TIMEOUT = 4.0
+CONNECT_TIMEOUT = 7.0
 RETRY_DELAY = 0.25
 _RETRY_STATUSES = {408, 500, 502, 503, 504}
 FAILURE = "教师查询失败，请稍后再试"
 USAGE = "用法：~查老师 <姓名> [课程]，例如 ~查老师 吴晓 或 ~查老师 龙 模拟电子技术"
 SEPARATOR = "━━━━━━━━━━━━━━━"
+_clients: dict[asyncio.AbstractEventLoop, httpx.AsyncClient] = {}
+
+
+@asynccontextmanager
+async def _teacher_client() -> AsyncIterator[httpx.AsyncClient]:
+    loop = asyncio.get_running_loop()
+    client = _clients.get(loop)
+    if client is None:
+        client = httpx.AsyncClient(
+            base_url="https://cancir.xyz",
+            timeout=httpx.Timeout(REQUEST_TIMEOUT, connect=CONNECT_TIMEOUT),
+            limits=httpx.Limits(max_connections=6, max_keepalive_connections=3,
+                                keepalive_expiry=120),
+            follow_redirects=False,
+        )
+        _clients[loop] = client
+    yield client
+
+
+async def close_teacher_client() -> None:
+    client = _clients.pop(asyncio.get_running_loop(), None)
+    if client is not None:
+        await client.aclose()
 
 
 def parse_teacher_command(message: str) -> tuple[str, str] | None:
@@ -109,11 +134,7 @@ async def query_teachers(name: str, course: str = "") -> list[str]:
     if not name:
         return [USAGE]
     deadline = asyncio.get_running_loop().time() + QUERY_TIMEOUT
-    async with httpx.AsyncClient(
-        base_url="https://cancir.xyz",
-        timeout=httpx.Timeout(REQUEST_TIMEOUT, connect=CONNECT_TIMEOUT),
-        follow_redirects=False,
-    ) as client:
+    async with _teacher_client() as client:
         try:
             search = await asyncio.wait_for(_get_json(client, "/api/teachers", params={
                 "q_p": name, "q_c": course, "sort": "默认排序", "offset": 0, "limit": 24,
