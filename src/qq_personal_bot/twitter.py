@@ -168,8 +168,8 @@ async def cache_twitter_images(source_url: str, *, proxy_url: str) -> CachedTwit
     try:
         async with asyncio.timeout(60), httpx.AsyncClient(
             proxy=proxy_url, trust_env=False, follow_redirects=False,
-            timeout=httpx.Timeout(15, connect=6),
-            limits=httpx.Limits(max_connections=1, max_keepalive_connections=1, keepalive_expiry=30),
+            timeout=httpx.Timeout(15, connect=10),
+            limits=httpx.Limits(max_connections=4, max_keepalive_connections=2, keepalive_expiry=30),
             headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
         ) as client:
             urls = await _fetch_photos(client, normalized.rsplit("/", 1)[1])
