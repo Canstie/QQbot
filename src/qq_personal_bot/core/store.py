@@ -14,6 +14,7 @@ from typing import Any
 
 from qq_personal_bot.core.ai_providers import AIProviderStore
 from qq_personal_bot.core.memory_graph import MemoryGraphStore
+from qq_personal_bot.core.turtle_soup import TurtleSoupStore
 from qq_personal_bot.features import feature_catalog, feature_defaults
 from qq_personal_bot.menu_recipes import (
     cache_image,
@@ -42,7 +43,7 @@ def _strip_cq_segments(message: str) -> str:
     return re.sub(r"\[CQ:[^\]]+\]", "", message)
 
 
-class PolicyStore(MemoryGraphStore, AIProviderStore):
+class PolicyStore(MemoryGraphStore, AIProviderStore, TurtleSoupStore):
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self._runtime_cache: dict[tuple[Any, ...], tuple[float, Any]] = {}
@@ -57,6 +58,7 @@ class PolicyStore(MemoryGraphStore, AIProviderStore):
             conn.execute("PRAGMA journal_mode = WAL")
             self._create_schema(conn)
             self._create_memory_schema(conn)
+            self._create_turtle_soup_schema(conn)
             has_settings = conn.execute("SELECT 1 FROM settings LIMIT 1").fetchone() is not None
             should_seed = first_run or not has_settings
             if should_seed:

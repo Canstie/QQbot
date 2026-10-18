@@ -537,6 +537,8 @@ async def _generate_text_reply(
         response_mode,
         max_reply_messages=max_reply_messages,
     )
+    if store.get_turtle_soup_game(event.group_id):
+        return None  # A game may have started while this ordinary request was generating.
     if response:
         assistant_history = "\n".join(response) if isinstance(response, list) else response
         store.record_dsapi_exchange(

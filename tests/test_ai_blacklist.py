@@ -46,6 +46,13 @@ def setup(tmp_path):
     return settings, store
 
 
+@pytest.fixture(autouse=True)
+def isolate_game_service(monkeypatch):
+    monkeypatch.setattr(chat, 'get_turtle_soup_service', lambda: SimpleNamespace(
+        handle=AsyncMock(return_value=False), active=lambda group_id: None,
+    ))
+
+
 def test_blacklist_persists_and_cache_updates_immediately(setup):
     settings, store = setup
     assert store.get_dsapi_blocked_users() == []

@@ -9,7 +9,7 @@ from nonebot.log import LoguruHandler
 from qq_personal_bot.activity import close_group_activity
 from qq_personal_bot.ai_transport import close_ai_clients
 from qq_personal_bot.memory_graph import MemoryGraphWorker
-from qq_personal_bot.runtime import get_settings, get_store
+from qq_personal_bot.runtime import get_settings, get_store, get_turtle_soup_service
 from qq_personal_bot.teachers import close_teacher_client
 
 settings = get_settings()
@@ -23,7 +23,7 @@ nonebot.init(
 )
 
 for component in ("qq_personal_bot.ai_transport", "qq_personal_bot.web_search", "qq_personal_bot.web_agent",
-                  "qq_personal_bot.vision_images"):
+                  "qq_personal_bot.vision_images", "qq_personal_bot.turtle_soup"):
     component_logger = logging.getLogger(component)
     component_logger.setLevel(logging.INFO)
     component_logger.addHandler(LoguruHandler())
@@ -34,15 +34,21 @@ driver.register_adapter(OneBotV11Adapter)
 memory_worker = MemoryGraphWorker(get_store(), settings)
 
 
+async def _send_turtle_soup_notice(game: dict, text: str) -> None:
+    await nonebot.get_bot(game['bot_id']).send_group_msg(group_id=game['group_id'], message=text)
+
+
 @driver.on_startup
 async def _start_memory_graph() -> None:
     memory_worker.start()
+    get_turtle_soup_service().start(_send_turtle_soup_notice)
 
 
 @driver.on_shutdown
 async def _flush_activity_on_shutdown() -> None:
     await close_group_activity()
     await memory_worker.stop()
+    await get_turtle_soup_service().stop()
     await close_teacher_client()
     close_ai_clients()
 

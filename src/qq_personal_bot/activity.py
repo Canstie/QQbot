@@ -25,6 +25,7 @@ class GroupActivityRecord:
     bot_id: int | str = ""
     is_at_bot: bool = False
     is_bot_command: bool = False
+    memory_context: str = ""
 
 
 class GroupActivityRecorder:
@@ -99,6 +100,7 @@ class GroupActivityRecorder:
                     "bot_id": record.bot_id,
                     "is_at_bot": record.is_at_bot,
                     "is_bot_command": record.is_bot_command,
+                    "memory_context": record.memory_context,
                 }
                 for record in batch
             ]

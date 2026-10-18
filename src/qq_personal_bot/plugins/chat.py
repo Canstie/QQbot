@@ -54,8 +54,14 @@ from qq_personal_bot.random_gallery import (
     send_random_gallery_forward,
 )
 from qq_personal_bot.replies import build_reply
-from qq_personal_bot.runtime import get_policy_engine, get_settings, get_store
+from qq_personal_bot.runtime import (
+    get_policy_engine,
+    get_settings,
+    get_store,
+    get_turtle_soup_service,
+)
 from qq_personal_bot.teachers import parse_teacher_command, query_teachers
+from qq_personal_bot.turtle_soup import GAME_CONTEXT
 from qq_personal_bot.twitter import CachedTwitterImages, TwitterImageError, cache_twitter_images
 from qq_personal_bot.xiaoheihe_captcha import (
     XIAOHEIHE_CAPTCHA_TTL_SECONDS,
@@ -337,6 +343,19 @@ async def _dispatch_onebot_message(
         internal_event = onebot_to_internal(event, self_id=bot.self_id)
     with latency_phase("activity_enqueue"):
         _record_group_activity(internal_event, self_id=bot.self_id)
+
+    async def send_game_response(text: str) -> None:
+        await _send_response(
+            matcher, bot, event, _build_quoted_response(text, internal_event),
+            explicit_group_send=explicit_group_send,
+        )
+
+    soup = get_turtle_soup_service()
+    if await soup.handle(
+        internal_event, str(bot.self_id), send_game_response,
+        authorize=lambda: get_policy_engine().evaluate(internal_event, self_id=bot.self_id),
+    ):
+        return
     miniapp_image_source = extract_miniapp_image_source(internal_event.segments)
     miniapp_feature = (
         feature_id_for_platform(miniapp_image_source.platform)
@@ -444,6 +463,8 @@ async def _dispatch_onebot_message(
                 explicit_group_send=explicit_group_send,
             )
         if decision.reason == "no_trigger":
+            if soup.active(internal_event.group_id):
+                return
             if await _is_passive_bot_image_reply(bot, internal_event):
                 return
             if not (
@@ -462,6 +483,8 @@ async def _dispatch_onebot_message(
                 logger.warning(f"DSAPI random group reply failed: {exc}")
                 return
             if response:
+                if soup.active(internal_event.group_id):
+                    return
                 await _finish_ai_response(
                     matcher,
                     bot,
@@ -508,6 +531,8 @@ async def _dispatch_onebot_message(
                     response = "这次评价没生成完整，稍后再试一次。"
                 if response is None:
                     response = "这位群友在本群的图谱还在整理或证据不足，等积累更多有内容的聊天后再试。"
+        if soup.active(internal_event.group_id):
+            return
         await _finish_with_response(
             matcher,
             bot,
@@ -612,6 +637,8 @@ async def _dispatch_onebot_message(
                     yesterday=yesterday,
                 )
         except GroupDigestEmptyError as exc:
+            if soup.active(internal_event.group_id):
+                return
             await _send_response(
                 matcher,
                 bot,
@@ -622,6 +649,8 @@ async def _dispatch_onebot_message(
             return
         except DSAPIError as exc:
             logger.warning(f"Daily group digest generation failed: {exc}")
+            if soup.active(internal_event.group_id):
+                return
             await _send_response(
                 matcher,
                 bot,
@@ -632,6 +661,8 @@ async def _dispatch_onebot_message(
             return
         except Exception as exc:  # noqa: BLE001 - keep the bot handler alive on render failures
             logger.exception(f"Daily group digest rendering failed: {exc}")
+            if soup.active(internal_event.group_id):
+                return
             await _send_response(
                 matcher,
                 bot,
@@ -639,6 +670,8 @@ async def _dispatch_onebot_message(
                 MessageSegment.text("群聊速报生成时出了点问题，请稍后再试。"),
                 explicit_group_send=explicit_group_send,
             )
+            return
+        if soup.active(internal_event.group_id):
             return
         await _send_response(
             matcher,
@@ -696,6 +729,8 @@ async def _dispatch_onebot_message(
                 )
         except DSAPIError as exc:
             logger.warning(f"DSAPI mention reply failed: {exc}")
+            if soup.active(internal_event.group_id):
+                return
             await _finish_with_response(
                 matcher,
                 bot,
@@ -711,6 +746,8 @@ async def _dispatch_onebot_message(
             )
             return
         if response:
+            if soup.active(internal_event.group_id):
+                return
             await _finish_ai_response(
                 matcher,
                 bot,
@@ -798,6 +835,7 @@ def _record_group_activity(event: Any, *, self_id: int | str) -> None:
             bot_id=self_id,
             is_at_bot=event.is_at_bot,
             is_bot_command=is_bot_command,
+            memory_context=GAME_CONTEXT if store.get_turtle_soup_game(event.group_id) else "",
         )
     )
 

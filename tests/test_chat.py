@@ -27,6 +27,14 @@ def make_event(*, group_id: int = 123, raw_message: str = "~抽群老婆"):
     return SimpleNamespace(group_id=group_id, raw_message=raw_message, message=raw_message)
 
 
+@pytest.fixture(autouse=True)
+def isolate_game_service(monkeypatch):
+    # These tests exercise ordinary dispatch; game routing has its own integration tests.
+    monkeypatch.setattr(chat, 'get_turtle_soup_service', lambda: SimpleNamespace(
+        handle=AsyncMock(return_value=False), active=lambda group_id: None,
+    ))
+
+
 @pytest.mark.asyncio
 async def test_quote_capture_still_runs_when_daily_activity_is_off(tmp_path, monkeypatch):
     db_path = tmp_path / "qqbot.sqlite3"

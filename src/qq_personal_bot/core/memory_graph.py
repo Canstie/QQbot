@@ -56,6 +56,10 @@ class MemoryGraphStore:
             );
         """)
 
+        columns = {row['name'] for row in conn.execute('PRAGMA table_info(memory_messages)')}
+        if 'memory_context' not in columns:
+            conn.execute("ALTER TABLE memory_messages ADD COLUMN memory_context TEXT NOT NULL DEFAULT ''")
+
     def _retire_quote_library(self, conn) -> None:
         # Explicit one-time replacement: never backfill deleted quotes from other archives.
         exists = conn.execute(
@@ -157,12 +161,13 @@ class MemoryGraphStore:
                         mentions.append(int(data["qq"]))
                 cursor = conn.execute(
                     "INSERT OR IGNORE INTO memory_messages(group_id,user_id,message_id,"
-                    "display_name,content,raw_message,segments_json,reply_to,mentions_json,created_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    "display_name,content,raw_message,segments_json,reply_to,mentions_json,created_at,memory_context) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                     (group_id, user_id, str(item.get("message_id") or ""),
                      str(item.get("display_name") or ""), content, raw,
                      json.dumps(segments, ensure_ascii=False, default=str), reply_to,
-                     json.dumps(sorted(set(mentions))), float(item.get("timestamp") or time.time())),
+                     json.dumps(sorted(set(mentions))), float(item.get("timestamp") or time.time()),
+                     str(item.get('memory_context') or '')),
                 )
                 inserted += max(0, cursor.rowcount)
                 conn.execute("INSERT OR IGNORE INTO memory_progress(group_id) VALUES (?)", (group_id,))

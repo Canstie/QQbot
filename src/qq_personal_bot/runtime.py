@@ -5,12 +5,14 @@ from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.mhwa.service import MhwaService
 from qq_personal_bot.settings import AppSettings
 from qq_personal_bot.steam.service import SteamMonitorService
+from qq_personal_bot.turtle_soup import TurtleSoupService
 
 _settings: AppSettings | None = None
 _store: PolicyStore | None = None
 _policy_engine: PolicyEngine | None = None
 _steam_service: SteamMonitorService | None = None
 _mhwa_service: MhwaService | None = None
+_turtle_soup_service: TurtleSoupService | None = None
 
 
 def get_settings() -> AppSettings:
@@ -51,11 +53,19 @@ def get_mhwa_service() -> MhwaService:
     return _mhwa_service
 
 
+def get_turtle_soup_service() -> TurtleSoupService:
+    global _turtle_soup_service
+    if _turtle_soup_service is None:
+        _turtle_soup_service = TurtleSoupService(get_store(), get_settings())
+    return _turtle_soup_service
+
+
 def reset_runtime() -> None:
-    global _settings, _store, _policy_engine, _steam_service, _mhwa_service
+    global _settings, _store, _policy_engine, _steam_service, _mhwa_service, _turtle_soup_service
     _settings = None
     _store = None
     _policy_engine = None
     _steam_service = None
     _mhwa_service = None
+    _turtle_soup_service = None
 

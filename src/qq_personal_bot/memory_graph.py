@@ -23,6 +23,7 @@ EXTRACTION_PROMPT = """你是群聊人物记忆整理器，将消息整理为有
 “想吃”只能是当时愿望，“要去吗”是未确认计划，不能成为长期偏好或已完成经历。
 计划不等于完成。@或回复只能证明互动，不能推出朋友、伴侣等关系。
 图片/语音等占位不代表你知道内容。孤立短句、命令和没有可用信息的消息跳过。
+memory_context 标注海龟汤游戏时，剧情为虚构，不能将角色经历、推理或假设当作群友本人的真实记忆。
 时间按原消息时间理解，相对日期在 statement 中写清年月日；互相矛盾的陈述保留时间和本人说法，不替人下定论。
 只输出 JSON 对象 {"claims": [...]}，无可靠信息时返回空数组。最多 12 条。
 每条必须有 user_id（本人QQ整数）、predicate（preference/experience/plan/relationship/expression）、
@@ -181,6 +182,7 @@ async def refresh_memory_graph(store: PolicyStore, settings: AppSettings, group_
         messages = [{"id": m["id"], "user_id": m["user_id"],
                      "name": m["display_name"][:60], "content": m["content"][:600],
                      "reply_to_id": source_by_message_id.get(m["reply_to"]), "mentions": m["mentions"],
+                     "memory_context": m.get('memory_context', ''),
                      "time": datetime.fromtimestamp(m["created_at"], zone).isoformat()}
                     for m in sorted(batch["messages"], key=lambda m: (m["created_at"], m["id"]))]
         config = store.get_dsapi_config()
