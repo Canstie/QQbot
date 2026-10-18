@@ -19,6 +19,7 @@ from qq_personal_bot.web_search import (
 
 logger = logging.getLogger(__name__)
 UNVERIFIED_WEB_REPLY = "这次没找到足以核实答案的资料，暂时无法确认，不能用旧信息代答。"
+WEB_PROTOCOL_ERROR_REPLY = "联网核验的返回格式异常，这次没能完成回答，请稍后再试。"
 _ROUTE = (
     "本轮使用统一的检索决策流程，覆盖所有领域，不按特定题目或关键词套答案。"
     "输入JSON中的current_request是本轮唯一待回应的请求；previous_user_questions和recent_group_messages只是历史背景，"
@@ -299,4 +300,4 @@ async def generate_web_reply(
     except (ValueError, TypeError, KeyError) as exc:
         logger.info("Web agent trace=%s stage=%s outcome=invalid_response error=%s",
                     trace_id, stage, type(exc).__name__)
-        return UNVERIFIED_WEB_REPLY
+        return WEB_PROTOCOL_ERROR_REPLY

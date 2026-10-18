@@ -8,6 +8,7 @@ import logging
 import re
 import threading
 import time
+import unicodedata
 import xml.etree.ElementTree as ET
 from collections import OrderedDict
 from dataclasses import asdict, dataclass, field
@@ -367,10 +368,15 @@ def _select_results(
     return results
 
 
-def _candidate_score(item: WebSearchResult, query: str, groups: list[list[str]] | None) -> tuple[int, int, int]:
+def _candidate_score(item: WebSearchResult, query: str, groups: list[list[str]] | None) -> tuple[int, int, int, int]:
     # Rank before truncating; keep aliases as candidates for the model to assess.
+    def compact(value: str) -> str:
+        return re.sub(r"[\W_]+", "", unicodedata.normalize("NFKC", value)).casefold()
+
+    terms = [compact(term) for term in query.split() if len(compact(term)) >= 2]
+    text = compact(f"{item.title} {item.snippet}")
     return (int(_relevant_news(query, item.title, item.snippet, item.url)),
-            *_focus_score(item, groups or []))
+            *_focus_score(item, groups or []), sum(term in text for term in terms))
 
 
 def _focus_score(item: WebSearchResult, groups: list[list[str]]) -> tuple[int, int]:

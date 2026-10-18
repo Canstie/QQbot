@@ -236,6 +236,15 @@ def test_irrelevant_html_candidates_do_not_prevent_using_another_provider(monkey
     assert results[0].url == "https://example.test/notice"
 
 
+def test_complete_product_name_and_version_rank_above_partial_matches(current_time):
+    candidates = [
+        WebSearchResult("项目甲 玩法", "https://example.test/old", "原作的入门攻略。"),
+        WebSearchResult("项目甲２ 玩法", "https://example.test/new", "续作的入门攻略。"),
+    ]
+    results = web._select_results(candidates, 1, 0, current_time, "项目甲2 玩法", semantic=True)
+    assert results[0].url == "https://example.test/new"
+
+
 def test_challenge_page_is_logged_and_does_not_count_as_search_results(monkeypatch, caplog):
     attempts = []
 

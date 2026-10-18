@@ -259,7 +259,7 @@ async def test_automatic_reads_are_bounded_when_all_pages_fail(monkeypatch, capl
 async def test_plain_or_malformed_answer_cannot_bypass_verification(monkeypatch):
     monkeypatch.setattr("qq_personal_bot.web_search.search_web", lambda *args: pytest.fail("invalid plan"))
     reply = await agent.generate_web_reply(lambda messages: "这个产品尚未推出。", "角色", [], "现在怎么样")
-    assert reply == agent.UNVERIFIED_WEB_REPLY
+    assert reply == agent.WEB_PROTOCOL_ERROR_REPLY
 
 
 @pytest.mark.asyncio
@@ -268,7 +268,22 @@ async def test_external_fact_cannot_be_a_direct_answer_basis():
         lambda messages: json.dumps({"action":"answer", "basis":"training_knowledge", "answer":"旧知识中的现状。"}),
         "角色", [], "核实现在的情况",
     )
-    assert reply == agent.UNVERIFIED_WEB_REPLY
+    assert reply == agent.WEB_PROTOCOL_ERROR_REPLY
+
+
+@pytest.mark.asyncio
+async def test_failed_grounding_protocol_is_not_reported_as_no_search_results(monkeypatch, caplog):
+    responses = iter([
+        json.dumps({"action": "search", "question": "项目安排", "time_scope": "timeless",
+                    "queries": ["项目 安排"]}),
+        "这不是有效的结构化核验结果。",
+        "再次输出了自然语言而非JSON。",
+    ])
+    monkeypatch.setattr("qq_personal_bot.web_search.search_web", lambda *a, **kw: [result()])
+    with caplog.at_level("INFO", logger=agent.__name__):
+        reply = await agent.generate_web_reply(lambda _: next(responses), "角色", [], "项目安排")
+    assert reply == agent.WEB_PROTOCOL_ERROR_REPLY
+    assert "stage=ground outcome=invalid_response" in caplog.text
 
 
 @pytest.mark.asyncio
