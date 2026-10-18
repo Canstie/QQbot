@@ -169,6 +169,7 @@ async def cache_twitter_images(source_url: str, *, proxy_url: str) -> CachedTwit
         async with asyncio.timeout(60), httpx.AsyncClient(
             proxy=proxy_url, trust_env=False, follow_redirects=False,
             timeout=httpx.Timeout(15, connect=6),
+            limits=httpx.Limits(max_connections=1, max_keepalive_connections=1, keepalive_expiry=30),
             headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
         ) as client:
             urls = await _fetch_photos(client, normalized.rsplit("/", 1)[1])
@@ -176,22 +177,12 @@ async def cache_twitter_images(source_url: str, *, proxy_url: str) -> CachedTwit
             if not urls:
                 return CachedTwitterImages(directory=None, paths=())
             directory = Path(tempfile.mkdtemp(prefix="qqbot-twitter-"))
-            semaphore = asyncio.Semaphore(3)
-
-            async def download(index: int, url: str) -> Path:
-                async with semaphore:
-                    return await _download_photo(client, url, directory, index)
-
-            tasks = [asyncio.create_task(download(index, url)) for index, url in enumerate(urls, 1)]
-            try:
-                paths = tuple(await asyncio.gather(*tasks))
-            finally:
-                for task in tasks:
-                    if not task.done():
-                        task.cancel()
-                await asyncio.gather(*tasks, return_exceptions=True)
+            # The CDN is shared by every photo; reuse one TLS tunnel on unstable proxy routes.
+            paths = []
+            for index, url in enumerate(urls, 1):
+                paths.append(await _download_photo(client, url, directory, index))
         completed = True
-        return CachedTwitterImages(directory=directory, paths=paths)
+        return CachedTwitterImages(directory=directory, paths=tuple(paths))
     except TimeoutError:
         raise TwitterImageError("推特图片解析超时，请稍后重试。") from None
     except (OSError, UnidentifiedImageError, Image.DecompressionBombError):
