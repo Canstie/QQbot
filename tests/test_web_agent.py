@@ -229,6 +229,79 @@ async def test_small_talk_and_reasoning_do_not_need_a_search(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("current", ["像素方块的硬核才是王道", "那它为什么这么流行？"])
+async def test_previous_questions_are_background_not_pending_requests(current):
+    history = [
+        {"role": "user", "content": "群聊背景\nQQ 123 当前对你说：奶蛙是什么梗"},
+        {"role": "assistant", "content": "旧助手的事实结论不应用作本轮证据。"},
+    ]
+    context = [{"user_id": 789, "content": "群里在讨论另一个话题"}]
+
+    def complete(messages):
+        assert [item["role"] for item in messages] == ["system", "user"]
+        data = json.loads(messages[-1]["content"])
+        assert data["current_request"] == current
+        assert data["current_user_id"] == 123
+        assert data["previous_user_questions"] == ["奶蛙是什么梗"]
+        assert data["recent_group_messages"] == context
+        assert "旧助手的事实结论" not in str(messages)
+        return json.dumps({"action": "clarify", "answer": "你想聊这句话的意思还是出处？"})
+
+    assert await agent.generate_web_reply(
+        complete, "角色", history, current, recent_context=context, current_user_id=123,
+    ) == "你想聊这句话的意思还是出处？"
+
+
+@pytest.mark.asyncio
+async def test_grounding_keeps_original_request_when_planner_drifts_to_old_topic(monkeypatch):
+    current = "搜一下本周展览的开放时间"
+    old = result(title="旧话题资料", snippet="旧话题是此前已经回答过的社区用语。")
+    fresh = WebSearchResult("展览公告", "https://example.test/exhibition", "本周展览每天上午九点开放。")
+    calls, searches = [], []
+
+    def search(query, **kwargs):
+        searches.append(query)
+        return [old] if len(searches) == 1 else [fresh]
+
+    def complete(messages):
+        calls.append(messages)
+        if len(calls) == 1:
+            return json.dumps({"action": "search", "question": "旧话题的含义", "time_scope": "timeless",
+                               "queries": ["旧话题"]})
+        data = json.loads(messages[-1]["content"])
+        assert data["current_request"] == current
+        assert data["question"] == "旧话题的含义"
+        assert data["previous_user_questions"] == ["旧话题是什么"]
+        if len(calls) == 2:
+            return json.dumps({"status": "insufficient", "next_query": "本周展览 开放时间"})
+        return json.dumps({"status": "supported", "answer": "每天上午九点开放。",
+                           "evidence": [{"source": 2, "quote": fresh.snippet}]})
+
+    monkeypatch.setattr("qq_personal_bot.web_search.search_web", search)
+    assert await agent.generate_web_reply(
+        complete, "角色", [{"role": "user", "content": "旧话题是什么"}], current,
+    ) == "每天上午九点开放。"
+    assert searches == ["旧话题", "本周展览 开放时间"]
+
+
+@pytest.mark.asyncio
+async def test_structured_current_request_preserves_image_blocks():
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,aGVsbG8="}}
+    prompt = [{"type": "text", "text": "看这张图"}, image]
+
+    def complete(messages):
+        content = messages[-1]["content"]
+        assert json.loads(content[0]["text"])["current_request"] == "看这张图"
+        assert content[1:] == [image]
+        return json.dumps({"action": "clarify", "answer": "你想了解图中哪一部分？"})
+
+    assert await agent.generate_web_reply(
+        complete, "角色", [], prompt,
+    ) == "你想了解图中哪一部分？"
+    assert prompt[0]["text"] == "看这张图"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("term", ["绝妖星", "铅笔芯计划", "MSR"])
 async def test_unfamiliar_terms_keep_the_original_name_without_a_date(monkeypatch, term):
     queries = []

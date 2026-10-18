@@ -645,6 +645,38 @@ async def test_web_reply_resolves_question_and_uses_checked_evidence(tmp_path, m
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("random_reply", [False, True])
+async def test_web_entry_points_separate_current_message_from_group_background(
+    tmp_path, monkeypatch, random_reply,
+):
+    store = make_store(tmp_path, random_reply_percent=100, random_sticker_percent=0)
+    enable_web_search(store)
+    knowledge_id = store.get_dsapi_config()["active_knowledge_id"]
+    store.record_dsapi_exchange(group_id=123, user_content="上一个问题是什么",
+        assistant_content="已经答完了", history_turns=2, knowledge_id=knowledge_id)
+    store.record_dsapi_group_message(group_id=123, user_id=789, content="群友的背景消息",
+        knowledge_id=knowledge_id)
+    current = "现在换个话题，硬核玩法才是王道"
+
+    def post(settings, body):
+        messages = body["messages"]
+        assert [item["role"] for item in messages] == ["system", "user"]
+        data = json.loads(messages[-1]["content"])
+        assert data["current_request"] == current
+        assert data["current_user_id"] == 456
+        assert data["previous_user_questions"] == ["上一个问题是什么"]
+        assert data["recent_group_messages"] == [{"user_id": 789, "content": "群友的背景消息"}]
+        return completion(json.dumps({"action": "answer", "basis": "conversation", "answer": "有挑战才过瘾。"}))
+
+    monkeypatch.setattr(dsapi_module, "_post_chat_body", post)
+    event = make_event(text=current, is_at_bot=not random_reply)
+    settings = make_settings(tmp_path)
+    reply = (await generate_random_group_reply(event, settings, store) if random_reply else
+             await generate_mention_reply(FakeBot(), event, settings, store))
+    assert reply == "有挑战才过瘾。"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("response_mode", ["short", "normal", "detailed"])
 async def test_web_source_appendices_are_hidden_in_each_reply(tmp_path, monkeypatch, response_mode):
     store = make_store(tmp_path)

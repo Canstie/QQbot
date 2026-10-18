@@ -216,6 +216,7 @@ async def generate_mention_reply(
         store,
         config,
         _with_group_context(prompt, recent_context, event),
+        current_prompt=prompt,
         recent_context=recent_context,
     )
 
@@ -278,6 +279,7 @@ async def generate_random_group_reply(
         _build_random_group_prompt(event, recent_context, context_limit=context_limit),
         extra_instruction=_RANDOM_REPLY_INSTRUCTION,
         history_user_content=event.raw_message.strip(),
+        current_prompt=event.raw_message.strip(),
         recent_context=recent_context,
     )
 
@@ -455,6 +457,7 @@ async def _generate_text_reply(
     *,
     extra_instruction: str = "",
     history_user_content: str | None = None,
+    current_prompt: str | list[dict[str, Any]] | None = None,
     recent_context: Sequence[Mapping[str, Any]] = (),
 ) -> str | list[str] | None:
     active_knowledge = config.get("active_knowledge") or {}
@@ -518,9 +521,16 @@ async def _generate_text_reply(
         max_tokens=None, thinking_enabled=bool(active_knowledge.get("thinking_enabled", False)),
         temperature=active_knowledge.get("temperature"),
     )
-    response = (await generate_web_reply(complete, system_prompt, history, prompt,
-                                         reply_separator=_MULTI_REPLY_SEPARATOR)
-                if web_enabled else await asyncio.to_thread(complete, messages))
+    if web_enabled:
+        response = await generate_web_reply(
+            complete, system_prompt, history,
+            current_prompt if current_prompt is not None else prompt,
+            reply_separator=_MULTI_REPLY_SEPARATOR,
+            recent_context=recent_context,
+            current_user_id=event.user_id,
+        )
+    else:
+        response = await asyncio.to_thread(complete, messages)
     response = _format_reply(
         response,
         response_mode,
