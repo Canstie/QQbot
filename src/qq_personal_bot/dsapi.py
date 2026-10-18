@@ -28,6 +28,7 @@ from qq_personal_bot.memory_graph import build_graph_guidance, graph_enabled, re
 from qq_personal_bot.menu_recipes import is_supported_image_file
 from qq_personal_bot.persona import build_persona_guidance
 from qq_personal_bot.settings import AppSettings
+from qq_personal_bot.vision_images import prepare_vision_image
 from qq_personal_bot.web_agent import generate_web_reply
 from qq_personal_bot.web_search import (
     WEB_SEARCH_TOOL,
@@ -1089,6 +1090,7 @@ def _inline_vision_image_source(source: str, *, allow_local: bool = False) -> st
         if not allow_local and not source.startswith(("https://", "http://", "base64://")):
             raise ValueError("local image source must come from OneBot get_image")
         body, _, content_type = read_classic_image_source(source)
+    body, content_type = prepare_vision_image(body, content_type)
     return f"data:{content_type};base64,{base64.b64encode(body).decode('ascii')}"
 
 

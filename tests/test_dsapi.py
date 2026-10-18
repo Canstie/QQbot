@@ -203,6 +203,33 @@ async def test_vision_prompt_sends_actual_image_bytes_in_content_blocks(quoted_i
 
 
 @pytest.mark.asyncio
+async def test_large_quoted_image_is_prepared_before_sending_to_the_model(tmp_path, monkeypatch):
+    from PIL import Image
+
+    from qq_personal_bot.vision_images import MAX_IMAGE_BYTES, MAX_IMAGE_PIXELS
+
+    output = BytesIO()
+    Image.new("RGB", (4000, 2800), "blue").save(output, format="PNG")
+    source = "data:image/png;base64," + base64.b64encode(output.getvalue()).decode()
+    bot = FakeBot({"message":[{"type":"image", "data":{"url":source}}]})
+    store = make_store(tmp_path)
+    store.set_active_dsapi_model("deepseek-flash", actor_id=0)
+
+    def complete(settings, messages, **kwargs):
+        image_url = messages[-1]["content"][1]["image_url"]["url"]
+        assert image_url.startswith("data:image/jpeg;base64,")
+        prepared = base64.b64decode(image_url.partition(",")[2])
+        assert len(prepared) <= MAX_IMAGE_BYTES
+        with Image.open(BytesIO(prepared)) as image:
+            assert image.width * image.height <= MAX_IMAGE_PIXELS
+        return "图中是蓝色区域。"
+
+    monkeypatch.setattr(dsapi_module, "_request_chat_completion", complete)
+    event = make_event(text="图里是什么", segments=({"type":"reply", "data":{"id":42}},))
+    assert await generate_mention_reply(bot, event, make_settings(tmp_path), store) == "图中是蓝色区域。"
+
+
+@pytest.mark.asyncio
 async def test_vision_model_sends_quoted_image_and_records_text_history(
     tmp_path, monkeypatch, quoted_image_download,
 ):

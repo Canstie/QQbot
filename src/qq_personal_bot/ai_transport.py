@@ -145,9 +145,9 @@ def request_ai_bytes(request: Request, settings: AppSettings) -> bytes:
             last_error = f"network error during {trace.error_phase}"
         finally:
             logger.info(
-                "AI transport provider=%s operation=%s attempt=%s status=%s phase=%s "
+                "AI transport provider=%s operation=%s attempt=%s status=%s phase=%s request_bytes=%s "
                 "elapsed_ms=%.1f reused_connection=%s phases_ms=%s",
-                settings.dsapi_provider_id, operation, attempt + 1, status, trace.error_phase,
+                settings.dsapi_provider_id, operation, attempt + 1, status, trace.error_phase, len(request.data or b""),
                 (time.monotonic() - attempt_started) * 1000,
                 trace.reused_connection, trace.phases,
             )
