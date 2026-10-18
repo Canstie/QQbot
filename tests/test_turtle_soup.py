@@ -86,13 +86,92 @@ async def test_repeated_start_reuses_puzzle_and_groups_are_isolated(game):
 
 
 @pytest.mark.asyncio
-async def test_self_sent_prefix_can_start_but_bot_outputs_do_not_become_player_turns(game):
-    assert await game.run('~海龟汤', at=False, user_id=999)
+@pytest.mark.parametrize('command', ['~海龟汤', '~海龟汤 惊悚奇幻一点'])
+async def test_self_sent_prefix_can_start_but_bot_outputs_do_not_become_player_turns(game, command):
+    assert await game.run(command, at=False, user_id=999)
     assert game.service.active(123)
     assert not await game.run('海龟汤：雨伞', at=False, user_id=999)
     assert not await game.run('不是。', at=True, user_id=999)
     assert game.service.active(123)['turns'] == []
     assert game.request.call_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('command,requirements', [
+    ('~海龟汤 惊悚奇幻一点', '惊悚奇幻一点'),
+    ('  ~海龟汤   惊悚奇幻一点  ', '惊悚奇幻一点'),
+    ('~海龟汤\n惊悚奇幻一点\n难度简单', '惊悚奇幻一点\n难度简单'),
+    ('~海龟汤\t惊悚奇幻一点', '惊悚奇幻一点'),
+])
+async def test_themed_start_forwards_requirements_as_user_content(game, command, requirements):
+    assert await game.run(command, at=False)
+    assert game.service.active(123)['puzzle'] == PUZZLE
+    game.request.assert_called_once()
+    messages = game.request.call_args.args[1]
+    assert messages[0]['role'] == 'system'
+    assert requirements not in messages[0]['content']
+    assert any(message['role'] == 'user' and requirements in message['content']
+               for message in messages)
+    system = messages[0]['content']
+    for field in ('"title"', '"surface"', '"solution"', '"facts"'):
+        assert field in system
+    assert 'JSON' in system and '不能改变' in system
+    assert '奇幻' in system and '固定' in system and '公平推理' in system
+    assert game.service.active(123)['turns'] == []
+    assert PUZZLE['solution'] not in game.send.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_start_without_requirements_still_requests_a_new_puzzle(game):
+    assert await game.run('~海龟汤\n  ', at=False)
+    assert game.service.active(123)['puzzle'] == PUZZLE
+    messages = game.request.call_args.args[1]
+    assert any(message['role'] == 'user' and '新题' in message['content']
+               for message in messages)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('requirements', ['换成科幻一点', '奇' * 2001])
+async def test_active_game_ignores_new_requirements_and_shows_existing_puzzle(game, requirements):
+    await game.run('~海龟汤 惊悚奇幻一点', at=False)
+    await game.run('伞坏了吗？')
+    original = game.service.active(123)
+    calls = game.request.call_count
+    assert await game.run('~海龟汤 ' + requirements, at=False)
+    current = game.service.active(123)
+    assert current['id'] == original['id']
+    assert current['puzzle'] == original['puzzle']
+    assert current['turns'] == original['turns']
+    assert game.request.call_count == calls
+    assert PUZZLE['surface'] in game.send.call_args.args[0]
+    assert PUZZLE['solution'] not in game.send.call_args.args[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('command', ['~海龟汤圆 惊悚', '~海龟汤惊悚'])
+async def test_near_match_does_not_start_game(game, command):
+    assert not await game.run(command, at=False)
+    assert game.service.active(123) is None
+    game.request.assert_not_called()
+    game.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_creation_requirements_limit_rejects_before_game_or_request(game, monkeypatch):
+    create = Mock(wraps=game.store.create_turtle_soup_game)
+    monkeypatch.setattr(game.store, 'create_turtle_soup_game', create)
+    assert await game.run('~海龟汤 ' + '奇' * 2001, at=False)
+    create.assert_not_called()
+    game.request.assert_not_called()
+    assert game.service.active(123) is None
+    assert '2000' in game.send.call_args.args[0]
+    requirements = '奇' * 2000
+    assert await game.run('~海龟汤 ' + requirements, at=False)
+    create.assert_called_once()
+    game.request.assert_called_once()
+    assert game.service.active(123)['puzzle'] == PUZZLE
+    assert any(message['role'] == 'user' and requirements in message['content']
+               for message in game.request.call_args.args[1])
 
 
 @pytest.mark.asyncio

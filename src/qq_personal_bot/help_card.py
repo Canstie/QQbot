@@ -118,7 +118,7 @@ def build_help_sections(
         (
             (enabled("ai.master", "ai.mention"), "@机器人  与 AI 对话"),
             (enabled("ai.master", "ai.mention", "ai.turtle_soup"),
-             "~海龟汤  @提问，@完成揭晓、@取消退出，闲置三分钟结束"),
+             "~海龟汤 [出题要求]  @提问，@完成揭晓、@取消退出，闲置三分钟结束"),
             (enabled("ai.master", "ai.random"), "随机插话  AI 偶尔参与普通群聊"),
             (enabled("cards.bilibili"), "B站分享/直链  自动解析视频图片卡片"),
             (enabled("cards.xiaohongshu"), "小红书分享  自动提取笔记图片"),
