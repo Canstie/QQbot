@@ -5,6 +5,12 @@ import json
 import pytest
 
 from qq_personal_bot import web_agent as agent
+from qq_personal_bot.ai_errors import (
+    DSAPIContentBlockedError,
+    DSAPIError,
+    DSAPIProtocolError,
+    DSAPIResponseError,
+)
 from qq_personal_bot.web_search import WebSearchResult
 
 
@@ -15,6 +21,59 @@ def result(title="原始公告", snippet="当期安排已公布，正在执行�
 @pytest.fixture(autouse=True)
 def no_page_network(monkeypatch):
     monkeypatch.setattr(agent, "read_web_pages", lambda items: ["" for _ in items])
+
+
+@pytest.mark.asyncio
+async def test_malformed_function_call_is_repaired_once_without_losing_quoted_image(monkeypatch):
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,aGVsbG8="}}
+    calls = []
+
+    def complete(messages):
+        calls.append(messages)
+        assert messages[1]["content"][1:] == [image]
+        data = json.loads(messages[1]["content"][0]["text"])
+        assert data["current_request"] == "这两位是谁"
+        if len(calls) == 1:
+            raise DSAPIProtocolError("assistant generation stopped: malformed_function_call")
+        assert "不要调用函数或工具" in messages[-1]["content"]
+        return json.dumps({"action": "answer", "basis": "provided_data", "answer": "图中是两位动漫角色。"})
+
+    monkeypatch.setattr("qq_personal_bot.web_search.search_web",
+                        lambda *args, **kwargs: pytest.fail("unnecessary search"))
+    assert await agent.generate_web_reply(
+        complete, "角色设定", [], [{"type": "text", "text": "这两位是谁"}, image],
+    ) == "图中是两位动漫角色。"
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_repeated_protocol_errors_use_one_global_repair_budget():
+    calls = []
+
+    def complete(messages):
+        calls.append(messages)
+        raise DSAPIProtocolError("assistant generation stopped: malformed_function_call")
+
+    assert await agent.generate_web_reply(complete, "角色", [], "看图") == agent.WEB_PROTOCOL_ERROR_REPLY
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [
+    DSAPIContentBlockedError("provider blocked this request by content policy"),
+    DSAPIError("connection failed during start_tls"),
+    DSAPIResponseError("response does not contain assistant content"),
+])
+async def test_content_blocks_and_network_or_missing_responses_do_not_trigger_format_retry(error):
+    calls = []
+
+    def complete(messages):
+        calls.append(messages)
+        raise error
+
+    with pytest.raises(type(error)):
+        await agent.generate_web_reply(complete, "角色", [], "看图")
+    assert len(calls) == 1
 
 
 @pytest.mark.asyncio

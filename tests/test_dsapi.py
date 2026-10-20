@@ -668,6 +668,36 @@ def test_unspecified_prompt_feedback_does_not_block_normal_answers(tmp_path, mon
     ) == "你好，在呢。"
 
 
+@pytest.mark.parametrize("choice", [
+    {"finish_reason": "malformed_function_call", "message": {"content": None}},
+    {"finish_reason": "MALFORMED_FUNCTION_CALL"},
+    {"finish_reason": "tool_calls", "message": {"tool_calls": []}},
+    {"finish_reason": "function_call", "message": {"content": "partial text"}},
+])
+def test_invalid_or_unrequested_tools_are_classified_as_protocol_errors(
+    tmp_path, monkeypatch, choice,
+):
+    monkeypatch.setattr(dsapi_module, "_post_chat_body", lambda *args: {"choices": [choice]})
+    with pytest.raises(dsapi_module.DSAPIProtocolError):
+        _request_chat_completion(make_settings(tmp_path), [{"role": "user", "content": "看这张图"}])
+
+
+def test_thinking_fallback_does_not_consume_a_second_protocol_retry(tmp_path, monkeypatch):
+    calls = []
+
+    def post(settings, body):
+        calls.append(body)
+        return {"choices": [{"finish_reason": "malformed_function_call"}]}
+
+    monkeypatch.setattr(dsapi_module, "_post_chat_body", post)
+    with pytest.raises(dsapi_module.DSAPIProtocolError):
+        dsapi_module._request_chat_completion_with_fallback(
+            make_settings(tmp_path), [{"role": "user", "content": "看图"}], model="test-model",
+            max_tokens=None, thinking_enabled=True, temperature=None,
+        )
+    assert len(calls) == 1
+
+
 @pytest.mark.asyncio
 async def test_quoted_content_block_is_not_recorded_as_an_assistant_exchange(tmp_path, monkeypatch):
     store = make_store(tmp_path)

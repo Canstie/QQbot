@@ -9,6 +9,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 from uuid import uuid4
 
+from qq_personal_bot.ai_errors import DSAPIProtocolError
 from qq_personal_bot.web_reader import read_web_pages
 from qq_personal_bot.web_search import (
     WebSearchResult,
@@ -19,7 +20,7 @@ from qq_personal_bot.web_search import (
 
 logger = logging.getLogger(__name__)
 UNVERIFIED_WEB_REPLY = "这次没找到足以核实答案的资料，暂时无法确认，不能用旧信息代答。"
-WEB_PROTOCOL_ERROR_REPLY = "联网核验的返回格式异常，这次没能完成回答，请稍后再试。"
+WEB_PROTOCOL_ERROR_REPLY = "模型的回答格式异常，这次没能完成回答，请稍后再试。"
 _ROUTE = (
     "本轮使用统一的检索决策流程，覆盖所有领域，不按特定题目或关键词套答案。"
     "输入JSON中的current_request是本轮唯一待回应的请求；previous_user_questions和recent_group_messages只是历史背景，"
@@ -168,13 +169,14 @@ async def generate_web_reply(
         nonlocal repair_budget
         try:
             return _json_object(await asyncio.to_thread(complete, messages))
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, DSAPIProtocolError):
             if not repair_budget:
                 raise
             repair_budget -= 1
             logger.info("Web agent trace=%s stage=%s protocol=repair", trace_id, stage)
             return _json_object(await asyncio.to_thread(complete, [*messages, {
-                "role": "user", "content": "上次输出未符合JSON对象格式。请根据上述问题和资料重新输出一个合法JSON对象，"
+                "role": "user", "content": "上次输出未符合JSON对象格式或返回了无效工具调用。"
+                "请根据上述问题和资料直接输出一个合法JSON对象，不要调用函数或工具；"
                 "保持原协议字段，字符串正确转义，只输出JSON；不要凭记忆补事实。",
             }]))
 
@@ -297,7 +299,7 @@ async def generate_web_reply(
         logger.info("Web agent trace=%s outcome=unverified sources=%s searches=%s reads=%s",
                     trace_id, len(sources), session.searches, len(read_urls))
         return UNVERIFIED_WEB_REPLY
-    except (ValueError, TypeError, KeyError) as exc:
+    except (ValueError, TypeError, KeyError, DSAPIProtocolError) as exc:
         logger.info("Web agent trace=%s stage=%s outcome=invalid_response error=%s",
                     trace_id, stage, type(exc).__name__)
         return WEB_PROTOCOL_ERROR_REPLY

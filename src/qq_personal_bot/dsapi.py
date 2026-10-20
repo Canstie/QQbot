@@ -18,6 +18,14 @@ from typing import Any, NoReturn
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from qq_personal_bot.ai_errors import (
+    DSAPIContentBlockedError,
+    DSAPIError,
+    DSAPIImageError,
+    DSAPILengthError,
+    DSAPIProtocolError,
+    DSAPIResponseError,
+)
 from qq_personal_bot.ai_models import catalog_model_option, is_vision_dsapi_model
 from qq_personal_bot.ai_providers import active_ai_model, resolve_ai_settings
 from qq_personal_bot.ai_transport import AITransportError, request_ai_bytes
@@ -79,26 +87,6 @@ _RELATIONSHIP_SUMMARY_MAX_CHARS = 500
 _background_relationship_tasks: set[asyncio.Task[None]] = set()
 _web_tools_disabled_until: dict[tuple[int, str, str], float] = {}
 logger = logging.getLogger(__name__)
-
-
-class DSAPIError(RuntimeError):
-    pass
-
-
-class DSAPIContentBlockedError(DSAPIError):
-    """The provider explicitly declined the input or generated content."""
-
-
-class DSAPIResponseError(DSAPIError):
-    """The provider returned an unusable response, rather than a network failure."""
-
-
-class DSAPILengthError(DSAPIError):
-    """The model stopped before completing its answer."""
-
-
-class DSAPIImageError(DSAPIError):
-    """A quoted image could not be loaded for the model."""
 
 
 def _open_ai_request(request: Request, settings: AppSettings):
@@ -663,7 +651,7 @@ def _request_chat_completion_with_fallback(
             temperature=temperature,
             **({"web_session": web_session} if web_session is not None else {}),
         )
-    except DSAPIContentBlockedError:
+    except (DSAPIContentBlockedError, DSAPIProtocolError):
         raise
     except DSAPIError:
         if not thinking_enabled:
@@ -984,6 +972,11 @@ def _unusable_response(result: Any, reason: str) -> NoReturn:
     raise DSAPIResponseError(reason)
 
 
+def _invalid_tool_response(result: Any, reason: str) -> NoReturn:
+    logger.warning("AI response protocol_error reason=%s metadata=%s", reason, _response_metadata(result))
+    raise DSAPIProtocolError(f"assistant generation stopped: {reason}")
+
+
 def _assistant_choice(result: Any) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
     if isinstance(result, Mapping) and (reason := _provider_block_reason(result)):
         logger.warning("AI response blocked reason=%s metadata=%s", reason, _response_metadata(result))
@@ -991,6 +984,9 @@ def _assistant_choice(result: Any) -> tuple[Mapping[str, Any], Mapping[str, Any]
     if isinstance(result, Mapping):
         choices = result.get("choices")
         if isinstance(choices, list) and choices and isinstance(choices[0], Mapping):
+            reason = _response_code(choices[0].get("finish_reason")).lower()
+            if reason == "malformed_function_call":
+                _invalid_tool_response(result, reason)
             message = choices[0].get("message")
             if isinstance(message, Mapping):
                 return choices[0], message
@@ -999,11 +995,13 @@ def _assistant_choice(result: Any) -> tuple[Mapping[str, Any], Mapping[str, Any]
 
 def _extract_chat_text(result: Any, body: dict[str, Any], thinking_enabled: bool) -> str | None:
     choice, message = _assistant_choice(result)
+    finish_reason = choice.get("finish_reason")
+    if finish_reason in {"tool_calls", "function_call"}:
+        _invalid_tool_response(result, finish_reason)
     if "content" not in message:
         _unusable_response(result, "response does not contain assistant content")
     content = message.get("content")
 
-    finish_reason = choice.get("finish_reason")
     if finish_reason == "length":
         usage = result.get("usage") or {}
         details = usage.get("completion_tokens_details") or {}
