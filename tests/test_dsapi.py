@@ -599,6 +599,97 @@ def completion(text):
     return {"choices": [{"message": {"role": "assistant", "content": text}, "finish_reason": "stop"}]}
 
 
+@pytest.mark.parametrize("response", [
+    {"choices": [{"finish_reason": "prohibited_content", "message": {"role": "assistant"}}]},
+    {"choices": [{"finish_reason": "content_filter"}]},
+    {"choices": [{"message": {"content": None, "refusal": "private refusal text"}}]},
+    {"choices": [], "promptFeedback": {"blockReason": "PROHIBITED_CONTENT"}},
+    {"prompt_feedback": {"block_reason": "SAFETY"}},
+    {"candidates": [{"finishReason": "BLOCKLIST"}]},
+    {"error": {"code": "content_policy_violation", "message": "private upstream details"}},
+])
+def test_provider_content_blocks_are_recognized_before_missing_text(
+    tmp_path, monkeypatch, caplog, response,
+):
+    response["echoed_input"] = "private user question"
+    monkeypatch.setattr(dsapi_module, "_post_chat_body", lambda *args: response)
+    with pytest.raises(dsapi_module.DSAPIContentBlockedError, match="content policy"):
+        _request_chat_completion(make_settings(tmp_path), [{"role": "user", "content": "你好"}])
+    assert "AI response blocked" in caplog.text
+    for secret in ("private user question", "private refusal text", "private upstream details"):
+        assert secret not in caplog.text
+
+
+@pytest.mark.parametrize("response", [None, [], {}, {"choices": []},
+    {"choices": [None]}, {"choices": [{"message": None}]},
+    {"choices": [{"message": {}, "finish_reason": "stop"}]},
+    {"choices": [{"message": {"content": None}, "finish_reason": "stop"}]},
+    {"choices": [], "promptFeedback": {"blockReason": "不应写入日志的用户原话"}},
+])
+def test_unusable_responses_are_not_assumed_to_be_content_blocks(
+    tmp_path, monkeypatch, caplog, response,
+):
+    monkeypatch.setattr(dsapi_module, "_post_chat_body", lambda *args: response)
+    with pytest.raises(dsapi_module.DSAPIResponseError):
+        _request_chat_completion(make_settings(tmp_path), [{"role": "user", "content": "你好"}])
+    assert "AI response unusable" in caplog.text
+    assert "AI response blocked" not in caplog.text
+    assert "不应写入日志的用户原话" not in caplog.text
+
+
+@pytest.mark.parametrize("thinking", [False, True])
+def test_explicit_content_block_does_not_retry_or_search(tmp_path, monkeypatch, thinking):
+    calls = []
+    session = WebSearchSession()
+
+    def post(settings, body):
+        calls.append(body)
+        return {"choices": [{"finish_reason": "PROHIBITED_CONTENT"}]}
+
+    monkeypatch.setattr(dsapi_module, "_post_chat_body", post)
+    monkeypatch.setattr("qq_personal_bot.web_search.search_web",
+                        lambda *args, **kwargs: pytest.fail("blocked requests must not search"))
+    with pytest.raises(dsapi_module.DSAPIContentBlockedError):
+        dsapi_module._request_chat_completion_with_fallback(
+            make_settings(tmp_path), [{"role": "user", "content": "测试文本"}],
+            model="test-model", max_tokens=None, thinking_enabled=thinking,
+            temperature=None, web_session=session,
+        )
+    assert len(calls) == 1 and session.searches == 0
+
+
+def test_unspecified_prompt_feedback_does_not_block_normal_answers(tmp_path, monkeypatch):
+    response = completion("你好，在呢。")
+    response["promptFeedback"] = {"blockReason": "BLOCK_REASON_UNSPECIFIED"}
+    response["choices"][0]["message"]["refusal"] = None
+    monkeypatch.setattr(dsapi_module, "_post_chat_body", lambda *args: response)
+    assert _request_chat_completion(
+        make_settings(tmp_path), [{"role": "user", "content": "你好"}],
+    ) == "你好，在呢。"
+
+
+@pytest.mark.asyncio
+async def test_quoted_content_block_is_not_recorded_as_an_assistant_exchange(tmp_path, monkeypatch):
+    store = make_store(tmp_path)
+    enable_web_search(store)
+    knowledge_id = store.get_dsapi_config()["active_knowledge_id"]
+    calls = []
+
+    def post(settings, body):
+        calls.append(body)
+        current = json.loads(body["messages"][-1]["content"])["current_request"]
+        assert "被引用的样本文本" in current
+        return {"choices": [], "promptFeedback": {"blockReason": "PROHIBITED_CONTENT"}}
+
+    monkeypatch.setattr(dsapi_module, "_post_chat_body", post)
+    bot = FakeBot({"message": [{"type": "text", "data": {"text": "被引用的样本文本"}}]})
+    event = make_event(text="", segments=({"type": "reply", "data": {"id": "42"}},))
+    with pytest.raises(dsapi_module.DSAPIContentBlockedError):
+        await generate_mention_reply(bot, event, make_settings(tmp_path), store)
+    assert len(calls) == 1
+    assert store.get_dsapi_chat_history(123, 2, knowledge_id=knowledge_id) == []
+
+
 def enable_web_search(store):
     knowledge = store.get_dsapi_config()["active_knowledge"]
     if knowledge is None:

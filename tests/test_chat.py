@@ -269,7 +269,17 @@ async def test_quoting_bot_feature_image_does_not_call_ai(monkeypatch, reason, h
 
 
 @pytest.mark.asyncio
-async def test_unreadable_quoted_image_returns_specific_retry_hint(monkeypatch):
+@pytest.mark.parametrize("error,expected", [
+    (chat.DSAPIImageError("failed to read quoted image bytes"),
+     "引用的图片读取失败，请重新发送图片后再引用我。"),
+    (chat.DSAPIContentBlockedError("provider blocked this request by content policy"),
+     "这条消息触发了模型的内容限制，无法回答。"),
+    (chat.DSAPIResponseError("response does not contain assistant content"),
+     "接口没有返回可用的回答，请稍后再试。"),
+    (chat.DSAPIError("connection failed during start_tls"),
+     "脑袋刚刚卡住啦，再问我一次嘛 (｡•́︿•̀｡)"),
+])
+async def test_mention_failures_return_specific_hints(monkeypatch, error, expected):
     internal = MessageEvent(
         platform="onebot.v11", group_id=123, user_id=456, message_id=1,
         raw_message="图里有什么", is_at_bot=True,
@@ -290,7 +300,7 @@ async def test_unreadable_quoted_image_returns_specific_retry_hint(monkeypatch):
     monkeypatch.setattr(chat, "run_lua_message", AsyncMock(
         return_value=SimpleNamespace(reply=None, stop=False),
     ))
-    mention = AsyncMock(side_effect=chat.DSAPIImageError("failed to read quoted image bytes"))
+    mention = AsyncMock(side_effect=error)
     finish = AsyncMock()
     monkeypatch.setattr(chat, "generate_mention_reply", mention)
     monkeypatch.setattr(chat, "_finish_with_response", finish)
@@ -298,7 +308,7 @@ async def test_unreadable_quoted_image_returns_specific_retry_hint(monkeypatch):
     await chat._dispatch_onebot_message(SimpleNamespace(), SimpleNamespace(self_id=999), SimpleNamespace())
 
     mention.assert_awaited_once()
-    assert finish.call_args.args[3] == "引用的图片读取失败，请重新发送图片后再引用我。"
+    assert finish.call_args.args[3] == expected
 
 
 @pytest.mark.asyncio

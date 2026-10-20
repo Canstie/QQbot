@@ -24,9 +24,11 @@ from qq_personal_bot.core.person_evaluation import (
     is_person_evaluation_request,
 )
 from qq_personal_bot.dsapi import (
+    DSAPIContentBlockedError,
     DSAPIError,
     DSAPIImageError,
     DSAPILengthError,
+    DSAPIResponseError,
     generate_mention_reply,
     generate_random_group_reply,
     generate_roast_reply,
@@ -740,6 +742,10 @@ async def _dispatch_onebot_message(
                     if isinstance(exc, DSAPIImageError)
                     else "这次回答没能完整生成，试着缩短问题再问一次。"
                     if isinstance(exc, DSAPILengthError)
+                    else "这条消息触发了模型的内容限制，无法回答。"
+                    if isinstance(exc, DSAPIContentBlockedError)
+                    else "接口没有返回可用的回答，请稍后再试。"
+                    if isinstance(exc, DSAPIResponseError)
                     else "脑袋刚刚卡住啦，再问我一次嘛 (｡•́︿•̀｡)"
                 ),
                 explicit_group_send=explicit_group_send,

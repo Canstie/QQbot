@@ -14,7 +14,7 @@ from collections.abc import Mapping, Sequence
 from functools import partial
 from io import BytesIO
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -83,6 +83,14 @@ logger = logging.getLogger(__name__)
 
 class DSAPIError(RuntimeError):
     pass
+
+
+class DSAPIContentBlockedError(DSAPIError):
+    """The provider explicitly declined the input or generated content."""
+
+
+class DSAPIResponseError(DSAPIError):
+    """The provider returned an unusable response, rather than a network failure."""
 
 
 class DSAPILengthError(DSAPIError):
@@ -655,6 +663,8 @@ def _request_chat_completion_with_fallback(
             temperature=temperature,
             **({"web_session": web_session} if web_session is not None else {}),
         )
+    except DSAPIContentBlockedError:
+        raise
     except DSAPIError:
         if not thinking_enabled:
             raise
@@ -678,7 +688,7 @@ def _request_chat_completion_with_fallback(
             **({"web_session": web_session} if web_session is not None else {}),
         )
     if response is None:
-        raise DSAPIError("empty assistant content")
+        raise DSAPIResponseError("empty assistant content")
     return response
 
 
@@ -847,11 +857,7 @@ def _request_chat_completion(
             "本接口当前不支持工具调用。没有本轮检索资料时，不能声称已联网或已核实实时事实。"}]
         use_tools = False
         result = _post_chat_body(settings, body)
-    try:
-        choice = result["choices"][0]
-        message = choice["message"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise DSAPIError("response does not contain assistant content") from exc
+    choice, message = _assistant_choice(result)
     calls = message.get("tool_calls") if isinstance(message, Mapping) else None
     if use_tools and calls and choice.get("finish_reason") in {None, "", "stop", "tool_calls"}:
         if not isinstance(calls, list) or len(calls) > 4:
@@ -914,16 +920,88 @@ def _post_chat_body(settings: AppSettings, body: dict[str, Any]) -> Any:
     except OSError as exc:
         raise DSAPIError("network connection interrupted") from exc
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise DSAPIError("invalid JSON response") from exc
+        raise DSAPIResponseError("invalid JSON response") from exc
     return result
 
 
+_CONTENT_BLOCK_REASONS = {
+    "content_filter", "content_policy_violation", "safety", "prohibited_content",
+    "blocklist", "spii", "recitation", "image_safety", "image_prohibited_content",
+}
+
+
+def _response_code(value: Any) -> str:
+    return value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", value) else ""
+
+
+def _provider_block_reason(result: Mapping[str, Any]) -> str:
+    feedback = result.get("promptFeedback") or result.get("prompt_feedback")
+    if isinstance(feedback, Mapping):
+        code = _response_code(feedback.get("blockReason") or feedback.get("block_reason"))
+        if code and code.upper() != "BLOCK_REASON_UNSPECIFIED":
+            return code.lower()
+    error = result.get("error")
+    if isinstance(error, Mapping):
+        for key in ("code", "type"):
+            code = _response_code(error.get(key)).lower()
+            if code in _CONTENT_BLOCK_REASONS:
+                return code
+    for name in ("choices", "candidates"):
+        items = result.get(name)
+        if not isinstance(items, list) or not items or not isinstance(items[0], Mapping):
+            continue
+        item = items[0]
+        code = _response_code(item.get("finish_reason") or item.get("finishReason")).lower()
+        if code in _CONTENT_BLOCK_REASONS:
+            return code
+        message = item.get("message")
+        if isinstance(message, Mapping) and message.get("refusal"):
+            return "refusal"
+    return ""
+
+
+def _response_metadata(result: Any) -> dict[str, Any]:
+    """Log response structure and enum codes, never prompts, content or error messages."""
+    if not isinstance(result, Mapping):
+        return {"type": type(result).__name__}
+    choices = result.get("choices")
+    first = choices[0] if isinstance(choices, list) and choices else None
+    choice = first if isinstance(first, Mapping) else {}
+    message = choice.get("message")
+    return {
+        "fields": [key for key in ("choices", "candidates", "promptFeedback", "prompt_feedback", "error")
+                   if key in result],
+        "choices_count": len(choices) if isinstance(choices, list) else None,
+        "finish_reason": _response_code(choice.get("finish_reason")),
+        "message_type": type(message).__name__,
+        "content_type": type(message.get("content")).__name__ if isinstance(message, Mapping) else None,
+        "block_reason": _provider_block_reason(result),
+    }
+
+
+def _unusable_response(result: Any, reason: str) -> NoReturn:
+    logger.warning("AI response unusable reason=%s metadata=%s", reason, _response_metadata(result))
+    raise DSAPIResponseError(reason)
+
+
+def _assistant_choice(result: Any) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
+    if isinstance(result, Mapping) and (reason := _provider_block_reason(result)):
+        logger.warning("AI response blocked reason=%s metadata=%s", reason, _response_metadata(result))
+        raise DSAPIContentBlockedError("provider blocked this request by content policy")
+    if isinstance(result, Mapping):
+        choices = result.get("choices")
+        if isinstance(choices, list) and choices and isinstance(choices[0], Mapping):
+            message = choices[0].get("message")
+            if isinstance(message, Mapping):
+                return choices[0], message
+    _unusable_response(result, "response does not contain assistant content")
+
+
 def _extract_chat_text(result: Any, body: dict[str, Any], thinking_enabled: bool) -> str | None:
-    try:
-        choice = result["choices"][0]
-        content = choice["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise DSAPIError("response does not contain assistant content") from exc
+    choice, message = _assistant_choice(result)
+    if "content" not in message:
+        _unusable_response(result, "response does not contain assistant content")
+    content = message.get("content")
 
     finish_reason = choice.get("finish_reason")
     if finish_reason == "length":
@@ -942,7 +1020,7 @@ def _extract_chat_text(result: Any, body: dict[str, Any], thinking_enabled: bool
     if finish_reason not in (None, "", "stop"):
         raise DSAPIError(f"assistant generation stopped: {finish_reason}")
     if not isinstance(content, str):
-        raise DSAPIError("assistant content is not text")
+        _unusable_response(result, "assistant content is not text")
     return content.strip() or None
 
 
