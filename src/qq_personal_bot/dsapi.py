@@ -942,6 +942,24 @@ def _post_chat_body(settings: AppSettings, body: dict[str, Any]) -> Any:
         raise DSAPIError("network connection interrupted") from exc
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise DSAPIResponseError("invalid JSON response") from exc
+    metadata = _response_metadata(result)
+    choices = result.get("choices") if isinstance(result, Mapping) else None
+    choice = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], Mapping) else {}
+    message = choice.get("message")
+    content = message.get("content") if isinstance(message, Mapping) else None
+    usage = result.get("usage") if isinstance(result, Mapping) else None
+    usage = usage if isinstance(usage, Mapping) else {}
+    details = usage.get("completion_tokens_details")
+    details = details if isinstance(details, Mapping) else {}
+    tokens = [value if type(value) is int and value >= 0 else None
+              for value in (usage.get("completion_tokens"), details.get("reasoning_tokens"))]
+    logger.info(
+        "AI completion provider=%s model=%s finish_reason=%s max_tokens=%s "
+        "output_chars=%s completion_tokens=%s reasoning_tokens=%s",
+        settings.dsapi_provider_id, body.get("model"), metadata.get("finish_reason", ""),
+        body.get("max_tokens", "provider default"), len(content) if isinstance(content, str) else 0,
+        *tokens,
+    )
     return result
 
 
@@ -1031,10 +1049,6 @@ def _extract_chat_text(result: Any, body: dict[str, Any], thinking_enabled: bool
     finish_reason = choice.get("finish_reason")
     if finish_reason in {"tool_calls", "function_call"}:
         _invalid_tool_response(result, finish_reason)
-    if "content" not in message:
-        _unusable_response(result, "response does not contain assistant content")
-    content = message.get("content")
-
     if finish_reason == "length":
         usage = result.get("usage") or {}
         details = usage.get("completion_tokens_details") or {}
@@ -1048,6 +1062,9 @@ def _extract_chat_text(result: Any, body: dict[str, Any], thinking_enabled: bool
             details.get("reasoning_tokens"),
         )
         raise DSAPILengthError("assistant response reached its length limit")
+    if "content" not in message:
+        _unusable_response(result, "response does not contain assistant content")
+    content = message.get("content")
     if finish_reason not in (None, "", "stop"):
         raise DSAPIError(f"assistant generation stopped: {finish_reason}")
     if not isinstance(content, str):
@@ -1079,9 +1096,22 @@ def _format_reply(
         part.strip()
         for part in str(content).split(_MULTI_REPLY_SEPARATOR)
         if part.strip()
-    ][: max(1, min(int(max_reply_messages), 3))]
-    if str(response_mode).lower() == "short":
-        parts = [reply for part in parts if (reply := _brief_reply(part))]
+    ]
+    limit = max(1, min(int(max_reply_messages), 3))
+    input_parts = len(parts)
+    short = str(response_mode).lower() == "short"
+    merged = not short and input_parts > limit
+    if short:
+        parts = [reply for part in parts[:limit] if (reply := _brief_reply(part))]
+    elif merged:
+        # The limit bounds QQ message count, not how much of an answer survives.
+        parts = [*parts[:limit - 1], "\n\n".join(parts[limit - 1:])]
+    logger.info(
+        "AI reply formatting mode=%s input_chars=%s output_chars=%s input_parts=%s "
+        "output_parts=%s max_messages=%s merged_overflow=%s",
+        response_mode, len(content), sum(len(part) for part in parts), input_parts,
+        len(parts), limit, merged,
+    )
     if not parts:
         return None
     return parts[0] if len(parts) == 1 else parts

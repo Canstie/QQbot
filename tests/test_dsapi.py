@@ -1203,6 +1203,38 @@ def test_nonthinking_length_response_is_rejected(tmp_path, monkeypatch):
         _request_chat_completion(make_settings(tmp_path), [{"role": "user", "content": "问题"}])
 
 
+@pytest.mark.parametrize("message", [{}, {"content": None}, {"content": "只写了一半"}])
+def test_length_response_remains_a_length_error_when_content_is_missing(tmp_path, monkeypatch, message):
+    monkeypatch.setattr(dsapi_module, "_post_chat_body", lambda *args: {
+        "choices": [{"finish_reason": "length", "message": message}],
+    })
+    with pytest.raises(DSAPILengthError):
+        _request_chat_completion(make_settings(tmp_path), [{"role": "user", "content": "测试请求"}])
+
+
+def test_completion_logs_stop_reason_and_lengths_without_answer_or_credentials(tmp_path, monkeypatch, caplog):
+    result = completion("不能出现在日志中的模型回答")
+    result["choices"][0]["finish_reason"] = "stop"
+    result["usage"] = {"completion_tokens": 22, "completion_tokens_details": {"reasoning_tokens": 7}}
+    monkeypatch.setattr(dsapi_module, "_open_ai_request", lambda *args: BytesIO(json.dumps(result).encode()))
+    with caplog.at_level("INFO", logger=dsapi_module.__name__):
+        assert _request_chat_completion(
+            make_settings(tmp_path), [{"role": "user", "content": "不能出现在日志中的用户问题"}],
+        ) == "不能出现在日志中的模型回答"
+    assert "finish_reason=stop" in caplog.text
+    assert "completion_tokens=22 reasoning_tokens=7" in caplog.text
+    assert "output_chars=13" in caplog.text
+    assert "不能出现在日志中" not in caplog.text
+    assert "secret" not in caplog.text
+
+
+@pytest.mark.parametrize("result", [None, []])
+def test_completion_metadata_logging_preserves_invalid_response_handling(tmp_path, monkeypatch, result):
+    monkeypatch.setattr(dsapi_module, "_open_ai_request", lambda *args: BytesIO(json.dumps(result).encode()))
+    with pytest.raises(dsapi_module.DSAPIResponseError):
+        _request_chat_completion(make_settings(tmp_path), [{"role": "user", "content": "你好"}])
+
+
 @pytest.mark.asyncio
 async def test_idle_group_history_is_not_sent_to_dsapi(tmp_path, monkeypatch):
     store = make_store(tmp_path)
@@ -1606,6 +1638,17 @@ def test_multi_reply_separator_produces_bounded_message_list():
         "我看看",
         "找到了",
     ]
+
+
+@pytest.mark.parametrize("mode", ["normal", "detailed"])
+@pytest.mark.parametrize("limit", [1, 2, 3])
+def test_complete_reply_merges_excess_parts_without_losing_the_ending(mode, limit):
+    parts = ["故事的开头。", "发生了冲突。", "误会终于澄清。", "最后两人重归于好。"]
+    reply = _format_reply(dsapi_module._MULTI_REPLY_SEPARATOR.join(parts), mode, max_reply_messages=limit)
+    messages = [reply] if isinstance(reply, str) else reply
+    assert len(messages) == limit
+    assert messages == [*parts[:limit - 1], "\n\n".join(parts[limit - 1:])]
+    assert messages[-1].endswith(parts[-1])
 
 
 @pytest.mark.asyncio
