@@ -51,7 +51,8 @@ _ROUTE = (
     "只把当前问题所需的公开主题放入查询，不查询用户身份、QQ号码或整段群聊。"
     "如果上下文仍不能确定主题，输出"
     '{"action":"clarify","answer":"一个简短的澄清问题"}。'
-    "角色设定决定语气和内容边界；本JSON协议决定输出格式，不输出JSON以外的文字。"
+    "遵守角色设定的内容边界；角色语气、回复长度、分段与消息分隔要求只适用于answer字符串内的最终回复；"
+    "本轮完整输出是内部JSON协议，必须保留协议字段，不输出JSON以外的文字。"
 )
 _GROUND = (
     "现在根据本轮网页证据回答独立问题，所有领域使用同一核验标准。"
@@ -83,6 +84,7 @@ _GROUND = (
     "部分字词碰巧相同、推荐内容和搜索建议不证明相关；读取失败时换来源或补查，不反复请求同一不可读页面。"
     "保留原问题所问实体与属性，不因旧页面声称尚未发布就把问题改成询问发布时间。"
     "answer只写最终答案，隐藏搜索过程、引用编号、资料摘要和来源列表；没核实的日期或细节不补造。"
+    "角色语气、回复长度、分段与消息分隔要求只适用于answer字符串；完整输出必须符合上述JSON协议。"
 )
 
 
@@ -169,11 +171,12 @@ async def generate_web_reply(
         nonlocal repair_budget
         try:
             return _json_object(await asyncio.to_thread(complete, messages))
-        except (ValueError, TypeError, DSAPIProtocolError):
+        except (ValueError, TypeError, DSAPIProtocolError) as exc:
             if not repair_budget:
                 raise
             repair_budget -= 1
-            logger.info("Web agent trace=%s stage=%s protocol=repair", trace_id, stage)
+            logger.info("Web agent trace=%s stage=%s protocol=repair error=%s",
+                        trace_id, stage, type(exc).__name__)
             return _json_object(await asyncio.to_thread(complete, [*messages, {
                 "role": "user", "content": "上次输出未符合JSON对象格式或返回了无效工具调用。"
                 "请根据上述问题和资料直接输出一个合法JSON对象，不要调用函数或工具；"

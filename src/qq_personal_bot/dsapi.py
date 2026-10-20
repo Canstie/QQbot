@@ -86,6 +86,7 @@ _MULTI_REPLY_SEPARATOR = "<|消息分隔|>"
 _RELATIONSHIP_SUMMARY_MAX_CHARS = 500
 _background_relationship_tasks: set[asyncio.Task[None]] = set()
 _web_tools_disabled_until: dict[tuple[int, str, str], float] = {}
+_json_output_disabled_until: dict[tuple[int, str, str], float] = {}
 logger = logging.getLogger(__name__)
 
 
@@ -526,7 +527,7 @@ async def _generate_text_reply(
     )
     if web_enabled:
         response = await generate_web_reply(
-            complete, system_prompt, history,
+            partial(complete, json_output=True), system_prompt, history,
             current_prompt if current_prompt is not None else prompt,
             reply_separator=_MULTI_REPLY_SEPARATOR,
             recent_context=recent_context,
@@ -654,6 +655,7 @@ def _request_chat_completion_with_fallback(
     thinking_enabled: bool,
     temperature: float | None,
     web_session: WebSearchSession | None = None,
+    json_output: bool = False,
 ) -> str:
     thinking_enabled = thinking_enabled and settings.dsapi_api_format == "deepseek"
     try:
@@ -665,6 +667,7 @@ def _request_chat_completion_with_fallback(
             thinking_enabled=thinking_enabled,
             temperature=temperature,
             **({"web_session": web_session} if web_session is not None else {}),
+            **({"json_output": True} if json_output else {}),
         )
     except (DSAPIContentBlockedError, DSAPIProtocolError):
         raise
@@ -679,6 +682,7 @@ def _request_chat_completion_with_fallback(
             thinking_enabled=False,
             temperature=temperature,
             **({"web_session": web_session} if web_session is not None else {}),
+            **({"json_output": True} if json_output else {}),
         )
     if response is None and thinking_enabled:
         response = _request_chat_completion(
@@ -689,6 +693,7 @@ def _request_chat_completion_with_fallback(
             thinking_enabled=False,
             temperature=temperature,
             **({"web_session": web_session} if web_session is not None else {}),
+            **({"json_output": True} if json_output else {}),
         )
     if response is None:
         raise DSAPIResponseError("empty assistant content")
@@ -820,6 +825,7 @@ def _request_chat_completion(
     thinking_enabled: bool = False,
     temperature: float | None = None,
     web_session: WebSearchSession | None = None,
+    json_output: bool = False,
 ) -> str | None:
     if web_session is not None and web_session.results:
         evidence = format_web_results(web_session.results)
@@ -838,6 +844,9 @@ def _request_chat_completion(
     if temperature is not None:
         body["temperature"] = float(temperature)
     tool_key = (settings.dsapi_provider_id, settings.dsapi_base_url, body["model"])
+    use_json = json_output and _json_output_disabled_until.get(tool_key, 0) <= time.monotonic()
+    if use_json:
+        body["response_format"] = {"type": "json_object"}
     use_tools = (web_session is not None and not web_session.searched
                  and _web_tools_disabled_until.get(tool_key, 0) <= time.monotonic())
     if use_tools:
@@ -848,17 +857,26 @@ def _request_chat_completion(
             "本接口当前不支持工具调用；没有检索资料时不能声称已核实实时事实。"}]
     try:
         result = _post_chat_body(settings, body)
+    except (DSAPIContentBlockedError, DSAPIProtocolError):
+        raise
     except DSAPIError as exc:
-        if not use_tools or str(exc) not in {"HTTP 400", "HTTP 422"}:
+        if not (use_json or use_tools) or str(exc) not in {"HTTP 400", "HTTP 422"}:
             raise
-        if len(_web_tools_disabled_until) >= 64:
-            _web_tools_disabled_until.clear()
-        _web_tools_disabled_until[tool_key] = time.monotonic() + 600
-        body.pop("tools", None)
-        body.pop("tool_choice", None)
-        body["messages"] = [*messages, {"role": "system", "content":
-            "本接口当前不支持工具调用。没有本轮检索资料时，不能声称已联网或已核实实时事实。"}]
-        use_tools = False
+        if use_json:
+            if len(_json_output_disabled_until) >= 64:
+                _json_output_disabled_until.clear()
+            _json_output_disabled_until[tool_key] = time.monotonic() + 600
+            body.pop("response_format", None)
+            logger.info("AI JSON output provider=%s compatibility=prompt", settings.dsapi_provider_id)
+        else:
+            if len(_web_tools_disabled_until) >= 64:
+                _web_tools_disabled_until.clear()
+            _web_tools_disabled_until[tool_key] = time.monotonic() + 600
+            body.pop("tools", None)
+            body.pop("tool_choice", None)
+            body["messages"] = [*messages, {"role": "system", "content":
+                "本接口当前不支持工具调用。没有本轮检索资料时，不能声称已联网或已核实实时事实。"}]
+            use_tools = False
         result = _post_chat_body(settings, body)
     choice, message = _assistant_choice(result)
     calls = message.get("tool_calls") if isinstance(message, Mapping) else None

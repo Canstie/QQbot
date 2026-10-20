@@ -38,8 +38,10 @@ _PNG_SOURCE = "data:image/png;base64," + base64.b64encode(_PNG_BYTES).decode()
 @pytest.fixture(autouse=True)
 def reset_tool_compatibility_cache():
     dsapi_module._web_tools_disabled_until.clear()
+    dsapi_module._json_output_disabled_until.clear()
     yield
     dsapi_module._web_tools_disabled_until.clear()
+    dsapi_module._json_output_disabled_until.clear()
 
 
 @pytest.fixture
@@ -289,6 +291,7 @@ async def test_quoted_images_bypass_enabled_web_search(
     def post(settings, body):
         calls.append(body)
         assert "tools" not in body and "tool_choice" not in body
+        assert "response_format" not in body
         assert "本轮包含图片" in body["messages"][0]["content"]
         assert dsapi_module.web_search_guidance() not in body["messages"][0]["content"]
         assert body["messages"][-1]["content"][1]["image_url"]["url"] == _PNG_SOURCE
@@ -854,6 +857,7 @@ async def test_web_reply_resolves_question_and_uses_checked_evidence(tmp_path, m
     def post(settings, body):
         calls.append(body)
         assert "tools" not in body
+        assert body["response_format"] == {"type": "json_object"}
         if len(calls) == 1:
             assert "旧助手说游戏尚未上线" not in str(body["messages"])
             assert topic in str(body["messages"])
@@ -873,6 +877,86 @@ async def test_web_reply_resolves_question_and_uses_checked_evidence(tmp_path, m
     reply = await generate_mention_reply(FakeBot(), make_event(text=question), make_settings(tmp_path), store)
     assert reply == "本期开放对象为甲。" and len(calls) == 3
     assert store.get_dsapi_chat_history(123, 2, knowledge_id=knowledge_id)[-1]["content"] == reply
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("question", ["有男的说是拉拉怎么办", "朋友说话让我困惑怎么办", "晚上好"])
+async def test_web_conversation_uses_native_json_without_keyword_routing(tmp_path, monkeypatch, question):
+    store = make_store(tmp_path)
+    enable_web_search(store)
+    calls = []
+
+    def post(settings, body):
+        calls.append(body)
+        assert body["response_format"] == {"type": "json_object"}
+        assert "只适用于answer字符串" in body["messages"][0]["content"]
+        assert json.loads(body["messages"][-1]["content"])["current_request"] == question
+        return completion(json.dumps({"action": "answer", "basis": "conversation", "answer": "先听听对方的意思。"}))
+
+    monkeypatch.setattr(dsapi_module, "_post_chat_body", post)
+    monkeypatch.setattr("qq_personal_bot.web_search.search_web",
+                        lambda *args, **kwargs: pytest.fail("conversation does not need search"))
+    assert await generate_mention_reply(FakeBot(), make_event(text=question), make_settings(tmp_path), store) == "先听听对方的意思。"
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("status", [400, 422])
+def test_json_mode_compatibility_fallback_is_cached_per_model_and_expires(tmp_path, monkeypatch, status):
+    now = [0.0]
+    calls = []
+    monkeypatch.setattr(dsapi_module.time, "monotonic", lambda: now[0])
+
+    def post(settings, body):
+        calls.append(json.loads(json.dumps(body)))
+        if len(calls) == 1:
+            raise dsapi_module.DSAPIError(f"HTTP {status}")
+        return completion('{"action":"clarify","answer":"你指什么？"}')
+
+    monkeypatch.setattr(dsapi_module, "_post_chat_body", post)
+    settings = make_settings(tmp_path)
+    messages = [{"role": "user", "content": "输出JSON"}]
+    for model in ("first", "first", "second"):
+        _request_chat_completion(settings, messages, model=model, json_output=True)
+    now[0] = 601
+    _request_chat_completion(settings, messages, model="first", json_output=True)
+    assert ["response_format" in body for body in calls] == [True, False, False, True, True]
+    assert all(body["messages"] == messages and "tools" not in body for body in calls)
+
+
+@pytest.mark.parametrize("error", [
+    dsapi_module.DSAPIError("HTTP 401"), dsapi_module.DSAPIError("HTTP 500"),
+    dsapi_module.DSAPIError("connection failed during start_tls"),
+    dsapi_module.DSAPIContentBlockedError("HTTP 400"), dsapi_module.DSAPIProtocolError("HTTP 400"),
+])
+def test_json_mode_does_not_retry_network_policy_or_other_http_failures(tmp_path, monkeypatch, error):
+    calls = []
+
+    def post(settings, body):
+        calls.append(body)
+        raise error
+
+    monkeypatch.setattr(dsapi_module, "_post_chat_body", post)
+    with pytest.raises(type(error)):
+        _request_chat_completion(make_settings(tmp_path), [{"role": "user", "content": "JSON"}], json_output=True)
+    assert len(calls) == 1
+    assert not dsapi_module._json_output_disabled_until
+
+
+def test_thinking_fallback_preserves_native_json_mode(tmp_path, monkeypatch):
+    calls = []
+
+    def post(settings, body):
+        calls.append(body)
+        return completion(None if len(calls) == 1 else '{"action":"clarify","answer":"什么？"}')
+
+    monkeypatch.setattr(dsapi_module, "_post_chat_body", post)
+    reply = dsapi_module._request_chat_completion_with_fallback(
+        make_settings(tmp_path), [{"role": "user", "content": "JSON"}], model="test-model",
+        max_tokens=None, thinking_enabled=True, temperature=None, json_output=True,
+    )
+    assert json.loads(reply)["action"] == "clarify"
+    assert [body["thinking"]["type"] for body in calls] == ["enabled", "disabled"]
+    assert all(body["response_format"] == {"type": "json_object"} for body in calls)
 
 
 @pytest.mark.asyncio
