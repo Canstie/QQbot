@@ -272,6 +272,116 @@ async def test_vision_model_sends_quoted_image_and_records_text_history(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("question", ["这两位是谁？", "请搜索一下这张图中的角色是谁"])
+@pytest.mark.parametrize("managed", [False, True])
+async def test_quoted_images_bypass_enabled_web_search(
+    tmp_path, monkeypatch, question, managed,
+):
+    store = make_store(tmp_path)
+    enable_web_search(store)
+    store.set_active_dsapi_model("deepseek-flash", actor_id=0)
+    settings = make_settings(
+        tmp_path, dsapi_provider_managed=managed, dsapi_provider_id=77 if managed else 0,
+        dsapi_model="gemini-test" if managed else "deepseek-flash", dsapi_vision_enabled=managed,
+    )
+    calls = []
+
+    def post(settings, body):
+        calls.append(body)
+        assert "tools" not in body and "tool_choice" not in body
+        assert "本轮包含图片" in body["messages"][0]["content"]
+        assert dsapi_module.web_search_guidance() not in body["messages"][0]["content"]
+        assert body["messages"][-1]["content"][1]["image_url"]["url"] == _PNG_SOURCE
+        return completion("图中是两位穿制服的角色。")
+
+    monkeypatch.setattr(dsapi_module, "_post_chat_body", post)
+    monkeypatch.setattr(dsapi_module, "generate_web_reply",
+                        lambda *args, **kwargs: pytest.fail("images must bypass web decisions"))
+    monkeypatch.setattr("qq_personal_bot.web_search.search_web",
+                        lambda *args, **kwargs: pytest.fail("images must not search"))
+    bot = FakeBot({"message": [{"type": "image", "data": {"url": _PNG_SOURCE}}]})
+    event = make_event(text=question, segments=({"type": "reply", "data": {"id": "42"}},))
+    assert await generate_mention_reply(bot, event, settings, store) == "图中是两位穿制服的角色。"
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_quoted_text_still_uses_web_decisions(tmp_path, monkeypatch):
+    store = make_store(tmp_path)
+    enable_web_search(store)
+    calls = []
+
+    async def web(complete, system, history, prompt, **kwargs):
+        calls.append(prompt)
+        assert isinstance(prompt, str) and "被引用的文字" in prompt
+        assert dsapi_module.web_search_guidance() in system
+        return "已按文字问题处理。"
+
+    monkeypatch.setattr(dsapi_module, "generate_web_reply", web)
+    monkeypatch.setattr(dsapi_module, "_request_chat_completion",
+                        lambda *args, **kwargs: pytest.fail("text must use the web entry point"))
+    bot = FakeBot({"message": [{"type": "text", "data": {"text": "被引用的文字"}}]})
+    event = make_event(text="核实这句话", segments=({"type": "reply", "data": {"id": "42"}},))
+    assert await generate_mention_reply(bot, event, make_settings(tmp_path), store) == "已按文字问题处理。"
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("recovers", [False, True])
+async def test_direct_vision_repairs_one_bad_tool_call_with_the_same_image(
+    tmp_path, monkeypatch, recovers,
+):
+    store = make_store(tmp_path)
+    enable_web_search(store)
+    store.set_active_dsapi_model("deepseek-flash", actor_id=0)
+    calls = []
+
+    def post(settings, body):
+        calls.append(body)
+        image_messages = [m for m in body["messages"] if isinstance(m["content"], list)]
+        assert len(image_messages) == 1
+        assert image_messages[0]["content"][1]["image_url"]["url"] == _PNG_SOURCE
+        assert "tools" not in body
+        if len(calls) == 1 or not recovers:
+            return {"choices": [{"finish_reason": "malformed_function_call"}]}
+        assert "直接用自然语言" in body["messages"][-1]["content"]
+        return completion("图中是一只猫。")
+
+    monkeypatch.setattr(dsapi_module, "_post_chat_body", post)
+    bot = FakeBot({"message": [{"type": "image", "data": {"url": _PNG_SOURCE}}]})
+    event = make_event(text="图片是什么", segments=({"type": "reply", "data": {"id": "42"}},))
+    if recovers:
+        assert await generate_mention_reply(bot, event, make_settings(tmp_path), store) == "图中是一只猫。"
+    else:
+        with pytest.raises(dsapi_module.DSAPIProtocolError):
+            await generate_mention_reply(bot, event, make_settings(tmp_path), store)
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [
+    dsapi_module.DSAPIContentBlockedError("provider blocked this request by content policy"),
+    dsapi_module.DSAPIError("connection failed during start_tls"),
+])
+async def test_direct_vision_does_not_retry_content_blocks_or_network_errors(tmp_path, monkeypatch, error):
+    store = make_store(tmp_path)
+    enable_web_search(store)
+    store.set_active_dsapi_model("deepseek-flash", actor_id=0)
+    calls = []
+
+    def post(settings, body):
+        calls.append(body)
+        raise error
+
+    monkeypatch.setattr(dsapi_module, "_post_chat_body", post)
+    bot = FakeBot({"message": [{"type": "image", "data": {"url": _PNG_SOURCE}}]})
+    event = make_event(text="图片是什么", segments=({"type": "reply", "data": {"id": "42"}},))
+    with pytest.raises(type(error)):
+        await generate_mention_reply(bot, event, make_settings(tmp_path), store)
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_expired_qq_link_falls_back_to_onebot_local_image(tmp_path, monkeypatch):
     image_path = tmp_path / "cached.png"
     image_path.write_bytes(_PNG_BYTES)

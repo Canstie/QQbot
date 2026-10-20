@@ -481,9 +481,15 @@ async def _generate_text_reply(
         )
         if persona_guidance:
             system_prompt = f"{system_prompt}\n\n人物关系与动态示例：\n{persona_guidance}"
-    web_enabled = bool(active_knowledge.get("web_search_enabled"))
+    has_images = isinstance(prompt, list) and any(part.get("type") == "image_url" for part in prompt)
+    web_enabled = bool(active_knowledge.get("web_search_enabled")) and not has_images
     if web_enabled:
         system_prompt = f"{system_prompt}\n\n{web_search_guidance()}"
+    elif has_images:
+        system_prompt = (
+            f"{system_prompt}\n\n本轮包含图片，请直接根据图片回答当前问题，不使用联网搜索或工具。"
+            "无法确定角色或物体身份时如实说明，不要编造。"
+        )
     response_instruction = _RESPONSE_MODE_INSTRUCTIONS.get(
         response_mode,
         _RESPONSE_MODE_INSTRUCTIONS["short"],
@@ -527,7 +533,16 @@ async def _generate_text_reply(
             current_user_id=event.user_id,
         )
     else:
-        response = await asyncio.to_thread(complete, messages)
+        try:
+            response = await asyncio.to_thread(complete, messages)
+        except DSAPIProtocolError:
+            if not has_images:
+                raise
+            logger.info("AI direct vision protocol=repair")
+            response = await asyncio.to_thread(complete, [*messages, {
+                "role": "user", "content": "请直接用自然语言回答上面的图片问题，不要调用工具或函数。"
+                "不能确定时如实说明；不要输出JSON协议。",
+            }])
     response = _format_reply(
         response,
         response_mode,
