@@ -5,13 +5,16 @@ import logging
 import socket
 import ssl
 import threading
+import time
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.request import Request
 
 import httpx
 import pytest
+from httpcore._sync import http11
 
 from qq_personal_bot import ai_transport as transport
 from qq_personal_bot.dsapi import DSAPIError, _request_chat_completion, fetch_dsapi_models
@@ -95,6 +98,43 @@ def test_reuses_tcp_connection_without_storing_auth_or_payload_in_logs(caplog, m
         assert "via_proxy=False" in caplog.text
         assert "private-key" not in caplog.text
         assert "user message" not in caplog.text
+    finally:
+        transport.close_ai_clients()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+
+
+def test_idle_connection_survives_two_minutes_but_expires_after_ten(monkeypatch):
+    offset = [0.0]
+    monkeypatch.setattr(http11, "time", SimpleNamespace(monotonic=lambda: time.monotonic() + offset[0]))
+    ports = []
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_POST(self):
+            ports.append(self.client_address[1])
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"OK")
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        req = request()
+        req.full_url = f"http://127.0.0.1:{server.server_port}/v1/chat/completions"
+        for elapsed in (0, 135, 601):
+            offset[0] += elapsed
+            assert transport.request_ai_bytes(req, settings()) == b"OK"
+        assert ports[0] == ports[1]
+        assert ports[2] != ports[1]
     finally:
         transport.close_ai_clients()
         server.shutdown()

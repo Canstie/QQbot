@@ -57,7 +57,7 @@ def _get_client(
         if client is None:
             context = _ssl_context(tls_mode, parsed.hostname if connect_ip else "")
             limits = httpx.Limits(
-                max_connections=16, max_keepalive_connections=8, keepalive_expiry=120,
+                max_connections=32, max_keepalive_connections=16, keepalive_expiry=600,
             )
             client = httpx.Client(
                 verify=context,
