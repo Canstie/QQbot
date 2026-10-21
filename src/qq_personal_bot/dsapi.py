@@ -94,6 +94,12 @@ _RELATIONSHIP_SUMMARY_MAX_TOKENS = 1024
 _background_relationship_tasks: set[asyncio.Task[None]] = set()
 _web_tools_disabled_until: dict[tuple[int, str, str], float] = {}
 _json_output_disabled_until: dict[tuple[int, str, str], float] = {}
+_JSON_PROMPT_INSTRUCTION = (
+    "本轮最终输出必须是一个非空 JSON 对象，字段和类型严格遵守前文的业务协议。"
+    "只输出 JSON，不要输出空格空行、Markdown 或额外说明。"
+    "角色语气和长度要求仅用于 answer 字符串，不改变 JSON 结构。"
+    "当前请求仍以原始 current_request 为准。"
+)
 logger = logging.getLogger(__name__)
 
 
@@ -653,6 +659,30 @@ async def _refresh_relationship_memory(
         logger.warning("failed to refresh DSAPI relationship memory: %s", exc)
 
 
+def _json_prompt_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    instruction = {"role": "user", "content": _JSON_PROMPT_INSTRUCTION}
+    return messages if messages and messages[-1] == instruction else [*messages, instruction]
+
+
+def _remember_json_prompt_mode(settings: AppSettings, model: str, *, reason: str) -> None:
+    if len(_json_output_disabled_until) >= 64:
+        _json_output_disabled_until.clear()
+    key = (settings.dsapi_provider_id, settings.dsapi_base_url, model)
+    _json_output_disabled_until[key] = time.monotonic() + 600
+    logger.info(
+        "AI JSON output provider=%s compatibility=prompt reason=%s",
+        settings.dsapi_provider_id, reason,
+    )
+
+
+def _is_json_object_response(response: str) -> bool:
+    value = re.sub(r"^```(?:json)?\s*|\s*```$", "", response.strip(), flags=re.IGNORECASE)
+    try:
+        return isinstance(json.loads(value), dict)
+    except (ValueError, TypeError):
+        return False
+
+
 def _request_chat_completion_with_fallback(
     settings: AppSettings,
     messages: list[dict[str, Any]],
@@ -669,25 +699,29 @@ def _request_chat_completion_with_fallback(
     last_error: DSAPIError = DSAPIEmptyResponseError("empty assistant content")
     for attempt in range(2):
         request_settings = settings
+        prompt_json_retry = bool(
+            attempt and json_output and isinstance(last_error, DSAPIEmptyResponseError)
+        )
         if attempt:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise last_error
             request_settings = replace(settings, dsapi_timeout_seconds=remaining)
             logger.info(
-                "AI response recovery provider=%s model=%s reason=%s retry=1 json_output=%s",
+                "AI response recovery provider=%s model=%s reason=%s retry=1 json_output=%s json_mode=%s",
                 settings.dsapi_provider_id, model, type(last_error).__name__, json_output,
+                "prompt" if prompt_json_retry else "native" if json_output else "off",
             )
         try:
             response = _request_chat_completion(
                 request_settings,
-                messages,
+                _json_prompt_messages(messages) if prompt_json_retry else messages,
                 model=model,
                 max_tokens=max_tokens,
                 thinking_enabled=thinking_enabled,
                 temperature=temperature,
                 **({"web_session": web_session} if web_session is not None else {}),
-                **({"json_output": True} if json_output else {}),
+                **({"json_output": True} if json_output and not prompt_json_retry else {}),
             )
         except (DSAPIContentBlockedError, DSAPIProtocolError):
             raise
@@ -699,6 +733,8 @@ def _request_chat_completion_with_fallback(
             last_error = exc
         else:
             if response and response.strip():
+                if prompt_json_retry and _is_json_object_response(response):
+                    _remember_json_prompt_mode(settings, model, reason="empty_response")
                 return response
             last_error = DSAPIEmptyResponseError("empty assistant content")
         if not attempt:
@@ -861,6 +897,8 @@ def _request_chat_completion(
     elif web_session is not None and not web_session.searched:
         body["messages"] = [*messages, {"role": "system", "content":
             "本接口当前不支持工具调用；没有检索资料时不能声称已核实实时事实。"}]
+    if json_output and not use_json:
+        body["messages"] = _json_prompt_messages(body["messages"])
     try:
         result = _post_chat_body(settings, body)
     except (DSAPIContentBlockedError, DSAPIProtocolError):
@@ -869,11 +907,9 @@ def _request_chat_completion(
         if not (use_json or use_tools) or str(exc) not in {"HTTP 400", "HTTP 422"}:
             raise
         if use_json:
-            if len(_json_output_disabled_until) >= 64:
-                _json_output_disabled_until.clear()
-            _json_output_disabled_until[tool_key] = time.monotonic() + 600
+            _remember_json_prompt_mode(settings, body["model"], reason="unsupported")
             body.pop("response_format", None)
-            logger.info("AI JSON output provider=%s compatibility=prompt", settings.dsapi_provider_id)
+            body["messages"] = _json_prompt_messages(body["messages"])
         else:
             if len(_web_tools_disabled_until) >= 64:
                 _web_tools_disabled_until.clear()
@@ -918,6 +954,8 @@ def _request_chat_completion(
         }]
         body.pop("tools", None)
         body.pop("tool_choice", None)
+        if json_output and "response_format" not in body:
+            body["messages"] = _json_prompt_messages(body["messages"])
         result = _post_chat_body(settings, body)
     return _extract_chat_text(result, body, thinking_enabled)
 
@@ -961,9 +999,10 @@ def _post_chat_body(settings: AppSettings, body: dict[str, Any]) -> Any:
               for value in (usage.get("completion_tokens"), details.get("reasoning_tokens"))]
     logger.info(
         "AI completion provider=%s model=%s finish_reason=%s max_tokens=%s "
-        "output_chars=%s completion_tokens=%s reasoning_tokens=%s",
+        "output_chars=%s output_text_chars=%s completion_tokens=%s reasoning_tokens=%s",
         settings.dsapi_provider_id, body.get("model"), metadata.get("finish_reason", ""),
         body.get("max_tokens", "provider default"), len(content) if isinstance(content, str) else 0,
+        len(content.strip()) if isinstance(content, str) else 0,
         *tokens,
     )
     return result
@@ -1013,13 +1052,16 @@ def _response_metadata(result: Any) -> dict[str, Any]:
     first = choices[0] if isinstance(choices, list) and choices else None
     choice = first if isinstance(first, Mapping) else {}
     message = choice.get("message")
+    content = message.get("content") if isinstance(message, Mapping) else None
     return {
         "fields": [key for key in ("choices", "candidates", "promptFeedback", "prompt_feedback", "error")
                    if key in result],
         "choices_count": len(choices) if isinstance(choices, list) else None,
         "finish_reason": _response_code(choice.get("finish_reason")),
         "message_type": type(message).__name__,
-        "content_type": type(message.get("content")).__name__ if isinstance(message, Mapping) else None,
+        "content_type": type(content).__name__ if isinstance(message, Mapping) else None,
+        "content_chars": len(content) if isinstance(content, str) else None,
+        "text_chars": len(content.strip()) if isinstance(content, str) else None,
         "block_reason": _provider_block_reason(result),
     }
 
