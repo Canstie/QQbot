@@ -102,6 +102,43 @@ class AIProviderStore:
     def ai_provider_managed(self) -> bool:
         return self.get_setting("ai_provider_managed", "false") == "true"
 
+    def get_background_ai_route(self) -> dict | None:
+        value = self.get_setting("ai_background_route", "")
+        return json.loads(value) if value else None
+
+    def set_ai_route(
+        self, route: str, provider_id: int, model: str, *, actor_id: int = 0
+    ) -> None:
+        if route not in {"message", "background"}:
+            raise ValueError("请选择消息链路或后台链路")
+        model = self._normalize_dsapi_model(model)
+        with self._connect() as conn:
+            provider = conn.execute(
+                "SELECT api_key FROM ai_providers WHERE id=?", (provider_id,)
+            ).fetchone()
+            if provider is None:
+                raise ValueError("供应商不存在")
+            if not provider["api_key"]:
+                raise ValueError("请先配置供应商的 API Key")
+            if route == "message":
+                conn.execute(
+                    "UPDATE ai_providers SET default_model=?, updated_at=? WHERE id=?",
+                    (model, time.time(), provider_id),
+                )
+                self.set_setting("ai_active_provider_id", str(provider_id), conn=conn)
+                self.set_setting("ai_provider_managed", "true", conn=conn)
+            else:
+                self.set_setting(
+                    "ai_background_route",
+                    json.dumps({"provider_id": provider_id, "model": model}),
+                    conn=conn,
+                )
+            self.audit(
+                actor_id, "set_ai_route", route,
+                {"provider_id": provider_id, "model": model}, conn=conn,
+            )
+        self._invalidate_runtime_cache()
+
     def get_ai_proxy_enabled(self, *, default: bool = False) -> bool:
         return self.get_setting("ai_proxy_enabled", "true" if default else "false") == "true"
 
@@ -253,6 +290,11 @@ class AIProviderStore:
             ).fetchone()
             if active and str(provider_id) == active["value"]:
                 raise ValueError("请先启用其他供应商，再删除当前供应商")
+            background = conn.execute(
+                "SELECT value FROM settings WHERE key='ai_background_route'"
+            ).fetchone()
+            if background and json.loads(background["value"])["provider_id"] == provider_id:
+                raise ValueError("请先切换后台链路，再删除此供应商")
             conn.execute("DELETE FROM ai_providers WHERE id=?", (provider_id,))
             self.audit(actor_id, "delete_ai_provider", str(provider_id), {}, conn=conn)
         self._invalidate_runtime_cache()

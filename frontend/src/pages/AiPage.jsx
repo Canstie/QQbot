@@ -304,7 +304,7 @@ export default function AiPage({ refreshVersion, onChanged }) {
       <PageHeader eyebrow="AI control" title="AI 供应商与角色" description="切换接口与模型，管理角色知识库和群聊记忆。" actions={<Button icon={Save} onClick={save}>保存并生效</Button>} />
       <AiProvidersPanel data={data} onChanged={async () => { await load(); onChanged(); }} onProxyChanged={(state) => setData((current) => ({ ...current, ...state }))} />
       <div className="ai-status-strip">
-        <div className="ai-status-strip__model"><BrainCircuit /><div><span>全局模型</span><strong>{data?.model || "读取中"}</strong><small>{data?.thinking_supported ? data?.thinking_enabled ? "Thinking" : "Non-thinking" : "思考由模型档位控制"} · {data?.base_url || "-"}</small></div></div>
+        <div className="ai-status-strip__model"><BrainCircuit /><div><span>消息模型</span><strong>{data?.model || "读取中"}</strong><small>{data?.thinking_supported ? data?.thinking_enabled ? "Thinking" : "Non-thinking" : "思考由模型档位控制"} · {data?.base_url || "-"}</small></div></div>
         <Metric label="AI 启用群" value={data?.enabled_groups?.length ?? "-"} tone="blue" />
         <Metric label="上下文消息" value={data?.history_messages ?? "-"} tone="mint" />
         <Metric label="涉及群" value={data?.history_groups ?? "-"} tone="orange" />

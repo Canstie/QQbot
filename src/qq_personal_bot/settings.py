@@ -107,6 +107,7 @@ class AppSettings:
     ai_proxy_resolved: bool = False
     dsapi_provider_id: int = 0
     dsapi_provider_managed: bool = False
+    dsapi_background_resolved: bool = False
     dsapi_vision_enabled: bool = False
     dsapi_timeout_seconds: float = 30.0
     dsapi_max_tokens: int = 80

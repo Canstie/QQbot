@@ -43,7 +43,7 @@ export default function OverviewPage({ summary, onNavigate }) {
         <Panel title="常用工作区" eyebrow="Quick routes">
           <div className="link-stack">
             <LinkRow icon={Settings2} title="调整群策略" description="启用群、触发方式与频率限制" meta={`${policy?.enabled_groups?.length ?? 0} 群`} onClick={() => onNavigate("policy")} />
-            <LinkRow icon={BrainCircuit} title="切换 AI 模型与角色" description="供应商、全局模型与角色知识" meta={ai?.model || "AI"} onClick={() => onNavigate("ai")} />
+            <LinkRow icon={BrainCircuit} title="切换 AI 模型与角色" description="消息链路、后台链路与角色知识" meta={ai?.model || "AI"} onClick={() => onNavigate("ai")} />
             <LinkRow icon={Code2} title="维护 Lua 指令" description="编辑群功能脚本并即时生效" meta={`${summary?.lua?.commands?.length ?? 0} 个`} onClick={() => onNavigate("lua")} />
             <LinkRow icon={MessageSquareText} title="管理固定回复" description="前缀与免前缀触发规则" onClick={() => onNavigate("replies")} />
           </div>

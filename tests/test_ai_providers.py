@@ -11,7 +11,11 @@ from fastapi.testclient import TestClient
 
 from qq_personal_bot import ai_transport, dsapi, group_digest, memory_graph, provider_web
 from qq_personal_bot.ai_models import catalog_model_option
-from qq_personal_bot.ai_providers import active_ai_model, resolve_ai_settings
+from qq_personal_bot.ai_providers import (
+    active_ai_model,
+    resolve_ai_settings,
+    resolve_background_ai_settings,
+)
 from qq_personal_bot.core.models import MessageEvent
 from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.runtime import get_settings, get_store, reset_runtime
@@ -94,6 +98,81 @@ def test_global_ai_proxy_survives_provider_switch(context):
         routed = resolve_ai_settings(settings, store)
         assert routed.ai_proxy_url == settings.ai_proxy_url
         assert routed.dsapi_provider_id == provider_id
+
+
+def test_routes_are_independent_for_the_same_provider_and_survive_restart(context):
+    client, store, settings = context
+    miku = add_provider(store, "Miku", "background-model")
+    store.set_ai_route("background", miku, "background-model")
+    store.set_ai_route("message", miku, "reply-model")
+    assert resolve_ai_settings(settings, store).dsapi_model == "reply-model"
+    background = resolve_background_ai_settings(settings, store)
+    assert background.dsapi_model == "background-model"
+    store.set_ai_provider_model("another-reply-model", actor_id=0)
+    assert resolve_background_ai_settings(settings, store).dsapi_model == "background-model"
+    other = add_provider(store, "Other", "other-model")
+    store.activate_ai_provider(other)
+    # A background call must discard an already resolved message provider snapshot.
+    routed = resolve_background_ai_settings(resolve_ai_settings(settings, store), store)
+    assert routed.dsapi_provider_id == miku
+    assert routed.dsapi_model == "background-model"
+    with pytest.raises(ValueError, match="后台链路"):
+        store.delete_ai_provider(miku)
+    restarted = PolicyStore(settings.db_path)
+    restarted.initialize(settings)
+    assert resolve_background_ai_settings(settings, restarted).dsapi_model == "background-model"
+    assert resolve_ai_settings(settings, restarted).dsapi_provider_id == other
+    for path in ("/api/dsapi", "/api/dsapi/providers"):
+        response = client.get(path)
+        assert response.json()["background_route"] == {
+            "provider_id": miku, "model": "background-model",
+        }
+        assert "new-secret" not in response.text
+    store.set_ai_route("background", other, "other-background-model")
+    # A running extraction keeps its original snapshot after a UI switch.
+    assert resolve_background_ai_settings(background, store).dsapi_model == "background-model"
+    assert resolve_ai_settings(settings, store).dsapi_model == "other-model"
+    store.delete_ai_provider(miku)
+
+
+def test_route_api_validates_before_switching_and_keeps_background_model(context):
+    client, store, settings = context
+    provider = add_provider(store)
+    assert client.put("/api/dsapi/routes/background", json={
+        "provider_id": provider, "model": "pinned-model",
+    }).status_code == 200
+    assert store.get_active_ai_provider()["id"] == 1
+    assert client.put("/api/dsapi/routes/message", json={
+        "provider_id": provider, "model": "reply-model",
+    }).status_code == 200
+    assert resolve_ai_settings(settings, store).dsapi_model == "reply-model"
+    for route in ("message", "background"):
+        for payload, status in [
+            ({"provider_id": 99999, "model": "valid-model"}, 400),
+            ({"provider_id": provider, "model": ""}, 400),
+            ({"provider_id": True, "model": "valid-model"}, 422),
+        ]:
+            assert client.put(f"/api/dsapi/routes/{route}", json=payload).status_code == status
+    assert resolve_ai_settings(settings, store).dsapi_model == "reply-model"
+    assert resolve_background_ai_settings(settings, store).dsapi_model == "pinned-model"
+    # Editing the shared provider model cannot change the saved background model.
+    data = {"name": "Edited", "base_url": "https://other.example/v1",
+            "default_model": "edited-reply", "api_key": None}
+    assert client.put(f"/api/dsapi/providers/{provider}", json=data).status_code == 200
+    assert resolve_background_ai_settings(settings, store).dsapi_model == "pinned-model"
+    assert resolve_background_ai_settings(settings, store).dsapi_base_url == data["base_url"]
+    with store._connect() as conn:
+        audit = json.dumps([dict(row) for row in conn.execute("SELECT * FROM audit_log")])
+    assert "new-secret" not in audit
+
+
+def test_broken_background_binding_never_falls_back_to_reply_provider(context):
+    _, store, settings = context
+    provider = add_provider(store)
+    store.activate_ai_provider(provider)
+    store.set_setting("ai_background_route", json.dumps({"provider_id": 9999, "model": "pinned"}))
+    with pytest.raises(ValueError, match="不存在"):
+        resolve_background_ai_settings(resolve_ai_settings(settings, store), store)
 
 
 @pytest.mark.parametrize("managed", [False, True])
@@ -281,6 +360,8 @@ def test_all_provider_endpoints_require_admin_session(context, monkeypatch):
         ("POST", "/api/dsapi/providers/1/models/refresh", {}),
         ("POST", "/api/dsapi/providers/1/test", {}),
         ("PUT", "/api/dsapi/proxy", {"enabled": False}),
+        ("PUT", "/api/dsapi/routes/message", {"provider_id": 1, "model": "m"}),
+        ("PUT", "/api/dsapi/routes/background", {"provider_id": 1, "model": "m"}),
     ]:
         assert client.request(method, path, json=body).status_code == 401
 
@@ -391,17 +472,26 @@ def test_provisioning_tests_catalog_before_switch_and_does_not_change_route_on_f
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("proxy_enabled", [False, True])
+@pytest.mark.parametrize("background_selected", [False, True])
 async def test_every_ai_entry_uses_selected_provider_and_model_without_deepseek_parameters(
-    context, monkeypatch, proxy_enabled,
+    context, monkeypatch, proxy_enabled, background_selected,
 ):
     _, store, settings = context
     settings = replace(settings, ai_proxy_url="http://127.0.0.1:20171")
     store.set_ai_proxy_enabled(proxy_enabled)
     provider_id = add_provider(store)
     store.activate_ai_provider(provider_id)
+    if background_selected:
+        background_id = store.save_ai_provider(
+            name="Background", base_url="https://background.example/v1",
+            api_key="background-secret", default_model="unused-default", api_format="openai",
+        )
+        store.set_ai_route("background", background_id, "pinned-background-model")
     store.set_group_enabled(123, True, actor_id=0)
     store.enable_dsapi_group(123, actor_id=0)
     store.set_memory_groups([123], actor_id=0)
+    knowledge = store.create_dsapi_knowledge_base(name="Routing", prompt="Routing test", actor_id=0)
+    store.activate_dsapi_knowledge_base(knowledge["id"], clear_history=False, actor_id=0)
     requests = []
 
     class Response:
@@ -478,6 +568,11 @@ async def test_every_ai_entry_uses_selected_provider_and_model_without_deepseek_
         == "OK"
     )
     assert "max_tokens" not in requests[-1]["body"]
+    from qq_personal_bot.turtle_soup import TurtleSoupService
+
+    assert await TurtleSoupService(store, settings)._complete(
+        {"id": "routing-test"}, [{"role": "user", "content": "Puzzle"}], max_tokens=600,
+    ) == "OK"
     batch = {
         "group_id": 123,
         "new_ids": [1],
@@ -497,10 +592,60 @@ async def test_every_ai_entry_uses_selected_provider_and_model_without_deepseek_
     monkeypatch.setattr(store, "claim_memory_batch", lambda *args, **kwargs: batch)
     monkeypatch.setattr(store, "save_memory_batch", lambda *args: True)
     assert await memory_graph.refresh_memory_graph(store, settings, 123, force=True)
-    assert len(requests) == 5
-    for item in requests:
+    await dsapi._refresh_relationship_memory(
+        routed, store, knowledge_id=store.get_dsapi_config()["active_knowledge_id"],
+        group_id=123, user_id=456, user_message="hello", assistant_message="OK",
+    )
+    assert len(requests) == 7
+    for index, item in enumerate(requests):
         assert item["proxy"] == ("http://127.0.0.1:20171" if proxy_enabled else "")
-        assert item["url"] == "https://gateway.example/v1/chat/completions"
-        assert item["auth"] == "Bearer new-secret"
-        assert item["body"]["model"] == "gemini-3.8-flash-high"
+        background = background_selected and index >= 5
+        assert item["url"] == (
+            "https://background.example/v1/chat/completions" if background
+            else "https://gateway.example/v1/chat/completions"
+        )
+        assert item["auth"] == ("Bearer background-secret" if background else "Bearer new-secret")
+        assert item["body"]["model"] == (
+            "pinned-background-model" if background else "gemini-3.8-flash-high"
+        )
         assert "thinking" not in item["body"]
+
+
+@pytest.mark.asyncio
+async def test_whole_web_reply_uses_message_snapshot_when_background_has_another_model(
+    context, monkeypatch,
+):
+    _, store, settings = context
+    message = add_provider(store, "Message", "message-model")
+    background = add_provider(store, "Background", "background-model")
+    store.set_ai_route("message", message, "message-model")
+    store.set_ai_route("background", background, "background-model")
+    store.enable_dsapi_group(123, actor_id=0)
+    knowledge = store.create_dsapi_knowledge_base(
+        name="Web routing", prompt="Routing test", actor_id=0, web_search_enabled=True,
+    )
+    store.activate_dsapi_knowledge_base(knowledge["id"], clear_history=False, actor_id=0)
+    captures = []
+
+    def complete(settings, messages, **kwargs):
+        captures.append((settings.dsapi_provider_id, kwargs["model"]))
+        return "OK"
+
+    async def web(complete, *args, **kwargs):
+        for phase in ("plan", "verify", "answer"):
+            assert complete([{"role": "user", "content": phase}]) == "OK"
+            if phase == "plan":
+                store.set_ai_route("message", background, "next-message-model")
+        return "OK"
+
+    monkeypatch.setattr(dsapi, "_request_chat_completion_with_fallback", complete)
+    monkeypatch.setattr(dsapi, "generate_web_reply", web)
+    monkeypatch.setattr(dsapi, "build_mention_prompt", AsyncMock(return_value="Search current news"))
+    event = MessageEvent(
+        platform="onebot.v11", message_id=1, group_id=123, user_id=456,
+        raw_message="Search current news", is_at_bot=True,
+    )
+    assert await dsapi.generate_mention_reply(None, event, settings, store) == "OK"
+    assert captures == [(message, "message-model")] * 3
+    assert resolve_ai_settings(settings, store).dsapi_model == "next-message-model"
+    assert resolve_background_ai_settings(settings, store).dsapi_model == "background-model"

@@ -27,7 +27,11 @@ from qq_personal_bot.ai_errors import (
     DSAPIResponseError,
 )
 from qq_personal_bot.ai_models import catalog_model_option, is_vision_dsapi_model
-from qq_personal_bot.ai_providers import active_ai_model, resolve_ai_settings
+from qq_personal_bot.ai_providers import (
+    active_ai_model,
+    resolve_ai_settings,
+    resolve_background_ai_settings,
+)
 from qq_personal_bot.ai_transport import AITransportError, request_ai_bytes
 from qq_personal_bot.classic_storage import classic_image_type, read_classic_image_source
 from qq_personal_bot.core.models import MessageEvent
@@ -574,7 +578,6 @@ async def _generate_text_reply(
                     user_id=int(event.user_id),
                     user_message=event.raw_message.strip(),
                     assistant_message=assistant_history,
-                    model=active_ai_model(config, settings),
                 )
             )
             _background_relationship_tasks.add(task)
@@ -591,10 +594,11 @@ async def _refresh_relationship_memory(
     user_id: int,
     user_message: str,
     assistant_message: str,
-    model: str,
 ) -> None:
     """Use a separate low-temperature call to maintain per-QQ relationship memory."""
     try:
+        settings = resolve_background_ai_settings(settings, store)
+        model = active_ai_model(store.get_dsapi_config(), settings)
         existing = await asyncio.to_thread(
             store.get_dsapi_relationship_memory,
             knowledge_id,

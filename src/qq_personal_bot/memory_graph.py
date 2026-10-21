@@ -9,7 +9,7 @@ from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from qq_personal_bot.ai_providers import active_ai_model, resolve_ai_settings
+from qq_personal_bot.ai_providers import active_ai_model, resolve_background_ai_settings
 from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.settings import AppSettings
 
@@ -110,7 +110,7 @@ def parse_claims(response: str, batch: dict[str, Any]) -> list[dict[str, Any]]:
 
 def memory_pause_reason(store: PolicyStore, settings: AppSettings, group_id: int) -> str:
     """Collection opts a group into extraction; conversational AI has a separate allowlist."""
-    settings = resolve_ai_settings(settings, store)
+    settings = resolve_background_ai_settings(settings, store)
     if not store.is_memory_group_enabled(group_id):
         return "本群未开启图谱采集"
     if not settings.dsapi_api_key:
@@ -165,7 +165,7 @@ def get_memory_status(store: PolicyStore, settings: AppSettings) -> dict[str, An
 
 async def refresh_memory_graph(store: PolicyStore, settings: AppSettings, group_id: int,
                                *, force: bool = False) -> bool:
-    settings = resolve_ai_settings(settings, store)
+    settings = resolve_background_ai_settings(settings, store)
     if await asyncio.to_thread(memory_pause_reason, store, settings, group_id):
         return False
     batch = await asyncio.to_thread(store.claim_memory_batch, group_id, force=force)

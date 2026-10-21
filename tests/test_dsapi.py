@@ -1672,7 +1672,6 @@ async def test_relationship_memory_is_maintained_by_ai(tmp_path, monkeypatch):
         user_id=456,
         user_message="我抽卡又歪了",
         assistant_message="骂它也不出货的",
-        model="deepseek-flash",
     )
 
     memory = store.get_dsapi_relationship_memory(knowledge_id, 456)

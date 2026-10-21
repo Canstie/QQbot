@@ -64,3 +64,19 @@ def active_ai_model(config: dict, settings: AppSettings) -> str:
     if settings.dsapi_provider_managed:
         return settings.dsapi_model
     return str((config.get("active_knowledge") or {}).get("model") or settings.dsapi_model)
+
+
+def resolve_background_ai_settings(settings: AppSettings, store) -> AppSettings:
+    if settings.dsapi_background_resolved:
+        return settings
+    settings = resolve_ai_proxy_settings(settings, store)
+    route = store.get_background_ai_route() if hasattr(store, "get_background_ai_route") else None
+    if route:
+        # A reply snapshot may be passed in; background work has its own provider and model.
+        provider = store.get_ai_provider(route["provider_id"])
+        provider["default_model"] = route["model"]
+        settings = provider_settings(settings, provider)
+    else:
+        # Preserve existing installations until a background route is explicitly selected.
+        settings = resolve_ai_settings(settings, store)
+    return replace(settings, dsapi_background_resolved=True)

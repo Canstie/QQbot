@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import time
+from typing import Literal
 
 from fastapi import HTTPException, Request
-from pydantic import BaseModel, SecretStr, StrictBool
+from pydantic import BaseModel, Field, SecretStr, StrictBool
 
 from qq_personal_bot.ai_providers import (
     ai_proxy_state,
@@ -32,6 +33,11 @@ class AIProxyPayload(BaseModel):
     enabled: StrictBool
 
 
+class AIRoutePayload(BaseModel):
+    provider_id: int = Field(strict=True, gt=0)
+    model: str
+
+
 def register_ai_provider_routes(app, get_settings, get_store, require_token):
     def public_state():
         store = get_store()
@@ -39,8 +45,20 @@ def register_ai_provider_routes(app, get_settings, get_store, require_token):
             "providers": store.list_ai_providers(),
             "active_provider_id": int(store.get_setting("ai_active_provider_id", "0")),
             "managed": store.ai_provider_managed(),
+            "background_route": store.get_background_ai_route(),
             **ai_proxy_state(get_settings(), store),
         }
+
+    @app.put("/api/dsapi/routes/{route}")
+    async def update_route(
+        route: Literal["message", "background"], payload: AIRoutePayload, request: Request
+    ):
+        require_token(request)
+        try:
+            get_store().set_ai_route(route, payload.provider_id, payload.model)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return public_state()
 
     @app.put("/api/dsapi/proxy")
     async def update_proxy(payload: AIProxyPayload, request: Request):

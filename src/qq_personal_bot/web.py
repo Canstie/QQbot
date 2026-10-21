@@ -428,6 +428,7 @@ def create_app():
             "providers": get_store().list_ai_providers(),
             "active_provider_id": int(get_store().get_setting("ai_active_provider_id", "0")),
             "provider_managed": settings.dsapi_provider_managed,
+            "background_route": get_store().get_background_ai_route(),
             **ai_proxy_state(get_settings(), get_store()),
         }
 
