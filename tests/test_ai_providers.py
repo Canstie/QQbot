@@ -10,9 +10,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from qq_personal_bot import ai_transport, dsapi, group_digest, memory_graph, provider_web
-from qq_personal_bot.ai_models import catalog_model_option
+from qq_personal_bot.ai_models import catalog_model_option, is_vision_dsapi_model
 from qq_personal_bot.ai_providers import (
     active_ai_model,
+    provider_settings,
     resolve_ai_settings,
     resolve_background_ai_settings,
 )
@@ -47,6 +48,54 @@ def add_provider(store, name="Gateway", model="gemini-3.8-flash-high"):
         api_format="openai",
         actor_id=10000,
     )
+
+
+@pytest.mark.parametrize("model", [
+    "deepseek-v4.1-flash", "deepseek/deepseek-v4.1-flash", "deepseek-flash",
+    "deepseek-v4-flash-vision-exp",
+])
+def test_flash_vision_aliases_preserve_requested_model_id(model):
+    assert is_vision_dsapi_model(model)
+    option = catalog_model_option(model)
+    assert option["vision"] is True
+    assert option["id"] == model
+
+
+@pytest.mark.parametrize("cached", [False, True])
+def test_saved_text_only_flag_does_not_disable_known_flash_vision(context, cached):
+    client, store, settings = context
+    model = "deepseek-v4.1-flash"
+    provider_id = add_provider(store, "Miku", model)
+    raw = store.get_ai_provider(provider_id)
+    if cached:
+        store.save_ai_provider_models(
+            provider_id, [{"id": model, "vision": False, "source": "live"}],
+            expected_updated_at=raw["updated_at"],
+        )
+    # Also cover provider_settings callers that have not loaded a normalized catalog.
+    raw["models"] = [{"id": model, "vision": False}] if cached else []
+    assert provider_settings(settings, raw).dsapi_vision_enabled
+    store.activate_ai_provider(provider_id)
+    assert resolve_ai_settings(settings, store).dsapi_vision_enabled
+    config = client.get("/api/dsapi").json()
+    assert config["model"] == model
+    assert next(option for option in config["model_options"] if option["id"] == model)["vision"]
+    if cached:
+        public = next(p for p in config["providers"] if p["id"] == provider_id)
+        assert public["models"][0]["vision"]
+    restarted = PolicyStore(settings.db_path)
+    restarted.initialize(settings)
+    assert resolve_ai_settings(settings, restarted).dsapi_vision_enabled
+
+
+@pytest.mark.parametrize("model", ["deepseek-v4-pro", "unknown-text-model"])
+def test_unrelated_text_models_are_not_promoted_to_vision(context, model):
+    _, store, settings = context
+    provider = add_provider(store, model=model)
+    store.activate_ai_provider(provider)
+    assert not is_vision_dsapi_model(model)
+    assert not catalog_model_option(model)["vision"]
+    assert not resolve_ai_settings(settings, store).dsapi_vision_enabled
 
 
 def test_upgrade_preserves_legacy_models_and_env_seed_without_secret_in_public_state(context):

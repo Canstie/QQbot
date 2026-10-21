@@ -5,7 +5,11 @@ import json
 import time
 from urllib.parse import urlsplit, urlunsplit
 
-from qq_personal_bot.ai_models import catalog_model_option, public_dsapi_model_options
+from qq_personal_bot.ai_models import (
+    catalog_model_option,
+    is_vision_dsapi_model,
+    public_dsapi_model_options,
+)
 
 
 def normalize_ai_base_url(value: str) -> str:
@@ -91,6 +95,10 @@ class AIProviderStore:
                     raise ValueError("供应商不存在")
                 result = dict(row)
                 result["models"] = json.loads(result.pop("models_json"))
+                # Older catalogs inferred text-only support for newer Flash aliases.
+                for option in result["models"]:
+                    if is_vision_dsapi_model(option["id"]):
+                        option["vision"] = True
                 return result
 
         return copy.deepcopy(self._cached_runtime_value(("ai_provider", int(provider_id)), load))

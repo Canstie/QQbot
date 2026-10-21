@@ -27,6 +27,7 @@ from qq_personal_bot.ai_errors import (
     DSAPILengthError,
     DSAPIProtocolError,
     DSAPIResponseError,
+    DSAPIVisionUnsupportedError,
 )
 from qq_personal_bot.ai_models import catalog_model_option, is_vision_dsapi_model
 from qq_personal_bot.ai_providers import (
@@ -822,6 +823,8 @@ async def build_mention_prompt(
     quoted_text = ""
     image_sources: list[str] = []
     if quoted_segments is not None:
+        if not vision_enabled and _image_data_from_message(quoted_segments):
+            raise DSAPIVisionUnsupportedError("selected model has no enabled image input capability")
         if _contains_unsupported_multimodal_value(
             quoted_segments,
             allow_images=vision_enabled,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from qq_personal_bot.ai_models import catalog_model_option, is_vision_dsapi_model
 from qq_personal_bot.settings import AppSettings
 
 
@@ -30,7 +31,9 @@ def provider_settings(
     settings: AppSettings, provider: dict, *, managed: bool = True
 ) -> AppSettings:
     model = provider["default_model"]
-    option = next((item for item in provider["models"] if item["id"] == model), {})
+    option = next(
+        (item for item in provider["models"] if item["id"] == model), catalog_model_option(model)
+    )
     return replace(
         settings,
         dsapi_base_url=provider["base_url"],
@@ -41,7 +44,7 @@ def provider_settings(
         dsapi_timeout_seconds=provider["timeout_seconds"],
         dsapi_provider_id=provider["id"],
         dsapi_provider_managed=managed,
-        dsapi_vision_enabled=bool(option.get("vision", False)),
+        dsapi_vision_enabled=bool(option.get("vision", False)) or is_vision_dsapi_model(model),
     )
 
 

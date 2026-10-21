@@ -20,6 +20,7 @@ DSAPI_MODEL_OPTIONS: tuple[dict[str, Any], ...] = (
 _MODELS_BY_KEY = {str(item["key"]): item for item in DSAPI_MODEL_OPTIONS}
 _MODELS_BY_ID = {str(item["id"]): item for item in DSAPI_MODEL_OPTIONS}
 _LEGACY_FLASH_IDS = {"deepseek-v4-flash", "deepseek-v4-flash-vision-exp"}
+_VISION_FLASH_IDS = _LEGACY_FLASH_IDS | {"deepseek-v4.1-flash"}
 
 
 def resolve_dsapi_model(value: str, available_models: list[dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -43,9 +44,10 @@ def dsapi_model_option(model_id: str) -> dict[str, Any] | None:
 
 
 def is_vision_dsapi_model(model_id: str) -> bool:
-    if str(model_id).strip().casefold() in _LEGACY_FLASH_IDS:
+    normalized = str(model_id).strip().casefold().rsplit("/", 1)[-1]
+    if normalized in _VISION_FLASH_IDS:
         return True
-    option = dsapi_model_option(model_id)
+    option = dsapi_model_option(normalized)
     return bool(option and option["vision"])
 
 
@@ -59,5 +61,5 @@ def catalog_model_option(model_id: str) -> dict[str, Any]:
         return option
     lowered = model_id.lower()
     return {"id": model_id, "key": model_id, "label": model_id,
-            "vision": lowered.startswith(("gemini-", "gpt-4o", "gpt-4.1", "claude-")),
+            "vision": is_vision_dsapi_model(model_id) or lowered.startswith(("gemini-", "gpt-4o", "gpt-4.1", "claude-")),
             "family": model_id.split("-")[0]}

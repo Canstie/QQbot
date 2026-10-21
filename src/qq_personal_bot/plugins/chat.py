@@ -29,6 +29,7 @@ from qq_personal_bot.dsapi import (
     DSAPIImageError,
     DSAPILengthError,
     DSAPIResponseError,
+    DSAPIVisionUnsupportedError,
     generate_mention_reply,
     generate_random_group_reply,
     generate_roast_reply,
@@ -738,7 +739,9 @@ async def _dispatch_onebot_message(
                 bot,
                 event,
                 (
-                    "引用的图片读取失败，请重新发送图片后再引用我。"
+                    "当前消息模型未启用识图，请在网页的消息链路选择支持识图的模型后再试。"
+                    if isinstance(exc, DSAPIVisionUnsupportedError)
+                    else "引用的图片读取失败，请重新发送图片后再引用我。"
                     if isinstance(exc, DSAPIImageError)
                     else "这次回答没能完整生成，试着缩短问题再问一次。"
                     if isinstance(exc, DSAPILengthError)

@@ -270,6 +270,8 @@ async def test_quoting_bot_feature_image_does_not_call_ai(monkeypatch, reason, h
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("error,expected", [
+    (chat.DSAPIVisionUnsupportedError("selected model has no enabled image input capability"),
+     "当前消息模型未启用识图，请在网页的消息链路选择支持识图的模型后再试。"),
     (chat.DSAPIImageError("failed to read quoted image bytes"),
      "引用的图片读取失败，请重新发送图片后再引用我。"),
     (chat.DSAPIContentBlockedError("provider blocked this request by content policy"),

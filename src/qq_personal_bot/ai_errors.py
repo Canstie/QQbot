@@ -27,3 +27,7 @@ class DSAPILengthError(DSAPIError):
 
 class DSAPIImageError(DSAPIError):
     """A quoted image could not be loaded for the model."""
+
+
+class DSAPIVisionUnsupportedError(DSAPIError):
+    """The selected model has no enabled image input capability."""

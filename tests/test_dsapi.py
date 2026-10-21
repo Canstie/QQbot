@@ -12,6 +12,7 @@ from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.dsapi import (
     DSAPIImageError,
     DSAPILengthError,
+    DSAPIVisionUnsupportedError,
     _brief_reply,
     _chat_completions_url,
     _format_reply,
@@ -275,6 +276,44 @@ async def test_vision_model_sends_quoted_image_and_records_text_history(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cached_vision", [False, None])
+async def test_gateway_flash_alias_reads_quoted_images_with_stale_or_missing_catalog(
+    tmp_path, monkeypatch, cached_vision,
+):
+    store = make_store(tmp_path)
+    enable_web_search(store)
+    model = "deepseek-v4.1-flash"
+    provider = store.save_ai_provider(
+        name="Miku", base_url="https://gateway.example/v1", api_key="gateway-secret",
+        default_model=model, api_format="openai",
+    )
+    if cached_vision is not None:
+        store.save_ai_provider_models(provider, [{"id": model, "vision": cached_vision}],
+                                      expected_updated_at=store.get_ai_provider(provider)["updated_at"])
+    store.activate_ai_provider(provider)
+    calls = []
+
+    def complete(settings, messages, **kwargs):
+        calls.append((settings, messages, kwargs))
+        return "图中是一位动漫角色。"
+
+    monkeypatch.setattr(dsapi_module, "_request_chat_completion", complete)
+    monkeypatch.setattr(dsapi_module, "generate_web_reply",
+                        lambda *a, **k: pytest.fail("quoted image must bypass web search"))
+    bot = FakeBot({"message": [{"type": "image", "data": {"url": _PNG_SOURCE}}]})
+    event = make_event(text="这是谁", segments=({"type": "reply", "data": {"id": "42"}},))
+    reply = await generate_mention_reply(bot, event, make_settings(tmp_path), store)
+    assert reply == "图中是一位动漫角色。"
+    assert len(calls) == 1
+    settings, messages, kwargs = calls[0]
+    assert settings.dsapi_provider_id == provider and settings.dsapi_vision_enabled
+    assert kwargs["model"] == model and not kwargs.get("json_output")
+    assert messages[-1]["content"][1]["image_url"]["url"] == _PNG_SOURCE
+    history = store.get_dsapi_chat_history(123, 2, knowledge_id=store.get_dsapi_config()["active_knowledge_id"])
+    assert "这是谁" in history[0]["content"] and "base64" not in history[0]["content"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("question", ["这两位是谁？", "请搜索一下这张图中的角色是谁"])
 @pytest.mark.parametrize("managed", [False, True])
 async def test_quoted_images_bypass_enabled_web_search(
@@ -511,7 +550,7 @@ async def test_current_multimodal_message_is_discarded(segment_type):
 
 
 @pytest.mark.asyncio
-async def test_quoted_multimodal_message_is_discarded_before_dsapi_call(tmp_path, monkeypatch):
+async def test_nonvision_model_reports_unsupported_quote_before_downloading_or_calling_ai(tmp_path, monkeypatch):
     bot = FakeBot({"message": [{"type": "image", "data": {"file": "a.jpg"}}]})
     event = make_event(segments=({"type": "reply", "data": {"id": 42}},))
     store = make_store(tmp_path)
@@ -524,13 +563,10 @@ async def test_quoted_multimodal_message_is_discarded_before_dsapi_call(tmp_path
 
     monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
 
-    assert await generate_mention_reply(
-        bot,
-        event,
-        make_settings(tmp_path),
-        store,
-    ) is None
+    with pytest.raises(DSAPIVisionUnsupportedError):
+        await generate_mention_reply(bot, event, make_settings(tmp_path), store)
     assert requested is False
+    assert bot.calls == [("get_msg", {"message_id": 42})]
 
 
 @pytest.mark.asyncio
