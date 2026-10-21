@@ -13,6 +13,10 @@ class DSAPIResponseError(DSAPIError):
     """The provider returned an unusable response, rather than a network failure."""
 
 
+class DSAPIEmptyResponseError(DSAPIResponseError):
+    """Generation ended without any final answer text."""
+
+
 class DSAPIProtocolError(DSAPIResponseError):
     """The model emitted an invalid tool call or an unexpected tool invocation."""
 

@@ -11,6 +11,7 @@ import re
 import ssl
 import time
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from functools import partial
 from io import BytesIO
 from pathlib import Path
@@ -20,6 +21,7 @@ from urllib.request import Request, urlopen
 
 from qq_personal_bot.ai_errors import (
     DSAPIContentBlockedError,
+    DSAPIEmptyResponseError,
     DSAPIError,
     DSAPIImageError,
     DSAPILengthError,
@@ -88,6 +90,7 @@ _MAX_VISION_IMAGE_BYTES = 20 * 1024 * 1024
 _MAX_VISION_TOTAL_BYTES = 32 * 1024 * 1024
 _MULTI_REPLY_SEPARATOR = "<|消息分隔|>"
 _RELATIONSHIP_SUMMARY_MAX_CHARS = 500
+_RELATIONSHIP_SUMMARY_MAX_TOKENS = 1024
 _background_relationship_tasks: set[asyncio.Task[None]] = set()
 _web_tools_disabled_until: dict[tuple[int, str, str], float] = {}
 _json_output_disabled_until: dict[tuple[int, str, str], float] = {}
@@ -632,7 +635,7 @@ async def _refresh_relationship_memory(
             settings,
             messages,
             model=model,
-            max_tokens=180,
+            max_tokens=_RELATIONSHIP_SUMMARY_MAX_TOKENS,
             thinking_enabled=False,
             temperature=0.2,
         )
@@ -662,46 +665,45 @@ def _request_chat_completion_with_fallback(
     json_output: bool = False,
 ) -> str:
     thinking_enabled = thinking_enabled and settings.dsapi_api_format == "deepseek"
-    try:
-        response = _request_chat_completion(
-            settings,
-            messages,
-            model=model,
-            max_tokens=max_tokens,
-            thinking_enabled=thinking_enabled,
-            temperature=temperature,
-            **({"web_session": web_session} if web_session is not None else {}),
-            **({"json_output": True} if json_output else {}),
-        )
-    except (DSAPIContentBlockedError, DSAPIProtocolError):
-        raise
-    except DSAPIError:
-        if not thinking_enabled:
+    deadline = time.monotonic() + settings.dsapi_timeout_seconds
+    last_error: DSAPIError = DSAPIEmptyResponseError("empty assistant content")
+    for attempt in range(2):
+        request_settings = settings
+        if attempt:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise last_error
+            request_settings = replace(settings, dsapi_timeout_seconds=remaining)
+            logger.info(
+                "AI response recovery provider=%s model=%s reason=%s retry=1 json_output=%s",
+                settings.dsapi_provider_id, model, type(last_error).__name__, json_output,
+            )
+        try:
+            response = _request_chat_completion(
+                request_settings,
+                messages,
+                model=model,
+                max_tokens=max_tokens,
+                thinking_enabled=thinking_enabled,
+                temperature=temperature,
+                **({"web_session": web_session} if web_session is not None else {}),
+                **({"json_output": True} if json_output else {}),
+            )
+        except (DSAPIContentBlockedError, DSAPIProtocolError):
             raise
-        response = _request_chat_completion(
-            settings,
-            messages,
-            model=model,
-            max_tokens=max_tokens,
-            thinking_enabled=False,
-            temperature=temperature,
-            **({"web_session": web_session} if web_session is not None else {}),
-            **({"json_output": True} if json_output else {}),
-        )
-    if response is None and thinking_enabled:
-        response = _request_chat_completion(
-            settings,
-            messages,
-            model=model,
-            max_tokens=max_tokens,
-            thinking_enabled=False,
-            temperature=temperature,
-            **({"web_session": web_session} if web_session is not None else {}),
-            **({"json_output": True} if json_output else {}),
-        )
-    if response is None:
-        raise DSAPIResponseError("empty assistant content")
-    return response
+        except DSAPIEmptyResponseError as exc:
+            last_error = exc
+        except DSAPIError as exc:
+            if not thinking_enabled or attempt:
+                raise
+            last_error = exc
+        else:
+            if response and response.strip():
+                return response
+            last_error = DSAPIEmptyResponseError("empty assistant content")
+        if not attempt:
+            thinking_enabled = False
+    raise last_error
 
 
 def _random_reply_selected(
@@ -1022,9 +1024,11 @@ def _response_metadata(result: Any) -> dict[str, Any]:
     }
 
 
-def _unusable_response(result: Any, reason: str) -> NoReturn:
+def _unusable_response(
+    result: Any, reason: str, *, error_type: type[DSAPIResponseError] = DSAPIResponseError
+) -> NoReturn:
     logger.warning("AI response unusable reason=%s metadata=%s", reason, _response_metadata(result))
-    raise DSAPIResponseError(reason)
+    raise error_type(reason)
 
 
 def _invalid_tool_response(result: Any, reason: str) -> NoReturn:
@@ -1066,14 +1070,18 @@ def _extract_chat_text(result: Any, body: dict[str, Any], thinking_enabled: bool
             details.get("reasoning_tokens"),
         )
         raise DSAPILengthError("assistant response reached its length limit")
+    if message.get("tool_calls") or message.get("function_call"):
+        _invalid_tool_response(result, "unexpected_tool_call")
     if "content" not in message:
         _unusable_response(result, "response does not contain assistant content")
     content = message.get("content")
     if finish_reason not in (None, "", "stop"):
         raise DSAPIError(f"assistant generation stopped: {finish_reason}")
+    if content is None or (isinstance(content, str) and not content.strip()):
+        _unusable_response(result, "empty assistant content", error_type=DSAPIEmptyResponseError)
     if not isinstance(content, str):
         _unusable_response(result, "assistant content is not text")
-    return content.strip() or None
+    return content.strip()
 
 
 def _brief_reply(content: str | None) -> str | None:
