@@ -27,6 +27,10 @@ class AITransportError(OSError):
     """A sanitized transport error; never includes credentials or request content."""
 
 
+class AITransportTimeoutError(AITransportError):
+    """A transport phase exceeded its configured timeout."""
+
+
 def _ssl_context(tls_mode: str, server_hostname: str = "") -> ssl.SSLContext:
     context = ssl.create_default_context()
     if tls_mode == "tls12":
@@ -159,6 +163,7 @@ def request_ai_bytes(request: Request, settings: AppSettings) -> bytes:
     method = request.get_method()
     last_error = "request timed out"
     operation = "models" if method == "GET" else "completion"
+    error_type = AITransportError
     for attempt in range(2):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -167,6 +172,7 @@ def request_ai_bytes(request: Request, settings: AppSettings) -> bytes:
         trace = _TimingTrace()
 
         retry = False
+        error_type = AITransportError
         status: int | None = None
         try:
             with _borrow_client(request.full_url, settings, connect_ip) as client:
@@ -193,20 +199,25 @@ def request_ai_bytes(request: Request, settings: AppSettings) -> bytes:
                     retry = float(response.headers.get("Retry-After", "0")) <= 0.25
                 except ValueError:
                     retry = False
-        except (httpx.ConnectError, httpx.ConnectTimeout):
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
             last_error = f"connection failed during {trace.error_phase}"
+            if isinstance(exc, httpx.ConnectTimeout):
+                error_type = AITransportTimeoutError
             retry = True
         except (httpx.ReadError, httpx.RemoteProtocolError):
             last_error = f"connection interrupted during {trace.error_phase}"
             retry = True
         except httpx.ReadTimeout:
             last_error = f"request timed out during {trace.error_phase}"
+            error_type = AITransportTimeoutError
             # A long POST may already be generating; don't queue another full generation.
             retry = method == "GET"
         except httpx.PoolTimeout:
             last_error = "AI connection pool is busy; please retry shortly"
+            error_type = AITransportTimeoutError
         except httpx.TimeoutException:
             last_error = f"request timed out during {trace.error_phase}"
+            error_type = AITransportTimeoutError
         except httpx.ProxyError:
             last_error = f"proxy connection failed during {trace.error_phase}"
         except httpx.RequestError:
@@ -222,4 +233,4 @@ def request_ai_bytes(request: Request, settings: AppSettings) -> bytes:
         if attempt or not retry or deadline - time.monotonic() <= 0.25:
             break
         time.sleep(0.25)
-    raise AITransportError(last_error)
+    raise error_type(last_error)

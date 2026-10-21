@@ -270,6 +270,8 @@ async def test_quoting_bot_feature_image_does_not_call_ai(monkeypatch, reason, h
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("error,expected", [
+    (chat.DSAPITimeoutError("request timed out during receive_response_body"),
+     "接口请求超时，请稍后再试，或在网页适当提高供应商的请求超时。"),
     (chat.DSAPIVisionUnsupportedError("selected model has no enabled image input capability"),
      "当前消息模型未启用识图，请在网页的消息链路选择支持识图的模型后再试。"),
     (chat.DSAPIImageError("failed to read quoted image bytes"),

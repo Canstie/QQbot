@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 from io import BytesIO
+from urllib.error import URLError
 
 import pytest
 
@@ -1462,6 +1463,43 @@ def test_whitespace_response_logs_raw_and_usable_lengths_separately(tmp_path, mo
     assert "output_chars=150 output_text_chars=0" in caplog.text
     assert "'content_chars': 150, 'text_chars': 0" in caplog.text
     assert "secret" not in caplog.text
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+@pytest.mark.parametrize("operation", ["models", "completion"])
+def test_legacy_transport_timeouts_keep_specific_kind(tmp_path, monkeypatch, wrapped, operation):
+    timeout = TimeoutError("private-key and upstream details")
+
+    def unavailable(*args, **kwargs):
+        raise URLError(timeout) if wrapped else timeout
+
+    monkeypatch.setattr(dsapi_module, "urlopen", unavailable)
+    with pytest.raises(dsapi_module.DSAPITimeoutError) as error:
+        if operation == "models":
+            fetch_dsapi_models(make_settings(tmp_path))
+        else:
+            _request_chat_completion(make_settings(tmp_path), [{"role": "user", "content": "hello"}])
+    assert "private" not in str(error.value)
+
+
+def test_exhausted_thinking_request_timeout_does_not_start_another_generation(tmp_path, monkeypatch):
+    now = [0.0]
+    calls = []
+    monkeypatch.setattr(dsapi_module.time, "monotonic", lambda: now[0])
+
+    def timeout(*args, **kwargs):
+        calls.append(kwargs)
+        now[0] += 30
+        raise dsapi_module.DSAPITimeoutError("request timed out during receive_response_body")
+
+    monkeypatch.setattr(dsapi_module, "_request_chat_completion", timeout)
+    with pytest.raises(dsapi_module.DSAPITimeoutError, match="receive_response_body"):
+        dsapi_module._request_chat_completion_with_fallback(
+            make_settings(tmp_path, dsapi_timeout_seconds=30),
+            [{"role": "user", "content": "hello"}], model="deepseek-flash",
+            max_tokens=None, thinking_enabled=True, temperature=None,
+        )
+    assert len(calls) == 1
 
 
 @pytest.mark.parametrize("result", [None, []])

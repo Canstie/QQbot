@@ -29,6 +29,7 @@ from qq_personal_bot.dsapi import (
     DSAPIImageError,
     DSAPILengthError,
     DSAPIResponseError,
+    DSAPITimeoutError,
     DSAPIVisionUnsupportedError,
     generate_mention_reply,
     generate_random_group_reply,
@@ -749,6 +750,8 @@ async def _dispatch_onebot_message(
                     if isinstance(exc, DSAPIContentBlockedError)
                     else "接口没有返回可用的回答，请稍后再试。"
                     if isinstance(exc, DSAPIResponseError)
+                    else "接口请求超时，请稍后再试，或在网页适当提高供应商的请求超时。"
+                    if isinstance(exc, DSAPITimeoutError)
                     else "脑袋刚刚卡住啦，再问我一次嘛 (｡•́︿•̀｡)"
                 ),
                 explicit_group_send=explicit_group_send,

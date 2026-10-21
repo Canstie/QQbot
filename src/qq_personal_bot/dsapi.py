@@ -27,6 +27,7 @@ from qq_personal_bot.ai_errors import (
     DSAPILengthError,
     DSAPIProtocolError,
     DSAPIResponseError,
+    DSAPITimeoutError,
     DSAPIVisionUnsupportedError,
 )
 from qq_personal_bot.ai_models import catalog_model_option, is_vision_dsapi_model
@@ -35,7 +36,7 @@ from qq_personal_bot.ai_providers import (
     resolve_ai_settings,
     resolve_background_ai_settings,
 )
-from qq_personal_bot.ai_transport import AITransportError, request_ai_bytes
+from qq_personal_bot.ai_transport import AITransportError, AITransportTimeoutError, request_ai_bytes
 from qq_personal_bot.classic_storage import classic_image_type, read_classic_image_source
 from qq_personal_bot.core.models import MessageEvent
 from qq_personal_bot.core.store import PolicyStore
@@ -109,6 +110,8 @@ def _open_ai_request(request: Request, settings: AppSettings):
             or settings.ai_proxy_resolved or settings.ai_host_overrides):
         try:
             return BytesIO(request_ai_bytes(request, settings))
+        except AITransportTimeoutError as exc:
+            raise DSAPITimeoutError(str(exc)) from exc
         except AITransportError as exc:
             raise DSAPIError(str(exc)) from exc
     if settings.dsapi_tls_mode == "tls12":
@@ -145,9 +148,11 @@ def fetch_dsapi_models(settings: AppSettings) -> list[dict[str, Any]]:
     except HTTPError as exc:
         raise DSAPIError(f"HTTP {exc.code}") from exc
     except URLError as exc:
+        if isinstance(exc.reason, TimeoutError):
+            raise DSAPITimeoutError("request timed out") from exc
         raise DSAPIError(f"network error: {exc.reason}") from exc
     except TimeoutError as exc:
-        raise DSAPIError("request timed out") from exc
+        raise DSAPITimeoutError("request timed out") from exc
     except OSError as exc:
         raise DSAPIError("network connection interrupted") from exc
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -982,9 +987,11 @@ def _post_chat_body(settings: AppSettings, body: dict[str, Any]) -> Any:
     except HTTPError as exc:
         raise DSAPIError(f"HTTP {exc.code}") from exc
     except URLError as exc:
+        if isinstance(exc.reason, TimeoutError):
+            raise DSAPITimeoutError("request timed out") from exc
         raise DSAPIError(f"network error: {exc.reason}") from exc
     except TimeoutError as exc:
-        raise DSAPIError("request timed out") from exc
+        raise DSAPITimeoutError("request timed out") from exc
     except OSError as exc:
         raise DSAPIError("network connection interrupted") from exc
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:

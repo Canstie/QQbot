@@ -17,7 +17,11 @@ import pytest
 from httpcore._sync import http11
 
 from qq_personal_bot import ai_transport as transport
-from qq_personal_bot.dsapi import DSAPIError, _request_chat_completion, fetch_dsapi_models
+from qq_personal_bot.dsapi import (
+    DSAPITimeoutError,
+    _request_chat_completion,
+    fetch_dsapi_models,
+)
 from qq_personal_bot.settings import AppSettings
 
 
@@ -213,7 +217,7 @@ def test_long_post_read_timeout_does_not_queue_another_generation(mock_gateway):
         raise httpx.ReadTimeout("private-key", request=req)
 
     mock_gateway(handle)
-    with pytest.raises(transport.AITransportError, match="receive_response_headers"):
+    with pytest.raises(transport.AITransportTimeoutError, match="receive_response_headers"):
         transport.request_ai_bytes(request(), settings())
     assert len(attempts) == 1
 
@@ -267,9 +271,49 @@ def test_transport_errors_are_wrapped_for_chat_handlers(mock_gateway):
         raise httpx.WriteTimeout("private-key", request=req)
 
     mock_gateway(handle)
-    with pytest.raises(DSAPIError, match="request timed out") as error:
+    with pytest.raises(DSAPITimeoutError, match="request timed out") as error:
         _request_chat_completion(settings(), [{"role": "user", "content": "hello"}])
     assert "private-key" not in str(error.value)
+
+
+@pytest.mark.parametrize("failure,attempts_expected", [
+    (httpx.ConnectTimeout, 2), (httpx.ReadTimeout, 1), (httpx.WriteTimeout, 1),
+    (httpx.PoolTimeout, 1),
+])
+def test_timeout_kind_reaches_chat_without_leaking_upstream_details(
+    mock_gateway, monkeypatch, failure, attempts_expected,
+):
+    attempts = []
+    monkeypatch.setattr(transport.time, "sleep", lambda _: None)
+
+    def handle(req):
+        attempts.append(req)
+        raise failure("private-key and private upstream details", request=req)
+
+    mock_gateway(handle)
+    with pytest.raises(DSAPITimeoutError) as error:
+        _request_chat_completion(settings(), [{"role": "user", "content": "hello"}])
+    assert len(attempts) == attempts_expected
+    assert "private" not in str(error.value)
+
+
+def test_a_later_http_failure_is_not_misclassified_as_previous_connection_timeout(
+    mock_gateway, monkeypatch,
+):
+    attempts = []
+    monkeypatch.setattr(transport.time, "sleep", lambda _: None)
+
+    def handle(req):
+        attempts.append(req)
+        if len(attempts) == 1:
+            raise httpx.ConnectTimeout("private-key", request=req)
+        return httpx.Response(401)
+
+    mock_gateway(handle)
+    with pytest.raises(transport.AITransportError, match="HTTP 401") as error:
+        transport.request_ai_bytes(request(), settings())
+    assert type(error.value) is transport.AITransportError
+    assert len(attempts) == 2
 
 
 def test_provider_tls_modes_get_separate_connection_pools():

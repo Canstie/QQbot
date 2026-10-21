@@ -5,6 +5,10 @@ class DSAPIError(RuntimeError):
     pass
 
 
+class DSAPITimeoutError(DSAPIError):
+    """Connection, upload or response reading exceeded the configured timeout."""
+
+
 class DSAPIContentBlockedError(DSAPIError):
     """The provider explicitly declined the input or generated content."""
 
