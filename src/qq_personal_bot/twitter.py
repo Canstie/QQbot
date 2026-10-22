@@ -7,19 +7,28 @@ import re
 import shutil
 import tempfile
 from collections.abc import Mapping
-from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
 import httpx
 from PIL import Image, UnidentifiedImageError
 
+from qq_personal_bot.image_utils import verify_image
+from qq_personal_bot.media_cache import CachedImages as CachedTwitterImages
+
 logger = logging.getLogger(__name__)
 _STATUS_PATH = re.compile(
     r"/(?:[A-Za-z0-9_]{1,15}/status|i/(?:web/)?status)/(\d{1,22})"
     r"(?:/(?:photo|video)/\d+)?/?$",
 )
-_POST_HOSTS = {"x.com", "www.x.com", "mobile.x.com", "twitter.com", "www.twitter.com", "mobile.twitter.com"}
+_POST_HOSTS = {
+    "x.com",
+    "www.x.com",
+    "mobile.x.com",
+    "twitter.com",
+    "www.twitter.com",
+    "mobile.twitter.com",
+}
 _MAX_METADATA_BYTES = 1_000_000
 _MAX_IMAGE_BYTES = 12_000_000
 _MAX_IMAGES = 20
@@ -30,23 +39,19 @@ class TwitterImageError(ValueError):
     """A user-facing failure without proxy credentials or upstream response bodies."""
 
 
-@dataclass(frozen=True)
-class CachedTwitterImages:
-    directory: Path | None
-    paths: tuple[Path, ...]
-
-    def cleanup(self) -> None:
-        if self.directory is not None:
-            shutil.rmtree(self.directory, ignore_errors=True)
-
-
 def twitter_status_url(value: str) -> str | None:
     """Normalize a status link without fetching user-controlled URLs."""
     try:
         parsed = urlsplit(value)
         match = _STATUS_PATH.fullmatch(parsed.path)
-        if (parsed.scheme not in {"http", "https"} or parsed.hostname not in _POST_HOSTS
-                or parsed.username or parsed.password or parsed.port not in (None, 80, 443) or not match):
+        if (
+            parsed.scheme not in {"http", "https"}
+            or parsed.hostname not in _POST_HOSTS
+            or parsed.username
+            or parsed.password
+            or parsed.port not in (None, 80, 443)
+            or not match
+        ):
             return None
         return f"https://x.com/i/status/{match[1]}"
     except ValueError:
@@ -59,14 +64,27 @@ def _original_photo_url(value: object) -> str:
     try:
         parsed = urlsplit(value)
         match = re.fullmatch(r"/media/([A-Za-z0-9_-]+)(?:\.(jpg|jpeg|png|webp|gif))?", parsed.path)
-        if (parsed.scheme != "https" or parsed.hostname != "pbs.twimg.com"
-                or parsed.username or parsed.password or parsed.port not in (None, 443) or not match):
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname != "pbs.twimg.com"
+            or parsed.username
+            or parsed.password
+            or parsed.port not in (None, 443)
+            or not match
+        ):
             raise ValueError("invalid photo URL")
         image_format = match[2] or parse_qs(parsed.query).get("format", ["jpg"])[0]
         if image_format not in {"jpg", "jpeg", "png", "webp", "gif"}:
             raise ValueError("invalid image format")
-        return urlunsplit(("https", "pbs.twimg.com", f"/media/{match[1]}",
-                           urlencode({"format": image_format, "name": "orig"}), ""))
+        return urlunsplit(
+            (
+                "https",
+                "pbs.twimg.com",
+                f"/media/{match[1]}",
+                urlencode({"format": image_format, "name": "orig"}),
+                "",
+            )
+        )
     except ValueError:
         raise TwitterImageError("推文图片地址异常，请稍后重试。") from None
 
@@ -81,7 +99,11 @@ def _photo_urls(payload: object, status_id: str) -> tuple[str, ...]:
     if not isinstance(media, Mapping):
         raise TwitterImageError("推特解析接口返回格式异常，请稍后重试。")
     all_media, photos = media.get("all"), media.get("photos")
-    entries = [item for item in all_media if isinstance(item, Mapping) and item.get("type") == "photo"] if isinstance(all_media, list) else []
+    entries = (
+        [item for item in all_media if isinstance(item, Mapping) and item.get("type") == "photo"]
+        if isinstance(all_media, list)
+        else []
+    )
     if isinstance(photos, list):
         entries.extend(photos)
     urls: list[str] = []
@@ -122,7 +144,10 @@ async def _fetch_photos(client: httpx.AsyncClient, status_id: str) -> tuple[str,
 
 
 async def _download_photo(
-    client: httpx.AsyncClient, url: str, directory: Path, index: int,
+    client: httpx.AsyncClient,
+    url: str,
+    directory: Path,
+    index: int,
 ) -> Path:
     path = directory / f"{index:02d}.part"
     for attempt in range(2):
@@ -138,19 +163,24 @@ async def _download_photo(
                         if size > _MAX_IMAGE_BYTES:
                             raise TwitterImageError("推文中有图片超过 12 MB，暂时无法发送。")
                         target.write(chunk)
-            with Image.open(path) as image:
-                extension = _IMAGE_FORMATS.get(image.format or "")
-                if not extension or image.width * image.height > 40_000_000:
-                    raise TwitterImageError("推文中有图片格式或尺寸不受支持。")
-                image.verify()
+            try:
+                image_format = verify_image(path, formats=set(_IMAGE_FORMATS))
+            except ValueError as exc:
+                raise TwitterImageError("推文中有图片格式或尺寸不受支持。") from exc
+            extension = _IMAGE_FORMATS[image_format]
             final_path = path.with_suffix(extension)
             path.rename(final_path)
             logger.info("Twitter image index=%s bytes=%s via_proxy=True", index, size)
             return final_path
         except (httpx.RequestError, httpx.HTTPStatusError) as exc:
             status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
-            logger.info("Twitter image index=%s attempt=%s status=%s error=%s via_proxy=True",
-                        index, attempt + 1, status, type(exc).__name__)
+            logger.info(
+                "Twitter image index=%s attempt=%s status=%s error=%s via_proxy=True",
+                index,
+                attempt + 1,
+                status,
+                type(exc).__name__,
+            )
             if attempt or status is not None and status not in {408, 429, 500, 502, 503, 504}:
                 break
     raise TwitterImageError("推文图片下载失败，请稍后重试。")
@@ -166,12 +196,19 @@ async def cache_twitter_images(source_url: str, *, proxy_url: str) -> CachedTwit
     directory: Path | None = None
     completed = False
     try:
-        async with asyncio.timeout(60), httpx.AsyncClient(
-            proxy=proxy_url, trust_env=False, follow_redirects=False,
-            timeout=httpx.Timeout(15, connect=10),
-            limits=httpx.Limits(max_connections=4, max_keepalive_connections=2, keepalive_expiry=30),
-            headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
-        ) as client:
+        async with (
+            asyncio.timeout(60),
+            httpx.AsyncClient(
+                proxy=proxy_url,
+                trust_env=False,
+                follow_redirects=False,
+                timeout=httpx.Timeout(15, connect=10),
+                limits=httpx.Limits(
+                    max_connections=4, max_keepalive_connections=2, keepalive_expiry=30
+                ),
+                headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+            ) as client,
+        ):
             urls = await _fetch_photos(client, normalized.rsplit("/", 1)[1])
             logger.info("Twitter resolved photos=%s via_proxy=True", len(urls))
             if not urls:

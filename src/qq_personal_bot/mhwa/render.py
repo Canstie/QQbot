@@ -11,9 +11,14 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
+from qq_personal_bot.drawing import load_font
 from qq_personal_bot.mhwa.calculate import ELEMENT_NAMES, STATUS_NAMES
 from qq_personal_bot.settings import AppSettings
-from qq_personal_bot.steam.render import _font
+
+
+def _font(settings, size, *, bold=False):
+    return load_font(size, bold=bold, preferred_path=settings.steam_font_path)
+
 
 WIDTH = 1440
 MAX_HEIGHT = 2400

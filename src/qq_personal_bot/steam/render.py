@@ -8,6 +8,7 @@ from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
+from qq_personal_bot.drawing import load_font
 from qq_personal_bot.settings import AppSettings
 
 _BACKGROUND = "#101b2d"
@@ -51,9 +52,7 @@ def render_status_card(
             text_width = 430
         except (OSError, ValueError):
             pass
-    accent = {"start": _START, "end": _END, "network_recovered": _NETWORK}.get(
-        event_type, _NETWORK
-    )
+    accent = {"start": _START, "end": _END, "network_recovered": _NETWORK}.get(event_type, _NETWORK)
     draw.rounded_rectangle((34, 34, 52, 386), radius=9, fill=accent)
 
     title_font = _font(settings, 44, bold=True)
@@ -67,8 +66,18 @@ def render_status_card(
     display_name = alias or player.get("persona_name") or player.get("steam_id") or "Steam 玩家"
     game_name = session.get("game_name") or session.get("game_id") or "未知游戏"
     draw.text((88, 72), label, fill=accent, font=small_font)
-    draw.text((88, 114), _fit_text(draw, str(display_name), title_font, text_width), fill=_TEXT, font=title_font)
-    draw.text((88, 196), _fit_text(draw, str(game_name), body_font, text_width), fill=_TEXT, font=body_font)
+    draw.text(
+        (88, 114),
+        _fit_text(draw, str(display_name), title_font, text_width),
+        fill=_TEXT,
+        font=title_font,
+    )
+    draw.text(
+        (88, 196),
+        _fit_text(draw, str(game_name), body_font, text_width),
+        fill=_TEXT,
+        font=body_font,
+    )
 
     if event_type == "end" and session.get("ended_at"):
         seconds = max(0, float(session["ended_at"]) - float(session["started_at"]))
@@ -82,20 +91,8 @@ def render_status_card(
     return output_path
 
 
-def _font(settings: AppSettings, size: int, *, bold: bool = False) -> ImageFont.ImageFont:
-    candidates = [
-        settings.steam_font_path,
-        Path("C:/Windows/Fonts/msyhbd.ttc" if bold else "C:/Windows/Fonts/msyh.ttc"),
-        Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc" if bold else "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
-        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
-    ]
-    for candidate in candidates:
-        if candidate and candidate.is_file():
-            try:
-                return ImageFont.truetype(str(candidate), size=size)
-            except OSError:
-                continue
-    return ImageFont.load_default(size=size)
+def _font(settings: AppSettings, size: int, *, bold: bool = False):
+    return load_font(size, bold=bold, preferred_path=settings.steam_font_path)
 
 
 def _fit_text(draw: ImageDraw.ImageDraw, value: str, font: ImageFont.ImageFont, width: int) -> str:

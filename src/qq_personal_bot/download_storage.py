@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-from io import BytesIO
 from typing import Any
 
-from minio import Minio
-from minio.error import S3Error
-
+from qq_personal_bot.object_storage import ObjectStorage
 from qq_personal_bot.runtime import get_settings
 
 
@@ -27,12 +24,8 @@ class DownloadObjectStorage:
         if not endpoint or not access_key or not secret_key or not bucket:
             raise DownloadStorageError("MinIO 尚未配置。")
         self.bucket = bucket
-        self.client = client or Minio(
-            endpoint,
-            access_key=access_key,
-            secret_key=secret_key,
-            secure=secure,
-        )
+        self.objects = ObjectStorage(endpoint, access_key, secret_key, secure=secure, client=client)
+        self.client = self.objects.client
 
     def ensure_available(self) -> None:
         try:
@@ -51,47 +44,31 @@ class DownloadObjectStorage:
         metadata: dict[str, str],
     ) -> None:
         try:
-            self.client.put_object(
-                self.bucket,
-                object_key,
-                BytesIO(body),
-                len(body),
-                content_type=content_type,
-                metadata=metadata,
-            )
+            self.objects.put(self.bucket, object_key, body, content_type, metadata)
         except Exception as exc:
             raise DownloadStorageError(f"MinIO 上传失败：{object_key}") from exc
 
     def stat_image(self, object_key: str) -> Any:
         try:
-            return self.client.stat_object(self.bucket, object_key)
+            return self.objects.stat(self.bucket, object_key)
         except Exception as exc:
             raise DownloadStorageError(f"MinIO 对象校验失败：{object_key}") from exc
 
     def image_exists(self, object_key: str) -> bool:
         try:
-            self.client.stat_object(self.bucket, object_key)
-            return True
-        except S3Error as exc:
-            if exc.code in {"NoSuchKey", "NoSuchObject"}:
-                return False
-            raise DownloadStorageError(f"MinIO 对象校验失败：{object_key}") from exc
+            return self.objects.exists(self.bucket, object_key)
         except Exception as exc:
             raise DownloadStorageError(f"MinIO 对象校验失败：{object_key}") from exc
 
     def get_image(self, object_key: str) -> Any:
         try:
-            return self.client.get_object(self.bucket, object_key)
+            return self.objects.get(self.bucket, object_key)
         except Exception as exc:
             raise DownloadStorageError(f"MinIO 图片读取失败：{object_key}") from exc
 
     def remove_image(self, object_key: str, *, missing_ok: bool = False) -> None:
         try:
-            self.client.remove_object(self.bucket, object_key)
-        except S3Error as exc:
-            if missing_ok and exc.code in {"NoSuchKey", "NoSuchObject", "NoSuchBucket"}:
-                return
-            raise DownloadStorageError(f"MinIO 图片删除失败：{object_key}") from exc
+            self.objects.remove(self.bucket, object_key, missing_ok=missing_ok)
         except Exception as exc:
             raise DownloadStorageError(f"MinIO 图片删除失败：{object_key}") from exc
 

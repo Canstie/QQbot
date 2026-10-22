@@ -7,12 +7,13 @@ from typing import Literal
 from fastapi import HTTPException, Request
 from pydantic import BaseModel, Field, SecretStr, StrictBool
 
+from qq_personal_bot import ai_client
+from qq_personal_bot.ai_errors import DSAPIError
 from qq_personal_bot.ai_providers import (
     ai_proxy_state,
     provider_settings,
     resolve_ai_proxy_settings,
 )
-from qq_personal_bot.dsapi import DSAPIError, _request_chat_completion, fetch_dsapi_models
 
 
 class ProviderPayload(BaseModel):
@@ -127,8 +128,10 @@ def register_ai_provider_routes(app, get_settings, get_store, require_token):
         require_token(request)
         try:
             provider = get_store().get_ai_provider(provider_id)
-            settings = provider_settings(resolve_ai_proxy_settings(get_settings(), get_store()), provider)
-            models = await asyncio.to_thread(fetch_dsapi_models, settings)
+            settings = provider_settings(
+                resolve_ai_proxy_settings(get_settings(), get_store()), provider
+            )
+            models = await asyncio.to_thread(ai_client.fetch_dsapi_models, settings)
             get_store().save_ai_provider_models(
                 provider_id, models, expected_updated_at=provider["updated_at"]
             )
@@ -143,11 +146,13 @@ def register_ai_provider_routes(app, get_settings, get_store, require_token):
         require_token(request)
         try:
             provider = get_store().get_ai_provider(provider_id)
-            settings = provider_settings(resolve_ai_proxy_settings(get_settings(), get_store()), provider)
+            settings = provider_settings(
+                resolve_ai_proxy_settings(get_settings(), get_store()), provider
+            )
             model = payload.model or settings.dsapi_model
             start = time.monotonic()
             reply = await asyncio.to_thread(
-                _request_chat_completion,
+                ai_client.request_completion,
                 settings,
                 [{"role": "user", "content": "Reply with exactly OK."}],
                 model=model,

@@ -103,7 +103,7 @@ async def test_all_command_legacy_batch_advances_without_model_call(memory, monk
     for source_id in range(1, 4):
         mark_legacy_command(store, source_id)
     provider = Mock(side_effect=AssertionError("command batch must not call the model"))
-    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion_with_fallback", provider)
+    monkeypatch.setattr('qq_personal_bot.ai_client.complete_text', provider)
     assert await refresh_memory_graph(store, settings, 123, force=True)
     provider.assert_not_called()
     assert store.get_memory_config()["pending_messages"] == 0
@@ -284,7 +284,7 @@ async def test_background_extraction_uses_source_ids_and_validates_provider_resp
         captured.append(messages)
         assert "time" in data["messages"][0]
         return json.dumps({"claims":claims_for(data)}, ensure_ascii=False)
-    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion_with_fallback", provider)
+    monkeypatch.setattr('qq_personal_bot.ai_client.complete_text', provider)
     assert await refresh_memory_graph(store, settings, 123)
     assert len(store.get_person_graph(123, 456)["edges"]) == 2
     assert store.get_memory_config()["pending_messages"] == 0
@@ -296,7 +296,7 @@ async def test_background_extraction_uses_source_ids_and_validates_provider_resp
 async def test_bad_provider_output_keeps_messages_retryable(memory, monkeypatch):
     store, settings = memory
     record(store)
-    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion_with_fallback", lambda *a,**k:"坏 JSON")
+    monkeypatch.setattr('qq_personal_bot.ai_client.complete_text', lambda *a,**k:"坏 JSON")
     assert not await refresh_memory_graph(store, settings, 123, force=True)
     assert store.get_memory_config()["pending_messages"] == 3
     assert store.get_memory_config()["progress"][0]["failures"] == 1
@@ -325,7 +325,7 @@ async def test_roast_uses_graph_and_exact_attributed_evidence(memory, monkeypatc
         assert "不预设负面结论" in messages[0]["content"]
         assert "最后补一刀" not in messages[0]["content"]
         return "他表达了对舞萌的喜爱，也提过后续游玩计划。"
-    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion_with_fallback", provider)
+    monkeypatch.setattr('qq_personal_bot.ai_client.complete_text', provider)
     assert await generate_roast_reply(group_id=123,target_user_id=456,settings=settings,store=store,
                                       request_text="评价一下他的游戏习惯")
     get_graph.assert_called_once_with(
@@ -346,7 +346,7 @@ async def test_regular_conversation_receives_only_current_group_graph(memory, mo
     def provider(settings, messages, **kwargs):
         captured.append(messages)
         return "今天还去玩舞萌吗？"
-    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion_with_fallback", provider)
+    monkeypatch.setattr('qq_personal_bot.ai_client.complete_text', provider)
     event = MessageEvent(platform="onebot.v11",group_id=123,user_id=456,message_id=99,
                          raw_message="下午做什么",is_at_bot=True)
     assert await generate_mention_reply(None,event,settings,store)
@@ -358,6 +358,8 @@ def test_graph_api_requires_login_and_returns_sources_and_scoped_clear(memory, m
     from fastapi.testclient import TestClient
 
     from qq_personal_bot import web
+    from qq_personal_bot.admin_routes import ai as ai_routes
+    from qq_personal_bot.admin_routes import auth as auth_routes
 
     store, settings = memory
     seed_graph(store)
@@ -369,6 +371,8 @@ def test_graph_api_requires_login_and_returns_sources_and_scoped_clear(memory, m
     object.__setattr__(settings, "web_token", "admin-test")
     monkeypatch.setattr(web, "get_store", lambda: store)
     monkeypatch.setattr(web, "get_settings", lambda: settings)
+    monkeypatch.setattr(auth_routes, "get_settings", lambda: settings)
+    monkeypatch.setattr(ai_routes, "get_store", lambda: store)
     with TestClient(web.create_app()) as client:
         assert client.get("/api/dsapi/memory/123/456").status_code == 401
         client.post("/login", data={"password": "admin-test"})
@@ -439,7 +443,7 @@ async def test_evaluation_includes_backfilled_day_beyond_recent_400(memory, monk
         captured.append(graph)
         return "综合七至九号的本人陈述。"
     monkeypatch.setattr("qq_personal_bot.dsapi.refresh_memory_graph", AsyncMock())
-    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion_with_fallback", provider)
+    monkeypatch.setattr('qq_personal_bot.ai_client.complete_text', provider)
     assert await generate_roast_reply(
         group_id=123, target_user_id=456, settings=settings, store=store,
     )
@@ -501,7 +505,7 @@ async def test_memory_only_group_extracts_without_enabling_chat_or_roast(memory,
         data = json.loads(messages[1]["content"])
         return json.dumps({"claims": claims_for(data)})
 
-    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion_with_fallback", provider)
+    monkeypatch.setattr('qq_personal_bot.ai_client.complete_text', provider)
     assert get_memory_status(store, settings)["extraction_status"][0]["state"] == "queued"
     assert await refresh_memory_graph(store, settings, 123)
     assert len(store.get_person_graph(123, 456)["edges"]) == 2
@@ -539,7 +543,7 @@ async def test_paused_extraction_explains_gate_and_keeps_backlog(memory, monkeyp
     def unexpected_call(*args, **kwargs):
         pytest.fail("Paused group must not call the model")
 
-    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion_with_fallback", unexpected_call)
+    monkeypatch.setattr('qq_personal_bot.ai_client.complete_text', unexpected_call)
     assert not await refresh_memory_graph(store, settings, 123)
     status = get_memory_status(store, settings)
     assert status["pending_messages"] == 3
@@ -570,7 +574,7 @@ async def test_invalid_claim_does_not_block_valid_claims_or_next_batch(memory, m
         bad = {**good[0], "source_ids": [987654321]}
         return json.dumps({"claims": [bad, None, {**bad, "predicate": []}, *good]})
 
-    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion_with_fallback", provider)
+    monkeypatch.setattr('qq_personal_bot.ai_client.complete_text', provider)
     assert await refresh_memory_graph(store, settings, 123)
     state = store.get_memory_config()
     assert state["pending_messages"] == 0 and state["edge_count"] == 2
@@ -611,7 +615,7 @@ async def test_all_unattributable_claims_advance_without_creating_facts_or_delet
         data = json.loads(messages[1]["content"])
         claim = {**claims_for(data)[0], "source_ids": [999999]}
         return json.dumps({"claims": [claim]})
-    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion_with_fallback", provider)
+    monkeypatch.setattr('qq_personal_bot.ai_client.complete_text', provider)
     assert await refresh_memory_graph(store, settings, 123)
     state = store.get_memory_config()
     assert state["pending_messages"] == 0 and state["edge_count"] == 0
@@ -630,7 +634,7 @@ async def test_extraction_uses_internal_reply_ids_and_reports_json_failure(memor
         assert all("message_id" not in m and "reply_to" not in m for m in data["messages"])
         assert data["messages"][-1]["reply_to_id"] == 1
         return "错误 JSON"
-    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion_with_fallback", provider)
+    monkeypatch.setattr('qq_personal_bot.ai_client.complete_text', provider)
     assert not await refresh_memory_graph(store, settings, 123, force=True)
     state = get_memory_status(store, settings)
     assert state["pending_messages"] == 4

@@ -8,6 +8,11 @@ from urllib.error import URLError
 import pytest
 
 import qq_personal_bot.dsapi as dsapi_module
+from qq_personal_bot import ai_client
+from qq_personal_bot.ai_client import _chat_completions_url as _chat_completions_url
+from qq_personal_bot.ai_client import _models_url as _models_url
+from qq_personal_bot.ai_client import fetch_dsapi_models
+from qq_personal_bot.ai_client import request_completion as _request_chat_completion
 from qq_personal_bot.core.models import MessageEvent
 from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.dsapi import (
@@ -15,15 +20,11 @@ from qq_personal_bot.dsapi import (
     DSAPILengthError,
     DSAPIVisionUnsupportedError,
     _brief_reply,
-    _chat_completions_url,
     _format_reply,
-    _models_url,
     _pick_random_sticker,
     _random_reply_selected,
     _refresh_relationship_memory,
-    _request_chat_completion,
     build_mention_prompt,
-    fetch_dsapi_models,
     generate_mention_reply,
     generate_random_group_reply,
 )
@@ -40,11 +41,11 @@ _PNG_SOURCE = "data:image/png;base64," + base64.b64encode(_PNG_BYTES).decode()
 
 @pytest.fixture(autouse=True)
 def reset_tool_compatibility_cache():
-    dsapi_module._web_tools_disabled_until.clear()
-    dsapi_module._json_output_disabled_until.clear()
+    ai_client._web_tools_disabled_until.clear()
+    ai_client._json_output_disabled_until.clear()
     yield
-    dsapi_module._web_tools_disabled_until.clear()
-    dsapi_module._json_output_disabled_until.clear()
+    ai_client._web_tools_disabled_until.clear()
+    ai_client._json_output_disabled_until.clear()
 
 
 @pytest.fixture
@@ -126,7 +127,7 @@ async def test_ai_master_switch_disables_mentions_and_random_context(tmp_path, m
         nonlocal requested
         requested = True
 
-    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
+    monkeypatch.setattr('qq_personal_bot.ai_client.request_completion', fake_request)
     settings = make_settings(tmp_path)
     store = make_store(
         tmp_path,
@@ -229,7 +230,7 @@ async def test_large_quoted_image_is_prepared_before_sending_to_the_model(tmp_pa
             assert image.width * image.height <= MAX_IMAGE_PIXELS
         return "图中是蓝色区域。"
 
-    monkeypatch.setattr(dsapi_module, "_request_chat_completion", complete)
+    monkeypatch.setattr(ai_client, 'request_completion', complete)
     event = make_event(text="图里是什么", segments=({"type":"reply", "data":{"id":42}},))
     assert await generate_mention_reply(bot, event, make_settings(tmp_path), store) == "图中是蓝色区域。"
 
@@ -249,7 +250,7 @@ async def test_vision_model_sends_quoted_image_and_records_text_history(
         captured["options"] = kwargs
         return "图中是一只猫。"
 
-    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
+    monkeypatch.setattr('qq_personal_bot.ai_client.request_completion', fake_request)
 
     response = await generate_mention_reply(
         bot,
@@ -298,7 +299,7 @@ async def test_gateway_flash_alias_reads_quoted_images_with_stale_or_missing_cat
         calls.append((settings, messages, kwargs))
         return "图中是一位动漫角色。"
 
-    monkeypatch.setattr(dsapi_module, "_request_chat_completion", complete)
+    monkeypatch.setattr(ai_client, 'request_completion', complete)
     monkeypatch.setattr(dsapi_module, "generate_web_reply",
                         lambda *a, **k: pytest.fail("quoted image must bypass web search"))
     bot = FakeBot({"message": [{"type": "image", "data": {"url": _PNG_SOURCE}}]})
@@ -338,7 +339,7 @@ async def test_quoted_images_bypass_enabled_web_search(
         assert body["messages"][-1]["content"][1]["image_url"]["url"] == _PNG_SOURCE
         return completion("图中是两位穿制服的角色。")
 
-    monkeypatch.setattr(dsapi_module, "_post_chat_body", post)
+    monkeypatch.setattr(ai_client, '_post_chat_body', post)
     monkeypatch.setattr(dsapi_module, "generate_web_reply",
                         lambda *args, **kwargs: pytest.fail("images must bypass web decisions"))
     monkeypatch.setattr("qq_personal_bot.web_search.search_web",
@@ -362,7 +363,7 @@ async def test_quoted_text_still_uses_web_decisions(tmp_path, monkeypatch):
         return "已按文字问题处理。"
 
     monkeypatch.setattr(dsapi_module, "generate_web_reply", web)
-    monkeypatch.setattr(dsapi_module, "_request_chat_completion",
+    monkeypatch.setattr(ai_client, 'request_completion',
                         lambda *args, **kwargs: pytest.fail("text must use the web entry point"))
     bot = FakeBot({"message": [{"type": "text", "data": {"text": "被引用的文字"}}]})
     event = make_event(text="核实这句话", segments=({"type": "reply", "data": {"id": "42"}},))
@@ -391,7 +392,7 @@ async def test_direct_vision_repairs_one_bad_tool_call_with_the_same_image(
         assert "直接用自然语言" in body["messages"][-1]["content"]
         return completion("图中是一只猫。")
 
-    monkeypatch.setattr(dsapi_module, "_post_chat_body", post)
+    monkeypatch.setattr(ai_client, '_post_chat_body', post)
     bot = FakeBot({"message": [{"type": "image", "data": {"url": _PNG_SOURCE}}]})
     event = make_event(text="图片是什么", segments=({"type": "reply", "data": {"id": "42"}},))
     if recovers:
@@ -417,7 +418,7 @@ async def test_direct_vision_does_not_retry_content_blocks_or_network_errors(tmp
         calls.append(body)
         raise error
 
-    monkeypatch.setattr(dsapi_module, "_post_chat_body", post)
+    monkeypatch.setattr(ai_client, '_post_chat_body', post)
     bot = FakeBot({"message": [{"type": "image", "data": {"url": _PNG_SOURCE}}]})
     event = make_event(text="图片是什么", segments=({"type": "reply", "data": {"id": "42"}},))
     with pytest.raises(type(error)):
@@ -485,7 +486,7 @@ async def test_unreadable_quoted_image_never_reaches_model(tmp_path, monkeypatch
         nonlocal requested
         requested = True
 
-    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
+    monkeypatch.setattr('qq_personal_bot.ai_client.request_completion', fake_request)
     store = make_store(tmp_path)
     store.set_active_dsapi_model("deepseek-flash", actor_id=0)
     event = make_event(segments=({"type": "reply", "data": {"message": [
@@ -562,7 +563,7 @@ async def test_nonvision_model_reports_unsupported_quote_before_downloading_or_c
         nonlocal requested
         requested = True
 
-    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
+    monkeypatch.setattr('qq_personal_bot.ai_client.request_completion', fake_request)
 
     with pytest.raises(DSAPIVisionUnsupportedError):
         await generate_mention_reply(bot, event, make_settings(tmp_path), store)
@@ -579,7 +580,7 @@ async def test_missing_api_key_does_not_resolve_quote_or_call_dsapi(tmp_path, mo
         nonlocal requested
         requested = True
 
-    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
+    monkeypatch.setattr('qq_personal_bot.ai_client.request_completion', fake_request)
 
     response = await generate_mention_reply(
         bot,
@@ -602,7 +603,7 @@ async def test_group_without_ai_enabled_does_not_resolve_quote_or_call_dsapi(tmp
         nonlocal requested
         requested = True
 
-    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
+    monkeypatch.setattr('qq_personal_bot.ai_client.request_completion', fake_request)
     response = await generate_mention_reply(
         bot,
         make_event(segments=({"type": "reply", "data": {"id": 42}},)),
@@ -632,7 +633,7 @@ async def test_knowledge_and_group_history_are_sent_and_response_is_recorded(tmp
         captured["messages"] = messages
         return "本轮回答"
 
-    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
+    monkeypatch.setattr('qq_personal_bot.ai_client.request_completion', fake_request)
 
     response = await generate_mention_reply(
         FakeBot(),
@@ -678,7 +679,7 @@ async def test_active_knowledge_base_is_used_for_dsapi_prompt(tmp_path, monkeypa
         captured["options"] = kwargs
         return "档案回答第一段。\n\n档案回答第二段。"
 
-    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
+    monkeypatch.setattr('qq_personal_bot.ai_client.request_completion', fake_request)
 
     response = await generate_mention_reply(
         FakeBot(),
@@ -729,7 +730,7 @@ async def test_ai_relationship_and_prompt_style_examples_are_injected(tmp_path, 
         captured["messages"] = messages
         return "骂它也不出货的"
 
-    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
+    monkeypatch.setattr('qq_personal_bot.ai_client.request_completion', fake_request)
     monkeypatch.setattr("qq_personal_bot.dsapi._refresh_relationship_memory", fake_refresh)
 
     response = await generate_mention_reply(
@@ -763,7 +764,7 @@ def test_provider_content_blocks_are_recognized_before_missing_text(
     tmp_path, monkeypatch, caplog, response,
 ):
     response["echoed_input"] = "private user question"
-    monkeypatch.setattr(dsapi_module, "_post_chat_body", lambda *args: response)
+    monkeypatch.setattr(ai_client, '_post_chat_body', lambda *args: response)
     with pytest.raises(dsapi_module.DSAPIContentBlockedError, match="content policy"):
         _request_chat_completion(make_settings(tmp_path), [{"role": "user", "content": "你好"}])
     assert "AI response blocked" in caplog.text
@@ -780,7 +781,7 @@ def test_provider_content_blocks_are_recognized_before_missing_text(
 def test_unusable_responses_are_not_assumed_to_be_content_blocks(
     tmp_path, monkeypatch, caplog, response,
 ):
-    monkeypatch.setattr(dsapi_module, "_post_chat_body", lambda *args: response)
+    monkeypatch.setattr(ai_client, '_post_chat_body', lambda *args: response)
     with pytest.raises(dsapi_module.DSAPIResponseError):
         _request_chat_completion(make_settings(tmp_path), [{"role": "user", "content": "你好"}])
     assert "AI response unusable" in caplog.text
@@ -797,11 +798,11 @@ def test_explicit_content_block_does_not_retry_or_search(tmp_path, monkeypatch, 
         calls.append(body)
         return {"choices": [{"finish_reason": "PROHIBITED_CONTENT"}]}
 
-    monkeypatch.setattr(dsapi_module, "_post_chat_body", post)
+    monkeypatch.setattr(ai_client, '_post_chat_body', post)
     monkeypatch.setattr("qq_personal_bot.web_search.search_web",
                         lambda *args, **kwargs: pytest.fail("blocked requests must not search"))
     with pytest.raises(dsapi_module.DSAPIContentBlockedError):
-        dsapi_module._request_chat_completion_with_fallback(
+        ai_client.complete_text(
             make_settings(tmp_path), [{"role": "user", "content": "测试文本"}],
             model="test-model", max_tokens=None, thinking_enabled=thinking,
             temperature=None, web_session=session,
@@ -813,7 +814,7 @@ def test_unspecified_prompt_feedback_does_not_block_normal_answers(tmp_path, mon
     response = completion("你好，在呢。")
     response["promptFeedback"] = {"blockReason": "BLOCK_REASON_UNSPECIFIED"}
     response["choices"][0]["message"]["refusal"] = None
-    monkeypatch.setattr(dsapi_module, "_post_chat_body", lambda *args: response)
+    monkeypatch.setattr(ai_client, '_post_chat_body', lambda *args: response)
     assert _request_chat_completion(
         make_settings(tmp_path), [{"role": "user", "content": "你好"}],
     ) == "你好，在呢。"
@@ -828,7 +829,7 @@ def test_unspecified_prompt_feedback_does_not_block_normal_answers(tmp_path, mon
 def test_invalid_or_unrequested_tools_are_classified_as_protocol_errors(
     tmp_path, monkeypatch, choice,
 ):
-    monkeypatch.setattr(dsapi_module, "_post_chat_body", lambda *args: {"choices": [choice]})
+    monkeypatch.setattr(ai_client, '_post_chat_body', lambda *args: {"choices": [choice]})
     with pytest.raises(dsapi_module.DSAPIProtocolError):
         _request_chat_completion(make_settings(tmp_path), [{"role": "user", "content": "看这张图"}])
 
@@ -840,9 +841,9 @@ def test_thinking_fallback_does_not_consume_a_second_protocol_retry(tmp_path, mo
         calls.append(body)
         return {"choices": [{"finish_reason": "malformed_function_call"}]}
 
-    monkeypatch.setattr(dsapi_module, "_post_chat_body", post)
+    monkeypatch.setattr(ai_client, '_post_chat_body', post)
     with pytest.raises(dsapi_module.DSAPIProtocolError):
-        dsapi_module._request_chat_completion_with_fallback(
+        ai_client.complete_text(
             make_settings(tmp_path), [{"role": "user", "content": "看图"}], model="test-model",
             max_tokens=None, thinking_enabled=True, temperature=None,
         )
@@ -862,7 +863,7 @@ async def test_quoted_content_block_is_not_recorded_as_an_assistant_exchange(tmp
         assert "被引用的样本文本" in current
         return {"choices": [], "promptFeedback": {"blockReason": "PROHIBITED_CONTENT"}}
 
-    monkeypatch.setattr(dsapi_module, "_post_chat_body", post)
+    monkeypatch.setattr(ai_client, '_post_chat_body', post)
     bot = FakeBot({"message": [{"type": "text", "data": {"text": "被引用的样本文本"}}]})
     event = make_event(text="", segments=({"type": "reply", "data": {"id": "42"}},))
     with pytest.raises(dsapi_module.DSAPIContentBlockedError):
@@ -908,7 +909,7 @@ async def test_web_reply_resolves_question_and_uses_checked_evidence(tmp_path, m
         assert not any(item["role"] == "assistant" for item in body["messages"])
         return completion(json.dumps({"status":"supported", "time_valid":True,
             "answer":"本期开放对象为甲[1]。", "evidence":[{"source":1,"quote":quote}]}))
-    monkeypatch.setattr(dsapi_module, "_post_chat_body", post)
+    monkeypatch.setattr(ai_client, '_post_chat_body', post)
     monkeypatch.setattr("qq_personal_bot.web_search.search_web", lambda *args, **kwargs: [
         WebSearchResult("公开公告", "https://example.test/notice", "摘要不足以确认全部信息。")])
     monkeypatch.setattr("qq_personal_bot.web_agent.read_web_pages", lambda items: [quote for _ in items])
@@ -931,7 +932,7 @@ async def test_web_conversation_uses_native_json_without_keyword_routing(tmp_pat
         assert json.loads(body["messages"][-1]["content"])["current_request"] == question
         return completion(json.dumps({"action": "answer", "basis": "conversation", "answer": "先听听对方的意思。"}))
 
-    monkeypatch.setattr(dsapi_module, "_post_chat_body", post)
+    monkeypatch.setattr(ai_client, '_post_chat_body', post)
     monkeypatch.setattr("qq_personal_bot.web_search.search_web",
                         lambda *args, **kwargs: pytest.fail("conversation does not need search"))
     assert await generate_mention_reply(FakeBot(), make_event(text=question), make_settings(tmp_path), store) == "先听听对方的意思。"
@@ -950,7 +951,7 @@ def test_json_mode_compatibility_fallback_is_cached_per_model_and_expires(tmp_pa
             raise dsapi_module.DSAPIError(f"HTTP {status}")
         return completion('{"action":"clarify","answer":"你指什么？"}')
 
-    monkeypatch.setattr(dsapi_module, "_post_chat_body", post)
+    monkeypatch.setattr(ai_client, '_post_chat_body', post)
     settings = make_settings(tmp_path)
     messages = [{"role": "user", "content": "输出JSON"}]
     for model in ("first", "first", "second"):
@@ -962,7 +963,7 @@ def test_json_mode_compatibility_fallback_is_cached_per_model_and_expires(tmp_pa
     for body in calls:
         assert len(body["messages"]) == len(messages) + ("response_format" not in body)
         if "response_format" not in body:
-            assert body["messages"][-1]["content"] == dsapi_module._JSON_PROMPT_INSTRUCTION
+            assert body["messages"][-1]["content"] == ai_client._JSON_PROMPT_INSTRUCTION
 
 
 @pytest.mark.parametrize("error", [
@@ -977,11 +978,11 @@ def test_json_mode_does_not_retry_network_policy_or_other_http_failures(tmp_path
         calls.append(body)
         raise error
 
-    monkeypatch.setattr(dsapi_module, "_post_chat_body", post)
+    monkeypatch.setattr(ai_client, '_post_chat_body', post)
     with pytest.raises(type(error)):
         _request_chat_completion(make_settings(tmp_path), [{"role": "user", "content": "JSON"}], json_output=True)
     assert len(calls) == 1
-    assert not dsapi_module._json_output_disabled_until
+    assert not ai_client._json_output_disabled_until
 
 
 def test_empty_thinking_fallback_uses_prompt_json_and_keeps_protocol(tmp_path, monkeypatch):
@@ -991,8 +992,8 @@ def test_empty_thinking_fallback_uses_prompt_json_and_keeps_protocol(tmp_path, m
         calls.append(body)
         return completion(None if len(calls) == 1 else '{"action":"clarify","answer":"什么？"}')
 
-    monkeypatch.setattr(dsapi_module, "_post_chat_body", post)
-    reply = dsapi_module._request_chat_completion_with_fallback(
+    monkeypatch.setattr(ai_client, '_post_chat_body', post)
+    reply = ai_client.complete_text(
         make_settings(tmp_path), [{"role": "user", "content": "JSON"}], model="test-model",
         max_tokens=None, thinking_enabled=True, temperature=None, json_output=True,
     )
@@ -1001,7 +1002,7 @@ def test_empty_thinking_fallback_uses_prompt_json_and_keeps_protocol(tmp_path, m
     assert calls[0]["response_format"] == {"type": "json_object"}
     assert "response_format" not in calls[1]
     assert calls[1]["messages"][:-1] == calls[0]["messages"]
-    assert calls[1]["messages"][-1]["content"] == dsapi_module._JSON_PROMPT_INSTRUCTION
+    assert calls[1]["messages"][-1]["content"] == ai_client._JSON_PROMPT_INSTRUCTION
 
 
 @pytest.mark.parametrize("empty", [None, "", " \n\t"])
@@ -1018,11 +1019,11 @@ def test_compatible_gateway_empty_reply_recovers_once_without_exposing_reasoning
         result["choices"][0]["message"]["reasoning"] = "不能作为回答发送或记录的思考过程"
         return result
 
-    monkeypatch.setattr(dsapi_module, "_post_chat_body", post)
+    monkeypatch.setattr(ai_client, '_post_chat_body', post)
     settings = make_settings(tmp_path, dsapi_api_format="openai", dsapi_provider_id=2)
     messages = [{"role": "user", "content": "用户的原始请求"}]
-    with caplog.at_level("INFO", logger=dsapi_module.__name__):
-        reply = dsapi_module._request_chat_completion_with_fallback(
+    with caplog.at_level("INFO", logger=ai_client.__name__):
+        reply = ai_client.complete_text(
             settings, messages, model="gateway-model", max_tokens=None,
             thinking_enabled=True, temperature=0.3, json_output=json_output,
         )
@@ -1030,7 +1031,7 @@ def test_compatible_gateway_empty_reply_recovers_once_without_exposing_reasoning
     assert len(calls) == 2
     if json_output:
         assert calls[1]["messages"][:-1] == calls[0]["messages"]
-        assert calls[1]["messages"][-1]["content"] == dsapi_module._JSON_PROMPT_INSTRUCTION
+        assert calls[1]["messages"][-1]["content"] == ai_client._JSON_PROMPT_INSTRUCTION
         assert "response_format" not in calls[1]
     else:
         assert calls[0] == calls[1]
@@ -1053,11 +1054,11 @@ def test_empty_native_json_recovers_and_caches_prompt_mode_per_provider_and_mode
         calls.append(json.loads(json.dumps(body)))
         return completion(" \n\t" if len(calls) == 1 else '```json\n{"answer":"ok"}\n```')
 
-    monkeypatch.setattr(dsapi_module, "_post_chat_body", post)
+    monkeypatch.setattr(ai_client, '_post_chat_body', post)
     settings = make_settings(tmp_path, dsapi_api_format="openai", dsapi_provider_id=2)
     image = {"type": "image_url", "image_url": {"url": _PNG_SOURCE}}
     messages = [{"role": "user", "content": [{"type": "text", "text": "输出JSON"}, image]}]
-    dsapi_module._request_chat_completion_with_fallback(
+    ai_client.complete_text(
         settings, messages, model="first", max_tokens=None, thinking_enabled=False,
         temperature=None, json_output=True,
     )
@@ -1070,7 +1071,7 @@ def test_empty_native_json_recovers_and_caches_prompt_mode_per_provider_and_mode
     assert ["response_format" in body for body in calls] == [True, False, False, True, True, True]
     assert all(body["messages"][0] == messages[0] for body in calls)
     assert messages == [{"role": "user", "content": [{"type": "text", "text": "输出JSON"}, image]}]
-    assert all(sum(item.get("content") == dsapi_module._JSON_PROMPT_INSTRUCTION
+    assert all(sum(item.get("content") == ai_client._JSON_PROMPT_INSTRUCTION
                    for item in body["messages"]) <= 1 for body in calls)
 
 
@@ -1082,13 +1083,13 @@ def test_prompt_json_recovery_only_caches_valid_objects(tmp_path, monkeypatch, i
         calls.append(body)
         return completion("" if len(calls) == 1 else invalid)
 
-    monkeypatch.setattr(dsapi_module, "_post_chat_body", post)
-    dsapi_module._request_chat_completion_with_fallback(
+    monkeypatch.setattr(ai_client, '_post_chat_body', post)
+    ai_client.complete_text(
         make_settings(tmp_path), [{"role": "user", "content": "JSON"}], model="test-model",
         max_tokens=None, thinking_enabled=False, temperature=None, json_output=True,
     )
     assert len(calls) == 2
-    assert not dsapi_module._json_output_disabled_until
+    assert not ai_client._json_output_disabled_until
 
 
 @pytest.mark.parametrize("exhausted", [False, True])
@@ -1104,9 +1105,9 @@ def test_empty_recovery_shares_original_deadline_and_stops_after_one_retry(
         calls.append(settings.dsapi_timeout_seconds)
         now[0] += 11 if exhausted else 3
 
-    monkeypatch.setattr(dsapi_module, "_request_chat_completion", request)
+    monkeypatch.setattr(ai_client, 'request_completion', request)
     with pytest.raises(dsapi_module.DSAPIEmptyResponseError):
-        dsapi_module._request_chat_completion_with_fallback(
+        ai_client.complete_text(
             make_settings(tmp_path, dsapi_api_format="openai", dsapi_timeout_seconds=10),
             [{"role": "user", "content": "hello"}], model="test-model", max_tokens=None,
             thinking_enabled=False, temperature=None, json_output=json_output,
@@ -1128,9 +1129,9 @@ def test_other_unusable_responses_do_not_enter_empty_retry(
     tmp_path, monkeypatch, result, error_type,
 ):
     calls = []
-    monkeypatch.setattr(dsapi_module, "_post_chat_body", lambda *args: calls.append(1) or result)
+    monkeypatch.setattr(ai_client, '_post_chat_body', lambda *args: calls.append(1) or result)
     with pytest.raises(error_type):
-        dsapi_module._request_chat_completion_with_fallback(
+        ai_client.complete_text(
             make_settings(tmp_path, dsapi_api_format="openai"),
             [{"role": "user", "content": "hello"}], model="test-model", max_tokens=None,
             thinking_enabled=False, temperature=None,
@@ -1150,7 +1151,7 @@ async def test_web_reply_recovers_empty_json_and_only_records_final_answer(tmp_p
             "action": "answer", "basis": "conversation", "answer": "你好，在的。",
         }))
 
-    monkeypatch.setattr(dsapi_module, "_post_chat_body", post)
+    monkeypatch.setattr(ai_client, '_post_chat_body', post)
     monkeypatch.setattr("qq_personal_bot.web_search.search_web",
                         lambda *args, **kwargs: pytest.fail("conversation must not search"))
     settings = make_settings(tmp_path, dsapi_api_format="openai")
@@ -1177,12 +1178,12 @@ async def test_prompt_json_recovery_never_sends_unvalidated_plain_text(tmp_path,
         calls.append(body)
         return completion(" \n\t" if len(calls) == 1 else "不符合协议的普通正文")
 
-    monkeypatch.setattr(dsapi_module, "_post_chat_body", post)
+    monkeypatch.setattr(ai_client, '_post_chat_body', post)
     response = await generate_mention_reply(FakeBot(), make_event(text="你好"),
                                           make_settings(tmp_path), store)
     assert response == WEB_PROTOCOL_ERROR_REPLY
     assert len(calls) == 3  # One empty recovery and one existing protocol repair.
-    assert not dsapi_module._json_output_disabled_until
+    assert not ai_client._json_output_disabled_until
 
 
 @pytest.mark.asyncio
@@ -1209,7 +1210,7 @@ async def test_web_entry_points_separate_current_message_from_group_background(
         assert data["recent_group_messages"] == [{"user_id": 789, "content": "群友的背景消息"}]
         return completion(json.dumps({"action": "answer", "basis": "conversation", "answer": "有挑战才过瘾。"}))
 
-    monkeypatch.setattr(dsapi_module, "_post_chat_body", post)
+    monkeypatch.setattr(ai_client, '_post_chat_body', post)
     event = make_event(text=current, is_at_bot=not random_reply)
     settings = make_settings(tmp_path)
     reply = (await generate_random_group_reply(event, settings, store) if random_reply else
@@ -1236,7 +1237,7 @@ async def test_bare_mention_is_an_attention_request_not_a_repeat_of_old_question
         assert data["previous_user_questions"] == ["泡水灵梦是什么梗"]
         return completion(json.dumps({"action": "answer", "basis": "conversation", "answer": "在呢，什么事？"}))
 
-    monkeypatch.setattr(dsapi_module, "_post_chat_body", post)
+    monkeypatch.setattr(ai_client, '_post_chat_body', post)
     monkeypatch.setattr("qq_personal_bot.web_search.search_web", lambda *a, **kw: pytest.fail("unneeded search"))
     bot = FakeBot()
     event = make_event(text=text, segments=({"type": "at", "data": {"qq": "999"}},))
@@ -1273,7 +1274,7 @@ async def test_web_source_appendices_are_hidden_in_each_reply(tmp_path, monkeypa
             "<|消息分隔|>我的看法是继续观察[1]。\n\n参考资料：\n[1] 官方消息",
          "evidence":[{"source":1,"quote":quote}]},
     ])
-    monkeypatch.setattr(dsapi_module, "_post_chat_body", lambda *args: completion(json.dumps(next(responses))))
+    monkeypatch.setattr(ai_client, '_post_chat_body', lambda *args: completion(json.dumps(next(responses))))
     monkeypatch.setattr("qq_personal_bot.web_search.search_web", lambda *args, **kwargs: [
         WebSearchResult("原始资料", "https://example.test/source", quote)])
     monkeypatch.setattr("qq_personal_bot.web_agent.read_web_pages", lambda items: ["" for _ in items])
@@ -1290,7 +1291,7 @@ def test_unsupported_tool_api_falls_back_and_does_not_repeat_bad_requests(tmp_pa
             raise dsapi_module.DSAPIError("HTTP 400")
         return completion("你好")
 
-    monkeypatch.setattr(dsapi_module, "_post_chat_body", post)
+    monkeypatch.setattr(ai_client, '_post_chat_body', post)
     messages = [{"role": "user", "content": "你好"}]
     for _ in range(2):
         assert _request_chat_completion(
@@ -1306,7 +1307,7 @@ def test_unsupported_tool_api_falls_back_and_does_not_repeat_bad_requests(tmp_pa
     {"id": "x", "function": "invalid"}, {"function": {"name": "web_search"}}, "invalid",
 ])
 def test_invalid_tool_protocol_is_rejected(tmp_path, monkeypatch, tool_call):
-    monkeypatch.setattr(dsapi_module, "_post_chat_body", lambda *args: {"choices": [{
+    monkeypatch.setattr(ai_client, '_post_chat_body', lambda *args: {"choices": [{
         "finish_reason": "tool_calls", "message": {"content": None, "tool_calls": [tool_call]},
     }]})
     with pytest.raises(dsapi_module.DSAPIError, match="invalid web tool"):
@@ -1333,7 +1334,7 @@ async def test_thinking_empty_reply_retries_in_nonthinking_mode(tmp_path, monkey
         calls.append(kwargs)
         return None if kwargs["thinking_enabled"] else "降级后回复"
 
-    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
+    monkeypatch.setattr('qq_personal_bot.ai_client.request_completion', fake_request)
 
     response = await generate_mention_reply(
         FakeBot(),
@@ -1397,7 +1398,7 @@ async def test_thinking_length_reply_retries_without_sending_partial_text(tmp_pa
         requests.append(body)
         return FakeResponse(body)
 
-    monkeypatch.setattr("qq_personal_bot.dsapi.urlopen", fake_urlopen)
+    monkeypatch.setattr('qq_personal_bot.ai_client.urlopen', fake_urlopen)
 
     response = await generate_mention_reply(
         FakeBot(), make_event(text="请解释这个问题"), make_settings(tmp_path), store
@@ -1423,7 +1424,7 @@ def test_nonthinking_length_response_is_rejected(tmp_path, monkeypatch):
                 {"choices": [{"finish_reason": "length", "message": {"content": "半句话，"}}]}
             ).encode("utf-8")
 
-    monkeypatch.setattr("qq_personal_bot.dsapi.urlopen", lambda *args, **kwargs: FakeResponse())
+    monkeypatch.setattr('qq_personal_bot.ai_client.urlopen', lambda *args, **kwargs: FakeResponse())
 
     with pytest.raises(DSAPILengthError, match="length limit"):
         _request_chat_completion(make_settings(tmp_path), [{"role": "user", "content": "问题"}])
@@ -1431,7 +1432,7 @@ def test_nonthinking_length_response_is_rejected(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("message", [{}, {"content": None}, {"content": "只写了一半"}])
 def test_length_response_remains_a_length_error_when_content_is_missing(tmp_path, monkeypatch, message):
-    monkeypatch.setattr(dsapi_module, "_post_chat_body", lambda *args: {
+    monkeypatch.setattr(ai_client, '_post_chat_body', lambda *args: {
         "choices": [{"finish_reason": "length", "message": message}],
     })
     with pytest.raises(DSAPILengthError):
@@ -1442,8 +1443,8 @@ def test_completion_logs_stop_reason_and_lengths_without_answer_or_credentials(t
     result = completion("不能出现在日志中的模型回答")
     result["choices"][0]["finish_reason"] = "stop"
     result["usage"] = {"completion_tokens": 22, "completion_tokens_details": {"reasoning_tokens": 7}}
-    monkeypatch.setattr(dsapi_module, "_open_ai_request", lambda *args: BytesIO(json.dumps(result).encode()))
-    with caplog.at_level("INFO", logger=dsapi_module.__name__):
+    monkeypatch.setattr(ai_client, '_open_ai_request', lambda *args: BytesIO(json.dumps(result).encode()))
+    with caplog.at_level("INFO", logger=ai_client.__name__):
         assert _request_chat_completion(
             make_settings(tmp_path), [{"role": "user", "content": "不能出现在日志中的用户问题"}],
         ) == "不能出现在日志中的模型回答"
@@ -1456,8 +1457,8 @@ def test_completion_logs_stop_reason_and_lengths_without_answer_or_credentials(t
 
 def test_whitespace_response_logs_raw_and_usable_lengths_separately(tmp_path, monkeypatch, caplog):
     result = completion(" \n\t" * 50)
-    monkeypatch.setattr(dsapi_module, "_open_ai_request", lambda *args: BytesIO(json.dumps(result).encode()))
-    with caplog.at_level("INFO", logger=dsapi_module.__name__), pytest.raises(dsapi_module.DSAPIEmptyResponseError):
+    monkeypatch.setattr(ai_client, '_open_ai_request', lambda *args: BytesIO(json.dumps(result).encode()))
+    with caplog.at_level("INFO", logger=ai_client.__name__), pytest.raises(dsapi_module.DSAPIEmptyResponseError):
         _request_chat_completion(make_settings(tmp_path), [{"role": "user", "content": "JSON"}],
                                  json_output=True)
     assert "output_chars=150 output_text_chars=0" in caplog.text
@@ -1473,7 +1474,7 @@ def test_legacy_transport_timeouts_keep_specific_kind(tmp_path, monkeypatch, wra
     def unavailable(*args, **kwargs):
         raise URLError(timeout) if wrapped else timeout
 
-    monkeypatch.setattr(dsapi_module, "urlopen", unavailable)
+    monkeypatch.setattr(ai_client, 'urlopen', unavailable)
     with pytest.raises(dsapi_module.DSAPITimeoutError) as error:
         if operation == "models":
             fetch_dsapi_models(make_settings(tmp_path))
@@ -1492,9 +1493,9 @@ def test_exhausted_thinking_request_timeout_does_not_start_another_generation(tm
         now[0] += 30
         raise dsapi_module.DSAPITimeoutError("request timed out during receive_response_body")
 
-    monkeypatch.setattr(dsapi_module, "_request_chat_completion", timeout)
+    monkeypatch.setattr(ai_client, 'request_completion', timeout)
     with pytest.raises(dsapi_module.DSAPITimeoutError, match="receive_response_body"):
-        dsapi_module._request_chat_completion_with_fallback(
+        ai_client.complete_text(
             make_settings(tmp_path, dsapi_timeout_seconds=30),
             [{"role": "user", "content": "hello"}], model="deepseek-flash",
             max_tokens=None, thinking_enabled=True, temperature=None,
@@ -1504,7 +1505,7 @@ def test_exhausted_thinking_request_timeout_does_not_start_another_generation(tm
 
 @pytest.mark.parametrize("result", [None, []])
 def test_completion_metadata_logging_preserves_invalid_response_handling(tmp_path, monkeypatch, result):
-    monkeypatch.setattr(dsapi_module, "_open_ai_request", lambda *args: BytesIO(json.dumps(result).encode()))
+    monkeypatch.setattr(ai_client, '_open_ai_request', lambda *args: BytesIO(json.dumps(result).encode()))
     with pytest.raises(dsapi_module.DSAPIResponseError):
         _request_chat_completion(make_settings(tmp_path), [{"role": "user", "content": "你好"}])
 
@@ -1529,7 +1530,7 @@ async def test_idle_group_history_is_not_sent_to_dsapi(tmp_path, monkeypatch):
         captured["messages"] = messages
         return "新回答"
 
-    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
+    monkeypatch.setattr('qq_personal_bot.ai_client.request_completion', fake_request)
 
     response = await generate_mention_reply(
         FakeBot(),
@@ -1550,7 +1551,7 @@ async def test_random_group_reply_uses_plain_message_and_random_instruction(tmp_
         captured["messages"] = messages
         return "确实有点离谱。"
 
-    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
+    monkeypatch.setattr('qq_personal_bot.ai_client.request_completion', fake_request)
     event = make_event(text="今天也太热了", segments=(), is_at_bot=False)
 
     response = await generate_random_group_reply(
@@ -1572,7 +1573,7 @@ async def test_random_group_reply_includes_previous_ten_group_messages(tmp_path,
         captured["messages"] = messages
         return "接上了。"
 
-    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
+    monkeypatch.setattr('qq_personal_bot.ai_client.request_completion', fake_request)
     settings = make_settings(tmp_path)
     store = make_store(
         tmp_path,
@@ -1628,7 +1629,7 @@ async def test_random_group_reply_uses_configured_long_group_context(tmp_path, m
         captured["messages"] = messages
         return "接上了"
 
-    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
+    monkeypatch.setattr('qq_personal_bot.ai_client.request_completion', fake_request)
     settings = make_settings(tmp_path)
     store = make_store(
         tmp_path,
@@ -1680,7 +1681,7 @@ async def test_random_group_reply_respects_zero_percent_and_multimodal(tmp_path,
         nonlocal requested
         requested = True
 
-    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
+    monkeypatch.setattr('qq_personal_bot.ai_client.request_completion', fake_request)
     settings = make_settings(tmp_path)
 
     assert await generate_random_group_reply(
@@ -1732,7 +1733,7 @@ async def test_random_group_reply_can_send_sticker_without_dsapi_call(tmp_path, 
         nonlocal requested
         requested = True
 
-    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
+    monkeypatch.setattr('qq_personal_bot.ai_client.request_completion', fake_request)
     event = make_event(text="好耶", is_at_bot=False)
     settings = make_settings(tmp_path, sticker_dir=sticker_dir)
 
@@ -1774,7 +1775,7 @@ def test_chat_completion_request_uses_compatible_endpoint(tmp_path, monkeypatch)
         captured["timeout"] = timeout
         return FakeResponse()
 
-    monkeypatch.setattr("qq_personal_bot.dsapi.urlopen", fake_urlopen)
+    monkeypatch.setattr('qq_personal_bot.ai_client.urlopen', fake_urlopen)
     settings = make_settings(
         tmp_path,
         dsapi_base_url="https://dsapi.example/v1/",
@@ -1845,7 +1846,7 @@ def test_fetch_models_uses_configured_dsapi_endpoint(tmp_path, monkeypatch):
         captured["timeout"] = timeout
         return FakeResponse()
 
-    monkeypatch.setattr("qq_personal_bot.dsapi.urlopen", fake_urlopen)
+    monkeypatch.setattr('qq_personal_bot.ai_client.urlopen', fake_urlopen)
     settings = make_settings(tmp_path, dsapi_base_url="https://dsapi.example/v1/")
 
     models = fetch_dsapi_models(settings)
@@ -1936,7 +1937,7 @@ async def test_relationship_memory_is_maintained_by_ai(tmp_path, monkeypatch):
         captured["options"] = kwargs
         return "关系逐渐熟悉，常聊抽卡，习惯轻微互怼。"
 
-    monkeypatch.setattr("qq_personal_bot.dsapi._request_chat_completion", fake_request)
+    monkeypatch.setattr('qq_personal_bot.ai_client.request_completion', fake_request)
 
     await _refresh_relationship_memory(
         make_settings(tmp_path),

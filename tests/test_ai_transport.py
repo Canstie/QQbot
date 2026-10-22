@@ -17,11 +17,9 @@ import pytest
 from httpcore._sync import http11
 
 from qq_personal_bot import ai_transport as transport
-from qq_personal_bot.dsapi import (
-    DSAPITimeoutError,
-    _request_chat_completion,
-    fetch_dsapi_models,
-)
+from qq_personal_bot.ai_client import fetch_dsapi_models
+from qq_personal_bot.ai_client import request_completion as _request_chat_completion
+from qq_personal_bot.dsapi import DSAPITimeoutError
 from qq_personal_bot.settings import AppSettings
 
 

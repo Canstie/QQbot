@@ -9,7 +9,7 @@ from urllib.error import HTTPError
 import pytest
 from fastapi.testclient import TestClient
 
-from qq_personal_bot import ai_transport, dsapi, group_digest, memory_graph, provider_web
+from qq_personal_bot import ai_client, ai_transport, dsapi, group_digest, memory_graph
 from qq_personal_bot.ai_models import catalog_model_option, is_vision_dsapi_model
 from qq_personal_bot.ai_providers import (
     active_ai_model,
@@ -287,8 +287,8 @@ def test_models_and_connection_test_follow_the_global_proxy_toggle(context, monk
         routes.append(settings.ai_proxy_url)
         return "OK"
 
-    monkeypatch.setattr(provider_web, "fetch_dsapi_models", models)
-    monkeypatch.setattr(provider_web, "_request_chat_completion", complete)
+    monkeypatch.setattr(ai_client, "fetch_dsapi_models", models)
+    monkeypatch.setattr(ai_client, "request_completion", complete)
     for enabled in (False, True):
         assert client.put("/api/dsapi/proxy", json={"enabled": enabled}).status_code == 200
         assert client.post(f"/api/dsapi/providers/{provider_id}/models/refresh").status_code == 200
@@ -313,9 +313,9 @@ def test_explicit_direct_choice_uses_transport_without_inheriting_system_proxy(c
         raise AssertionError("explicit direct must not inherit urllib system proxy settings")
 
     monkeypatch.setenv("HTTPS_PROXY", "http://unrelated.invalid:1234")
-    monkeypatch.setattr(dsapi, "request_ai_bytes", request)
-    monkeypatch.setattr(dsapi, "urlopen", legacy_request)
-    assert dsapi._request_chat_completion(routed, [{"role": "user", "content": "hello"}]) == "OK"
+    monkeypatch.setattr(ai_client, 'request_ai_bytes', request)
+    monkeypatch.setattr(ai_client, 'urlopen', legacy_request)
+    assert ai_client.request_completion(routed, [{"role": "user", "content": "hello"}]) == "OK"
     assert observed == [""]
 
 
@@ -368,13 +368,13 @@ def test_provider_web_crud_catalog_and_connection_test_never_echo_secret(context
     provider_id = created.json()["provider_id"]
     assert "new-secret" not in created.text
     models = [catalog_model_option(f"model-{i}") for i in range(16)]
-    monkeypatch.setattr(provider_web, "fetch_dsapi_models", lambda settings: models)
+    monkeypatch.setattr(ai_client, "fetch_dsapi_models", lambda settings: models)
     assert client.post(f"/api/dsapi/providers/{provider_id}/models/refresh").json()["count"] == 16
     assert client.get("/api/dsapi/providers").json()["providers"][-1]["models"] == models
     captures = []
     monkeypatch.setattr(
-        provider_web,
-        "_request_chat_completion",
+        ai_client,
+        "request_completion",
         lambda settings, messages, **kwargs: captures.append((settings, kwargs)) or "OK",
     )
     result = client.post(f"/api/dsapi/providers/{provider_id}/test", json={})
@@ -467,17 +467,17 @@ def test_tls_transport_retries_transient_server_error_and_wraps_connection_reset
             raise HTTPError("https://gateway.example", 500, "temporary", None, None)
         return "response"
 
-    monkeypatch.setattr(dsapi, "urlopen", flaky)
+    monkeypatch.setattr(ai_client, 'urlopen', flaky)
     monkeypatch.setattr(dsapi.time, "sleep", lambda seconds: None)
-    assert dsapi._open_ai_request(None, replace(settings, dsapi_tls_mode="tls12")) == "response"
+    assert ai_client._open_ai_request(None, replace(settings, dsapi_tls_mode="tls12")) == "response"
     assert len(attempts) == 2
 
     def reset(*args, **kwargs):
         raise ConnectionResetError("peer reset")
 
-    monkeypatch.setattr(dsapi, "urlopen", reset)
+    monkeypatch.setattr(ai_client, 'urlopen', reset)
     with pytest.raises(dsapi.DSAPIError, match="network connection interrupted"):
-        dsapi._request_chat_completion(settings, [{"role": "user", "content": "OK"}])
+        ai_client.request_completion(settings, [{"role": "user", "content": "OK"}])
 
 
 def test_provisioning_tests_catalog_before_switch_and_does_not_change_route_on_failure(
@@ -487,12 +487,12 @@ def test_provisioning_tests_catalog_before_switch_and_does_not_change_route_on_f
 
     _, store, settings = context
     models = [catalog_model_option("gemini-3.8-flash-high"), catalog_model_option("qwen3.8-max")]
-    monkeypatch.setattr(provision, "fetch_dsapi_models", lambda settings: models)
+    monkeypatch.setattr(ai_client, "fetch_dsapi_models", lambda settings: models)
 
     def fail(*args, **kwargs):
         raise dsapi.DSAPIError("HTTP 503")
 
-    monkeypatch.setattr(provision, "_request_chat_completion", fail)
+    monkeypatch.setattr(ai_client, "request_completion", fail)
     with pytest.raises(dsapi.DSAPIError, match="Default model test failed"):
         provision.configure(
             settings,
@@ -505,7 +505,7 @@ def test_provisioning_tests_catalog_before_switch_and_does_not_change_route_on_f
         )
     assert len(store.list_ai_providers()) == 1
     assert store.get_active_ai_provider()["id"] == 1
-    monkeypatch.setattr(provision, "_request_chat_completion", lambda *args, **kwargs: "OK")
+    monkeypatch.setattr(ai_client, "request_completion", lambda *args, **kwargs: "OK")
     provision.configure(
         settings,
         store,
@@ -572,7 +572,7 @@ async def test_every_ai_entry_uses_selected_provider_and_model_without_deepseek_
         )
         return Response()
 
-    monkeypatch.setattr(dsapi, "_open_ai_request", request)
+    monkeypatch.setattr(ai_client, '_open_ai_request', request)
     monkeypatch.setattr(dsapi, "build_mention_prompt", AsyncMock(return_value="你好"))
     monkeypatch.setattr(dsapi, "refresh_memory_graph", AsyncMock())
     monkeypatch.setattr(dsapi, "graph_enabled", lambda *args: True)
@@ -687,7 +687,7 @@ async def test_whole_web_reply_uses_message_snapshot_when_background_has_another
                 store.set_ai_route("message", background, "next-message-model")
         return "OK"
 
-    monkeypatch.setattr(dsapi, "_request_chat_completion_with_fallback", complete)
+    monkeypatch.setattr(ai_client, 'complete_text', complete)
     monkeypatch.setattr(dsapi, "generate_web_reply", web)
     monkeypatch.setattr(dsapi, "build_mention_prompt", AsyncMock(return_value="Search current news"))
     event = MessageEvent(

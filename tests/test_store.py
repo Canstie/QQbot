@@ -503,7 +503,7 @@ def test_memory_archive_is_group_scoped_unlimited_and_clearable(tmp_path):
     assert reopened.get_memory_messages(123, 456) == []
 
 
-def test_memory_archive_preserves_media_replies_and_commands(tmp_path):
+def test_memory_archive_preserves_media_replies_and_excludes_bot_commands(tmp_path):
     db_path = tmp_path / "policy.sqlite3"
     store = PolicyStore(db_path)
     store.initialize(AppSettings(db_path=db_path, admins=()))
@@ -513,8 +513,9 @@ def test_memory_archive_preserves_media_replies_and_commands(tmp_path):
         {"group_id": 123, "user_id": 456, "message_id": 2, "raw_message": "~锐评 @某人", "segments": ()},
         {"group_id": 123, "user_id": 456, "message_id": 3, "raw_message": "原话", "segments": ({"type": "reply", "data": {"id": 9}}, {"type": "text", "data": {"text": "原话"}})},
     ]
-    assert store.record_memory_messages(rows) == 3
+    assert store.record_memory_messages(rows) == 2
     saved = store.get_memory_messages(123, 456)
+    assert {item["message_id"] for item in saved} == {"1", "3"}
     assert saved[0]["content"] == "[回复]原话"
     assert saved[0]["reply_to"] == "9"
     assert saved[-1]["segments"] == list(rows[0]["segments"])

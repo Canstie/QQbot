@@ -23,8 +23,13 @@ nonebot.init(
 )
 
 for component in (
-    "qq_personal_bot.ai_transport", "qq_personal_bot.dsapi", "qq_personal_bot.web_search",
-    "qq_personal_bot.web_agent", "qq_personal_bot.vision_images", "qq_personal_bot.turtle_soup",
+    "qq_personal_bot.ai_client",
+    "qq_personal_bot.ai_transport",
+    "qq_personal_bot.dsapi",
+    "qq_personal_bot.web_search",
+    "qq_personal_bot.web_agent",
+    "qq_personal_bot.vision_images",
+    "qq_personal_bot.turtle_soup",
 ):
     component_logger = logging.getLogger(component)
     component_logger.setLevel(logging.INFO)
@@ -37,7 +42,7 @@ memory_worker = MemoryGraphWorker(get_store(), settings)
 
 
 async def _send_turtle_soup_notice(game: dict, text: str) -> None:
-    await nonebot.get_bot(game['bot_id']).send_group_msg(group_id=game['group_id'], message=text)
+    await nonebot.get_bot(game["bot_id"]).send_group_msg(group_id=game["group_id"], message=text)
 
 
 @driver.on_startup
@@ -54,6 +59,7 @@ async def _flush_activity_on_shutdown() -> None:
     await close_teacher_client()
     close_ai_clients()
 
+
 get_store()
 
 nonebot.load_plugin("qq_personal_bot.plugins.self_guard")
@@ -67,4 +73,3 @@ nonebot.load_plugin("qq_personal_bot.plugins.web_admin")
 
 if __name__ == "__main__":
     nonebot.run()
-

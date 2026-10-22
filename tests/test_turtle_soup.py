@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from qq_personal_bot import dsapi
+from qq_personal_bot import ai_client, dsapi
 from qq_personal_bot.core.models import MessageEvent
 from qq_personal_bot.core.policy import PolicyEngine
 from qq_personal_bot.core.store import PolicyStore
@@ -33,7 +33,7 @@ def game(tmp_path, monkeypatch):
     service = TurtleSoupService(store, settings, clock=lambda: now[0])
     request = Mock(side_effect=lambda settings, messages, **kw: json.dumps(
         PUZZLE if '创作' in messages[0]['content'] else {'answer': '不是。'}, ensure_ascii=False))
-    monkeypatch.setattr(dsapi, '_request_chat_completion_with_fallback', request)
+    monkeypatch.setattr(ai_client, 'complete_text', request)
     send = AsyncMock()
     engine = PolicyEngine(store)
     events = []
@@ -299,7 +299,7 @@ async def test_cancel_interrupts_generation_and_discards_late_response(game, mon
     original_to_thread = asyncio.to_thread
 
     def to_thread(func, *args, **kw):
-        if func is dsapi._request_chat_completion_with_fallback:
+        if func is ai_client.complete_text:
             return complete()
         return original_to_thread(func, *args, **kw)
 
@@ -437,8 +437,8 @@ async def test_graph_collection_continues_and_labels_game_discussion(game, monke
 async def test_ordinary_request_started_before_game_does_not_pollute_game_history(game, monkeypatch):
     async def to_thread(func, *args, **kwargs):
         result = func(*args, **kwargs)
-        if (func is dsapi._request_chat_completion_with_fallback
-                or getattr(func, 'func', None) is dsapi._request_chat_completion_with_fallback):
+        if (func is ai_client.complete_text
+                or getattr(func, 'func', None) is ai_client.complete_text):
             current = game.store.create_turtle_soup_game(123, '999', now=1000)
             game.store.update_turtle_soup_game(current['id'], puzzle=PUZZLE, deadline=1180)
         return result

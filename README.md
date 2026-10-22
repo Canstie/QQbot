@@ -4,6 +4,15 @@
 LLOneBot 或 NapCat Framework 使用。桌面 QQ 客户端可以正常使用，同时 Bot
 行为由群聊白名单/黑名单策略控制。
 
+## 代码边界
+
+- `ai_client.py` 负责模型目录、生成协议、响应校验和兼容重试；`ai_transport.py` 负责连接池、TLS 和代理。业务模块先通过 `ai_providers.py` 取得消息或后台链路快照，再调用公开客户端接口。
+- `drawing.py`、`image_utils.py`、`media_cache.py` 提供卡片排版、图片校验和临时文件清理；各平台保留自己的请求白名单、代理、下载与回退策略。
+- `object_storage.py` 封装 MinIO 对象操作，典藏与下载模块分别管理 bucket 规则和业务错误。
+- `web.py` 只组装应用与鉴权中间件；`admin_routes/` 按认证、验证码、策略、AI、内容、媒体和 Steam 注册管理接口。
+- `plugins/chat.py` 按固定顺序调用功能处理函数，共用每条消息的 `DispatchContext`；处理函数返回是否已消费消息。
+- `core/store.py` 保留 `PolicyStore` 入口、连接、事务、缓存和表结构初始化；知识库、对话、群消息、菜单、典藏、下载和 Steam 方法分别由同目录的业务 Store 组合提供。
+
 ## 已包含功能
 
 - 基于 NoneBot2 的入口和 OneBot v11 适配器。

@@ -9,6 +9,10 @@ from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont
 
+from qq_personal_bot.drawing import load_font
+from qq_personal_bot.drawing import text_height as _text_height
+from qq_personal_bot.drawing import text_width as _text_width
+from qq_personal_bot.drawing import wrap_text as _wrap_text
 from qq_personal_bot.settings import AppSettings
 
 _CARD_VERSION = 1
@@ -117,8 +121,10 @@ def build_help_sections(
         "AI 与卡片",
         (
             (enabled("ai.master", "ai.mention"), "@机器人  与 AI 对话"),
-            (enabled("ai.master", "ai.mention", "ai.turtle_soup"),
-             "~海龟汤 [出题要求]  @提问，@完成揭晓、@取消退出，闲置三分钟结束"),
+            (
+                enabled("ai.master", "ai.mention", "ai.turtle_soup"),
+                "~海龟汤 [出题要求]  @提问，@完成揭晓、@取消退出，闲置三分钟结束",
+            ),
             (enabled("ai.master", "ai.random"), "随机插话  AI 偶尔参与普通群聊"),
             (enabled("cards.bilibili"), "B站分享/直链  自动解析视频图片卡片"),
             (enabled("cards.xiaohongshu"), "小红书分享  自动提取笔记图片"),
@@ -268,7 +274,9 @@ def render_help_card(
             y += int(card["height"]) + 18
 
     enabled_count = sum(len(section.items) for section in sections)
-    footer = f"当前展示 {enabled_count} 项可用能力  ·  已关闭功能自动隐藏  ·  网页功能中心修改后立即生效"
+    footer = (
+        f"当前展示 {enabled_count} 项可用能力  ·  已关闭功能自动隐藏  ·  网页功能中心修改后立即生效"
+    )
     footer_width = _text_width(draw, footer, footer_font)
     draw.text(
         ((width - footer_width) // 2, height - 48),
@@ -288,10 +296,7 @@ def _prepare_section(
     width: int,
 ) -> dict[str, Any]:
     line_width = width - 72
-    wrapped_items = [
-        _wrap_text(draw, item, body_font, line_width)
-        for item in section.items
-    ]
+    wrapped_items = [_wrap_text(draw, item, body_font, line_width) for item in section.items]
     line_height = 31
     item_gap = 7
     body_height = sum(len(lines) * line_height + item_gap for lines in wrapped_items)
@@ -366,55 +371,5 @@ def _paint_background(draw: ImageDraw.ImageDraw, width: int, height: int) -> Non
         draw.line((0, y, width, y), fill=color)
 
 
-def _font(settings: AppSettings, size: int, *, bold: bool = False) -> ImageFont.ImageFont:
-    candidates = [
-        settings.steam_font_path,
-        Path("C:/Windows/Fonts/msyhbd.ttc" if bold else "C:/Windows/Fonts/msyh.ttc"),
-        Path(
-            "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"
-            if bold
-            else "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
-        ),
-        Path(
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-            if bold
-            else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-        ),
-    ]
-    for candidate in candidates:
-        if candidate and candidate.is_file():
-            try:
-                return ImageFont.truetype(str(candidate), size=size)
-            except OSError:
-                continue
-    return ImageFont.load_default(size=size)
-
-
-def _wrap_text(
-    draw: ImageDraw.ImageDraw,
-    text: str,
-    font: ImageFont.ImageFont,
-    max_width: int,
-) -> tuple[str, ...]:
-    lines: list[str] = []
-    current = ""
-    for character in text:
-        candidate = current + character
-        if current and _text_width(draw, candidate, font) > max_width:
-            lines.append(current.rstrip())
-            current = character.lstrip()
-        else:
-            current = candidate
-    if current:
-        lines.append(current.rstrip())
-    return tuple(lines or ("",))
-
-
-def _text_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont) -> int:
-    bounds = draw.textbbox((0, 0), text, font=font)
-    return bounds[2] - bounds[0]
-
-
-def _text_height(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont) -> int:
-    bounds = draw.textbbox((0, 0), text, font=font)
-    return bounds[3] - bounds[1]
+def _font(settings: AppSettings, size: int, *, bold: bool = False):
+    return load_font(size, bold=bold, preferred_path=settings.steam_font_path)

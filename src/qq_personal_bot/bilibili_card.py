@@ -15,6 +15,12 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 from nonebot import logger
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
+from qq_personal_bot.drawing import draw_centered_text as _draw_centered_text
+from qq_personal_bot.drawing import ellipsize_text as _ellipsize_text
+from qq_personal_bot.drawing import load_font_candidates
+from qq_personal_bot.drawing import text_width as _text_width
+from qq_personal_bot.image_utils import validate_dimensions
+
 _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36"
@@ -400,21 +406,14 @@ def _normalized_bilibili_image_url(value: Any) -> str | None:
 
 def _load_image(body: bytes) -> Image.Image:
     with Image.open(BytesIO(body)) as source:
-        width, height = source.size
-        if width <= 0 or height <= 0 or width * height > _MAX_IMAGE_PIXELS:
-            raise ValueError("Bilibili image dimensions are invalid")
+        validate_dimensions(source, max_pixels=_MAX_IMAGE_PIXELS)
         source.load()
         return source.convert("RGB")
 
 
-def _load_font(size: int, *, bold: bool) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+def _load_font(size: int, *, bold: bool):
     candidates = _BOLD_FONT_PATHS if bold else _REGULAR_FONT_PATHS
-    for candidate in candidates:
-        try:
-            return ImageFont.truetype(candidate, size=size)
-        except OSError:
-            continue
-    return ImageFont.load_default(size=size)
+    return load_font_candidates(candidates, size, default_size=size)
 
 
 def _wrap_text(
@@ -442,54 +441,6 @@ def _wrap_text(
     if remaining:
         lines[-1] = _ellipsize_text(draw, lines[-1] + remaining, font, max_width=max_width)
     return lines
-
-
-def _ellipsize_text(
-    draw: ImageDraw.ImageDraw,
-    text: str,
-    font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
-    *,
-    max_width: int,
-) -> str:
-    normalized = " ".join(text.split())
-    if _text_width(draw, normalized, font) <= max_width:
-        return normalized
-    suffix = "…"
-    while normalized and _text_width(draw, normalized + suffix, font) > max_width:
-        normalized = normalized[:-1]
-    return normalized.rstrip() + suffix
-
-
-def _draw_centered_text(
-    draw: ImageDraw.ImageDraw,
-    text: str,
-    *,
-    box: tuple[int, int, int, int],
-    font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
-    fill: tuple[int, int, int],
-) -> None:
-    left, top, width, height = box
-    bounds = draw.textbbox((0, 0), text, font=font)
-    text_width = bounds[2] - bounds[0]
-    text_height = bounds[3] - bounds[1]
-    draw.text(
-        (
-            left + (width - text_width) / 2 - bounds[0],
-            top + (height - text_height) / 2 - bounds[1],
-        ),
-        text,
-        font=font,
-        fill=fill,
-    )
-
-
-def _text_width(
-    draw: ImageDraw.ImageDraw,
-    text: str,
-    font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
-) -> float:
-    bounds = draw.textbbox((0, 0), text, font=font)
-    return float(bounds[2] - bounds[0])
 
 
 def _clean_text(value: Any, limit: int) -> str | None:

@@ -23,6 +23,7 @@ from qq_personal_bot.bilibili_card import (
     generate_bilibili_card,
     is_bilibili_share_url,
 )
+from qq_personal_bot.media_cache import CachedImages as CachedMiniAppImages
 from qq_personal_bot.twitter import twitter_status_url
 
 _MINIAPP_PROMPT_PREFIX = "[QQ小程序]"
@@ -79,16 +80,6 @@ class MiniAppImageSource:
     platform: str = "auto"
     fallback_title: str | None = None
     fallback_cover_url: str | None = None
-
-
-@dataclass(frozen=True)
-class CachedMiniAppImages:
-    directory: Path | None
-    paths: tuple[Path, ...]
-
-    def cleanup(self) -> None:
-        if self.directory is not None:
-            shutil.rmtree(self.directory, ignore_errors=True)
 
 
 class XiaoheiheCaptchaRequired(ValueError):
@@ -547,9 +538,7 @@ def _extract_xiaohongshu_image_urls(page: str, page_url: str) -> list[str]:
         if isinstance(detail_map, Mapping):
             note_id = _xiaohongshu_note_id(page_url)
             details.extend(
-                [detail_map[note_id]]
-                if note_id in detail_map
-                else list(detail_map.values())[:1]
+                [detail_map[note_id]] if note_id in detail_map else list(detail_map.values())[:1]
             )
 
     mobile_state = state.get("noteData")
@@ -645,8 +634,7 @@ def _is_allowed_xiaoheihe_image_url(url: str) -> bool:
     parsed = urlparse(url)
     host = (parsed.hostname or "").lower()
     return parsed.scheme in {"http", "https"} and any(
-        host == suffix[1:] or host.endswith(suffix)
-        for suffix in (".max-c.com", ".maxjia.com")
+        host == suffix[1:] or host.endswith(suffix) for suffix in (".max-c.com", ".maxjia.com")
     )
 
 

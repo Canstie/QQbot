@@ -298,7 +298,7 @@ async def test_digest_uses_full_model_budget_through_notes_report_and_repair(
             return FakeResponse("A candidate report that needs JSON repair.")
         return FakeResponse(json.dumps({"overview": "The report is complete."}))
 
-    monkeypatch.setattr("qq_personal_bot.dsapi.urlopen", fake_urlopen)
+    monkeypatch.setattr('qq_personal_bot.ai_client.urlopen', fake_urlopen)
     settings = AppSettings(
         db_path=tmp_path / "db.sqlite3",
         admins=(),

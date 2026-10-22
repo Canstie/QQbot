@@ -11,10 +11,11 @@ from typing import Any
 
 from nonebot import logger
 
+from qq_personal_bot import ai_client
+from qq_personal_bot.ai_errors import DSAPIError
 from qq_personal_bot.ai_providers import active_ai_model, resolve_ai_settings
 from qq_personal_bot.core.models import MessageEvent
 from qq_personal_bot.core.store import PolicyStore
-from qq_personal_bot.dsapi import DSAPIError, _request_chat_completion_with_fallback
 from qq_personal_bot.group_digest_card import render_group_digest_card
 from qq_personal_bot.performance import latency_phase
 from qq_personal_bot.settings import AppSettings
@@ -163,7 +164,9 @@ async def _backfill_date_history(
                 continue
             message = item.get("message")
             segments = message if isinstance(message, list) else ()
-            raw_message = str(item.get("raw_message") or (message if isinstance(message, str) else ""))
+            raw_message = str(
+                item.get("raw_message") or (message if isinstance(message, str) else "")
+            )
             store.record_group_message_transcript(
                 group_id=group_id,
                 user_id=user_id,
@@ -225,9 +228,7 @@ async def _group_metadata(
                     continue
                 if user_id <= 0:
                     continue
-                display_name = str(
-                    member.get("card") or member.get("nickname") or user_id
-                ).strip()
+                display_name = str(member.get("card") or member.get("nickname") or user_id).strip()
                 names[user_id] = _clean_line(display_name) or str(user_id)
     except Exception as exc:  # noqa: BLE001 - member aliases have ID fallbacks
         logger.debug(f"Unable to read group members for daily digest: {exc}")
@@ -333,12 +334,10 @@ async def _complete(
     # Digest notes can exceed ordinary chat's 30-second request timeout.
     request_settings = replace(
         settings,
-        dsapi_timeout_seconds=max(
-            settings.dsapi_timeout_seconds, _DIGEST_REQUEST_TIMEOUT_SECONDS
-        ),
+        dsapi_timeout_seconds=max(settings.dsapi_timeout_seconds, _DIGEST_REQUEST_TIMEOUT_SECONDS),
     )
     return await asyncio.to_thread(
-        _request_chat_completion_with_fallback,
+        ai_client.complete_text,
         request_settings,
         [
             {"role": "system", "content": system},
@@ -375,10 +374,7 @@ def _final_prompt(
         "以及 3 至 5 句确实逐字出现过的短金句。画像只描述该日可观察到的聊天行为。"
         "participants 和 name 使用成员映射中的昵称；user_id 必须来自成员映射。"
         "quote 必须是记录中的连续原文，不得改写。若证据不足，宁可少写。"
-        "只返回 JSON，不要 Markdown、代码块或解释。\n"
-        + _schema_text()
-        + "\n"
-        + source
+        "只返回 JSON，不要 Markdown、代码块或解释。\n" + _schema_text() + "\n" + source
     )
 
 

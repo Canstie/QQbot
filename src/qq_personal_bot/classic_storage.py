@@ -2,17 +2,15 @@ from __future__ import annotations
 
 import base64
 import binascii
-from io import BytesIO
 from typing import Any
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-from minio import Minio
 from minio.error import S3Error
 
 from qq_personal_bot.menu_recipes import resolve_local_source
+from qq_personal_bot.object_storage import ObjectStorage
 from qq_personal_bot.runtime import get_settings
-
 
 _MAX_CLASSIC_IMAGE_BYTES = 20 * 1024 * 1024
 
@@ -40,12 +38,8 @@ class ClassicObjectStorage:
     ) -> None:
         if not endpoint or not access_key or not secret_key:
             raise ClassicStorageError("MinIO 尚未配置。")
-        self.client = client or Minio(
-            endpoint,
-            access_key=access_key,
-            secret_key=secret_key,
-            secure=secure,
-        )
+        self.objects = ObjectStorage(endpoint, access_key, secret_key, secure=secure, client=client)
+        self.client = self.objects.client
 
     def ensure_group_bucket(self, group_id: int, *, create: bool = False) -> str:
         bucket = classic_bucket_name(group_id)
@@ -75,28 +69,21 @@ class ClassicObjectStorage:
     ) -> None:
         bucket = self.ensure_group_bucket(group_id, create=True)
         try:
-            self.client.put_object(
-                bucket,
-                object_key,
-                BytesIO(body),
-                len(body),
-                content_type=content_type,
-                metadata=metadata,
-            )
+            self.objects.put(bucket, object_key, body, content_type, metadata)
         except Exception as exc:
             raise ClassicStorageError(f"群典图片上传失败：{bucket}/{object_key}") from exc
 
     def stat_image(self, group_id: int, object_key: str) -> Any:
         bucket = classic_bucket_name(group_id)
         try:
-            return self.client.stat_object(bucket, object_key)
+            return self.objects.stat(bucket, object_key)
         except Exception as exc:
             raise ClassicStorageError(f"群典图片校验失败：{bucket}/{object_key}") from exc
 
     def get_image(self, group_id: int, object_key: str) -> Any:
         bucket = classic_bucket_name(group_id)
         try:
-            return self.client.get_object(bucket, object_key)
+            return self.objects.get(bucket, object_key)
         except Exception as exc:
             raise ClassicStorageError(f"群典图片读取失败：{bucket}/{object_key}") from exc
 
@@ -114,11 +101,7 @@ class ClassicObjectStorage:
     def remove_image(self, group_id: int, object_key: str, *, missing_ok: bool = False) -> None:
         bucket = classic_bucket_name(group_id)
         try:
-            self.client.remove_object(bucket, object_key)
-        except S3Error as exc:
-            if missing_ok and exc.code in {"NoSuchKey", "NoSuchObject", "NoSuchBucket"}:
-                return
-            raise ClassicStorageError(f"群典图片删除失败：{bucket}/{object_key}") from exc
+            self.objects.remove(bucket, object_key, missing_ok=missing_ok)
         except Exception as exc:
             raise ClassicStorageError(f"群典图片删除失败：{bucket}/{object_key}") from exc
 

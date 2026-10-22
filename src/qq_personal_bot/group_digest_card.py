@@ -11,6 +11,7 @@ from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont
 
+from qq_personal_bot.drawing import load_font_candidates
 from qq_personal_bot.settings import AppSettings
 
 WIDTH = 1080
@@ -144,10 +145,7 @@ def _draw_metrics(
         value_text = f"{int(value or 0):,}"
         _draw_text(draw, (left + 18, y + 45), value_text, font=fonts["metric"], fill=INK)
         value_width = _text_width(draw, value_text, fonts["metric"])
-        _draw_text(
-            draw,
-            (left + 22 + value_width, y + 58), unit, font=fonts["small"], fill=MUTED
-        )
+        _draw_text(draw, (left + 22 + value_width, y + 58), unit, font=fonts["small"], fill=MUTED)
     return y + 128
 
 
@@ -225,9 +223,17 @@ def _draw_hourly_chart(
         draw.rounded_rectangle((left, baseline - bar_height, right, baseline), radius=4, fill=color)
         if count and (hour == peak_hour or count >= max_count * 0.7):
             label = str(count)
-            _center_text(draw, label, ((left + right) // 2, baseline - bar_height - 12), fonts["utility"], MUTED)
+            _center_text(
+                draw,
+                label,
+                ((left + right) // 2, baseline - bar_height - 12),
+                fonts["utility"],
+                MUTED,
+            )
         if hour % 2 == 0:
-            _center_text(draw, f"{hour:02d}", ((left + right) // 2, baseline + 19), fonts["utility"], MUTED)
+            _center_text(
+                draw, f"{hour:02d}", ((left + right) // 2, baseline + 19), fonts["utility"], MUTED
+            )
     return chart_bottom + 70
 
 
@@ -251,7 +257,9 @@ def _draw_atmosphere(
     draw.arc(ring, start=-90, end=-90 + int(359 * score / 100), fill=TEAL, width=12)
     _center_text(draw, str(score), (CONTENT_LEFT + 68, y + 78), fonts["small_bold"], INK)
     _draw_text(draw, (CONTENT_LEFT + 142, y + 34), label, font=fonts["title"], fill=INK)
-    lines = _wrap_text(draw, comment, fonts["body"], CONTENT_RIGHT - CONTENT_LEFT - 190, max_lines=2)
+    lines = _wrap_text(
+        draw, comment, fonts["body"], CONTENT_RIGHT - CONTENT_LEFT - 190, max_lines=2
+    )
     _draw_lines(draw, lines, CONTENT_LEFT + 143, y + 79, fonts["body"], MUTED, 31)
     return y + height + 28
 
@@ -274,11 +282,20 @@ def _draw_topics(
             people_text = people
         else:
             people_text = "、".join(str(item) for item in people[:5])
-        lines = _wrap_text(draw, summary, fonts["body"], CONTENT_RIGHT - CONTENT_LEFT - 86, max_lines=4)
+        lines = _wrap_text(
+            draw, summary, fonts["body"], CONTENT_RIGHT - CONTENT_LEFT - 86, max_lines=4
+        )
         height = 94 + len(lines) * 30 + (28 if people_text else 0)
         top = y + 12
-        draw.rounded_rectangle((CONTENT_LEFT, top, CONTENT_RIGHT, top + height), radius=16, fill="#fbfcfe", outline=LINE)
-        draw.rounded_rectangle((CONTENT_LEFT + 18, top + 18, CONTENT_LEFT + 54, top + 54), radius=10, fill=SOFT_BLUE)
+        draw.rounded_rectangle(
+            (CONTENT_LEFT, top, CONTENT_RIGHT, top + height),
+            radius=16,
+            fill="#fbfcfe",
+            outline=LINE,
+        )
+        draw.rounded_rectangle(
+            (CONTENT_LEFT + 18, top + 18, CONTENT_LEFT + 54, top + 54), radius=10, fill=SOFT_BLUE
+        )
         _center_text(draw, str(index), (CONTENT_LEFT + 36, top + 36), fonts["small_bold"], BLUE)
         _draw_text(
             draw,
@@ -324,7 +341,12 @@ def _draw_portraits(
         for column, (portrait, lines, _) in enumerate(prepared):
             left = CONTENT_LEFT + column * (card_width + gap)
             top = y + 12
-            draw.rounded_rectangle((left, top, left + card_width, top + row_height), radius=16, fill="#fbfcfe", outline=LINE)
+            draw.rounded_rectangle(
+                (left, top, left + card_width, top + row_height),
+                radius=16,
+                fill="#fbfcfe",
+                outline=LINE,
+            )
             user_id = _safe_int(portrait.get("user_id"))
             name = str(portrait.get("name") or names.get(user_id, str(user_id or "群友")))
             color = _identity_color(user_id or row_start + column)
@@ -346,7 +368,9 @@ def _draw_portraits(
                 fill=BLUE,
             )
             tags = portrait.get("tags") or []
-            tags_text = " · ".join(str(tag) for tag in tags[:3]) if not isinstance(tags, str) else tags
+            tags_text = (
+                " · ".join(str(tag) for tag in tags[:3]) if not isinstance(tags, str) else tags
+            )
             if tags_text:
                 _draw_text(
                     draw,
@@ -374,11 +398,20 @@ def _draw_quotes(
         name = str(quote.get("name") or "群友")
         quote_text = str(quote.get("quote") or "")
         comment = str(quote.get("comment") or "")
-        quote_lines = _wrap_text(draw, quote_text, fonts["quote"], CONTENT_RIGHT - CONTENT_LEFT - 100, max_lines=3)
-        comment_lines = _wrap_text(draw, comment, fonts["small"], CONTENT_RIGHT - CONTENT_LEFT - 100, max_lines=2)
+        quote_lines = _wrap_text(
+            draw, quote_text, fonts["quote"], CONTENT_RIGHT - CONTENT_LEFT - 100, max_lines=3
+        )
+        comment_lines = _wrap_text(
+            draw, comment, fonts["small"], CONTENT_RIGHT - CONTENT_LEFT - 100, max_lines=2
+        )
         height = 74 + len(quote_lines) * 33 + (len(comment_lines) * 25 + 20 if comment_lines else 0)
         top = y + 12
-        draw.rounded_rectangle((CONTENT_LEFT, top, CONTENT_RIGHT, top + height), radius=16, fill="#fffdf9", outline="#eee5d8")
+        draw.rounded_rectangle(
+            (CONTENT_LEFT, top, CONTENT_RIGHT, top + height),
+            radius=16,
+            fill="#fffdf9",
+            outline="#eee5d8",
+        )
         draw.ellipse((CONTENT_LEFT + 20, top + 20, CONTENT_LEFT + 68, top + 68), fill="#b96f4d")
         _center_text(draw, "言", (CONTENT_LEFT + 44, top + 44), fonts["small_bold"], "#ffffff")
         _draw_text(
@@ -392,7 +425,9 @@ def _draw_quotes(
         if comment_lines:
             divider_y = top + 62 + len(quote_lines) * 33
             draw.line((CONTENT_LEFT + 84, divider_y, CONTENT_RIGHT - 24, divider_y), fill="#eee3d7")
-            _draw_lines(draw, comment_lines, CONTENT_LEFT + 84, divider_y + 13, fonts["small"], MUTED, 25)
+            _draw_lines(
+                draw, comment_lines, CONTENT_LEFT + 84, divider_y + 13, fonts["small"], MUTED, 25
+            )
         y = top + height + 14
     return y + 22
 
@@ -404,13 +439,19 @@ def _draw_closing(
     fonts: Mapping[str, ImageFont.ImageFont],
 ) -> int:
     closing = str(digest.get("closing") or "这一天的群聊已装订成册。")
-    lines = _wrap_text(draw, closing, fonts["body"], CONTENT_RIGHT - CONTENT_LEFT - 150, max_lines=4)
+    lines = _wrap_text(
+        draw, closing, fonts["body"], CONTENT_RIGHT - CONTENT_LEFT - 150, max_lines=4
+    )
     height = max(126, 58 + len(lines) * 31)
     for x in range(CONTENT_LEFT, CONTENT_RIGHT):
         ratio = (x - CONTENT_LEFT) / max(1, CONTENT_RIGHT - CONTENT_LEFT)
         draw.line((x, y, x, y + height), fill=_blend(DEEP_BLUE, BLUE, ratio))
-    draw.rounded_rectangle((CONTENT_LEFT, y, CONTENT_RIGHT, y + height), radius=18, outline="#4f89b8", width=2)
-    draw.rounded_rectangle((CONTENT_LEFT + 22, y + 24, CONTENT_LEFT + 92, y + 94), radius=20, fill="#ddecf7")
+    draw.rounded_rectangle(
+        (CONTENT_LEFT, y, CONTENT_RIGHT, y + height), radius=18, outline="#4f89b8", width=2
+    )
+    draw.rounded_rectangle(
+        (CONTENT_LEFT + 22, y + 24, CONTENT_LEFT + 92, y + 94), radius=20, fill="#ddecf7"
+    )
     _center_text(draw, "结", (CONTENT_LEFT + 57, y + 59), fonts["title"], DEEP_BLUE)
     _draw_text(
         draw,
@@ -440,7 +481,9 @@ def _draw_footer(
     width = (CONTENT_RIGHT - CONTENT_LEFT - gap * 2) // 3
     for index, (label, value) in enumerate(labels):
         left = CONTENT_LEFT + index * (width + gap)
-        draw.rounded_rectangle((left, y, left + width, y + 76), radius=14, fill="#f7f9fc", outline=LINE)
+        draw.rounded_rectangle(
+            (left, y, left + width, y + 76), radius=14, fill="#f7f9fc", outline=LINE
+        )
         _center_text(draw, label, (left + width // 2, y + 23), fonts["small"], MUTED)
         _center_text(draw, value, (left + width // 2, y + 51), fonts["small_bold"], INK)
     return y + 100
@@ -456,7 +499,9 @@ def _section_heading(
     draw.rounded_rectangle((CONTENT_LEFT, y + 5, CONTENT_LEFT + 6, y + 35), radius=3, fill=ORANGE)
     _draw_text(draw, (CONTENT_LEFT + 18, y), title, font=fonts["section"], fill=INK)
     chip_width = _text_width(draw, chip, fonts["utility"]) + 24
-    draw.rounded_rectangle((CONTENT_RIGHT - chip_width, y + 4, CONTENT_RIGHT, y + 32), radius=14, fill=DEEP_BLUE)
+    draw.rounded_rectangle(
+        (CONTENT_RIGHT - chip_width, y + 4, CONTENT_RIGHT, y + 32), radius=14, fill=DEEP_BLUE
+    )
     _draw_text(
         draw,
         (CONTENT_RIGHT - chip_width + 12, y + 8),
@@ -492,18 +537,12 @@ def _font(settings: AppSettings, size: int, *, bold: bool = False) -> ImageFont.
             0,
         ),
     )
-    for candidate, index in candidates:
-        if candidate and candidate.is_file():
-            return ImageFont.truetype(str(candidate), size=size, index=index)
-    return ImageFont.load_default()
+    return load_font_candidates(candidates, size)
 
 
 def _utility_font(settings: AppSettings, size: int) -> ImageFont.ImageFont:
     candidates = (
-        Path(
-            "/usr/local/share/fonts/jetbrains-mono-nerd/"
-            "JetBrainsMonoNerdFontMono-SemiBold.ttf"
-        ),
+        Path("/usr/local/share/fonts/jetbrains-mono-nerd/JetBrainsMonoNerdFontMono-SemiBold.ttf"),
         Path("C:/Windows/Fonts/consola.ttf"),
         Path("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"),
     )
@@ -532,9 +571,7 @@ def _fallback_fonts(size: int) -> tuple[ImageFont.ImageFont, ...]:
     return tuple(fonts)
 
 
-def _font_runs(
-    text: str, primary: ImageFont.ImageFont
-) -> list[tuple[str, ImageFont.ImageFont]]:
+def _font_runs(text: str, primary: ImageFont.ImageFont) -> list[tuple[str, ImageFont.ImageFont]]:
     fonts = (primary, *_fallback_fonts(_font_size(primary)))
     runs: list[tuple[str, ImageFont.ImageFont]] = []
     for cluster in _grapheme_clusters(str(text)):
@@ -591,10 +628,7 @@ def _is_regional_indicator(char: str) -> bool:
 
 
 def _font_supports(font: ImageFont.ImageFont, text: str) -> bool:
-    return all(
-        _is_ignorable_for_glyph_check(char) or _font_has_glyph(font, char)
-        for char in text
-    )
+    return all(_is_ignorable_for_glyph_check(char) or _font_has_glyph(font, char) for char in text)
 
 
 def _is_ignorable_for_glyph_check(char: str) -> bool:

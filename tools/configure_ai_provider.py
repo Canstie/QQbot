@@ -6,10 +6,11 @@ import argparse
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from qq_personal_bot import ai_client
+from qq_personal_bot.ai_errors import DSAPIError
 from qq_personal_bot.ai_providers import provider_settings, resolve_ai_proxy_settings
 from qq_personal_bot.core.ai_providers import normalize_ai_base_url
 from qq_personal_bot.core.store import PolicyStore
-from qq_personal_bot.dsapi import DSAPIError, _request_chat_completion, fetch_dsapi_models
 from qq_personal_bot.settings import AppSettings
 
 
@@ -34,14 +35,14 @@ def configure(settings, store, *, name, base_url, model, api_key, test_all=False
         "models": [],
     }
     routed = provider_settings(resolve_ai_proxy_settings(settings, store), provider)
-    models = fetch_dsapi_models(routed)
+    models = ai_client.fetch_dsapi_models(routed)
     if not any(item["id"] == model for item in models):
         raise DSAPIError("The default model is absent from the gateway catalog")
 
     def probe(item):
         try:
             try:
-                text = _request_chat_completion(
+                text = ai_client.request_completion(
                     routed,
                     [{"role": "user", "content": "Reply with exactly OK."}],
                     model=item["id"],
@@ -49,7 +50,7 @@ def configure(settings, store, *, name, base_url, model, api_key, test_all=False
                 )
             except DSAPIError:
                 # Some reasoning routes need a larger budget even for this tiny prompt.
-                text = _request_chat_completion(
+                text = ai_client.request_completion(
                     routed,
                     [{"role": "user", "content": "Reply with exactly OK."}],
                     model=item["id"],

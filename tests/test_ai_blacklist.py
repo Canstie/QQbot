@@ -7,6 +7,7 @@ import nonebot
 import pytest
 from nonebot.adapters.onebot.v11 import Message, MessageSegment
 
+from qq_personal_bot import ai_client
 from qq_personal_bot.core.models import MessageEvent
 from qq_personal_bot.core.policy import PolicyEngine
 from qq_personal_bot.core.store import PolicyStore
@@ -318,7 +319,7 @@ async def test_ai_generators_ignore_blocked_users_before_lookup_context_or_model
     request = Mock()
     sticker = Mock()
     monkeypatch.setattr(dsapi, "build_mention_prompt", prompt)
-    monkeypatch.setattr(dsapi, "_request_chat_completion_with_fallback", request)
+    monkeypatch.setattr(ai_client, 'complete_text', request)
     monkeypatch.setattr(dsapi, "_pick_random_sticker", sticker)
     for mention in [True, False]:
         event = MessageEvent(

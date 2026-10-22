@@ -9,8 +9,9 @@ from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
 
-from qq_personal_bot import classic_sharing
-from qq_personal_bot import web as web_module
+from qq_personal_bot import ai_client, classic_sharing
+from qq_personal_bot.admin_routes import captcha as admin_captcha
+from qq_personal_bot.admin_routes import media as admin_media
 from qq_personal_bot.miniapp import CachedMiniAppImages
 from qq_personal_bot.runtime import get_store, reset_runtime
 from qq_personal_bot.web import create_app
@@ -169,8 +170,8 @@ def test_xiaoheihe_captcha_page_is_public_and_sends_images_back(
         return_value=CachedMiniAppImages(directory=image_dir, paths=(image_path,))
     )
     bot = SimpleNamespace(send_group_msg=AsyncMock())
-    monkeypatch.setattr(web_module, "cache_xiaoheihe_images_with_captcha", cache)
-    monkeypatch.setattr(web_module, "get_bot", lambda self_id: bot)
+    monkeypatch.setattr(admin_captcha, "cache_xiaoheihe_images_with_captcha", cache)
+    monkeypatch.setattr(admin_captcha, "get_bot", lambda self_id: bot)
     client = TestClient(create_app())
 
     page = client.get(f"/xiaoheihe-captcha/{challenge.token}")
@@ -220,7 +221,7 @@ def test_xiaoheihe_captcha_sdk_is_proxied_as_public_javascript(tmp_path, monkeyp
         assert timeout == 15
         return _FakeUrlResponse(sdk, request.full_url)
 
-    monkeypatch.setattr(web_module, "urlopen", fake_urlopen)
+    monkeypatch.setattr(admin_captcha, "urlopen", fake_urlopen)
 
     response = TestClient(create_app()).get(
         f"/xiaoheihe-captcha/{challenge.token}/sdk.js"
@@ -396,7 +397,7 @@ def test_dsapi_model_refresh_returns_live_provider_models(tmp_path, monkeypatch)
     monkeypatch.setenv("QQBOT_DSAPI_API_KEY", "secret")
     monkeypatch.setenv("QQBOT_DSAPI_BASE_URL", "https://dsapi.example/v1")
     monkeypatch.setattr(
-        web_module,
+        ai_client,
         "fetch_dsapi_models",
         lambda settings: [
             {
@@ -913,7 +914,7 @@ def test_classics_api_lists_groups_reads_group_and_serves_images(tmp_path, monke
         size_bytes=len(image_body),
     )
     storage = _FakeClassicStorage({(123, object_key): image_body})
-    monkeypatch.setattr(web_module, "get_classic_storage", lambda: storage)
+    monkeypatch.setattr(admin_media, "get_classic_storage", lambda: storage)
     client = TestClient(create_app())
 
     response = client.get("/api/classics/groups")
@@ -973,7 +974,7 @@ def test_classics_api_deletes_single_image_and_whole_group(tmp_path, monkeypatch
     storage = _FakeClassicStorage(
         {(123, first_key): first_body, (123, second_key): second_body}
     )
-    monkeypatch.setattr(web_module, "get_classic_storage", lambda: storage)
+    monkeypatch.setattr(admin_media, "get_classic_storage", lambda: storage)
     client = TestClient(create_app())
 
     response = client.delete(f"/api/classics/groups/123/images/{first_key}")
@@ -1033,7 +1034,7 @@ def test_classics_api_binds_and_dissolves_shared_archive(tmp_path, monkeypatch):
         )
         objects[(group_id, key)] = body
     storage = _FakeClassicStorage(objects)
-    monkeypatch.setattr(web_module, "get_classic_storage", lambda: storage)
+    monkeypatch.setattr(admin_media, "get_classic_storage", lambda: storage)
     monkeypatch.setattr(classic_sharing, "get_classic_storage", lambda: storage)
     client = TestClient(create_app())
 
@@ -1079,7 +1080,7 @@ def test_download_gallery_lists_streams_and_deletes_images(tmp_path, monkeypatch
         downloaded_date="20260817",
     )
     storage = _FakeDownloadStorage({object_key: body})
-    monkeypatch.setattr(web_module, "get_download_storage", lambda: storage)
+    monkeypatch.setattr(admin_media, "get_download_storage", lambda: storage)
     client = TestClient(create_app())
 
     overview = client.get("/api/download-images/overview")
@@ -1122,7 +1123,7 @@ def test_download_gallery_matches_only_an_existing_exact_hash(tmp_path, monkeypa
         downloaded_date="20260817",
     )
     storage = _FakeDownloadStorage({object_key: body})
-    monkeypatch.setattr(web_module, "get_download_storage", lambda: storage)
+    monkeypatch.setattr(admin_media, "get_download_storage", lambda: storage)
     client = TestClient(create_app())
 
     match = client.post("/api/download-images/match", content=body)

@@ -4,11 +4,18 @@ import json
 import time
 from collections import deque
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 from nonebot import logger, on, on_message
-from nonebot.adapters.onebot.v11 import Bot, Event, GroupMessageEvent, Message, MessageSegment
+from nonebot.adapters.onebot.v11 import (
+    Bot,
+    Event,
+    GroupMessageEvent,
+    Message,
+    MessageSegment,
+)
 
 from qq_personal_bot.activity import (
     GroupActivityRecord,
@@ -36,7 +43,10 @@ from qq_personal_bot.dsapi import (
     generate_roast_reply,
 )
 from qq_personal_bot.features import feature_id_for_platform
-from qq_personal_bot.group_digest import GroupDigestEmptyError, generate_group_digest_report
+from qq_personal_bot.group_digest import (
+    GroupDigestEmptyError,
+    generate_group_digest_report,
+)
 from qq_personal_bot.lua_runner import pending_lua_command, run_lua_message
 from qq_personal_bot.miniapp import (
     CachedMiniAppImages,
@@ -51,7 +61,10 @@ from qq_personal_bot.performance import (
     latency_phase,
     reset_latency_trace,
 )
-from qq_personal_bot.plugins.custom_flows import handle_custom_flow, has_pending_custom_flow
+from qq_personal_bot.plugins.custom_flows import (
+    handle_custom_flow,
+    has_pending_custom_flow,
+)
 from qq_personal_bot.random_gallery import (
     MAX_FORWARD_IMAGES,
     send_random_gallery,
@@ -66,7 +79,11 @@ from qq_personal_bot.runtime import (
 )
 from qq_personal_bot.teachers import parse_teacher_command, query_teachers
 from qq_personal_bot.turtle_soup import GAME_CONTEXT
-from qq_personal_bot.twitter import CachedTwitterImages, TwitterImageError, cache_twitter_images
+from qq_personal_bot.twitter import (
+    CachedTwitterImages,
+    TwitterImageError,
+    cache_twitter_images,
+)
 from qq_personal_bot.xiaoheihe_captcha import (
     XIAOHEIHE_CAPTCHA_TTL_SECONDS,
     build_xiaoheihe_captcha_url,
@@ -249,7 +266,9 @@ def _recent_output_signature(event: Any, value: Any) -> tuple[int | None, str]:
 
 def _prune_recent_bot_outputs(now: float | None = None) -> None:
     current = time.time() if now is None else float(now)
-    while _recent_bot_outputs and current - _recent_bot_outputs[0][0] > _RECENT_BOT_OUTPUT_TTL_SECONDS:
+    while (
+        _recent_bot_outputs and current - _recent_bot_outputs[0][0] > _RECENT_BOT_OUTPUT_TTL_SECONDS
+    ):
         _recent_bot_outputs.popleft()
 
 
@@ -336,6 +355,19 @@ async def _handle_onebot_message(
         trace.emit()
 
 
+@dataclass(frozen=True)
+class DispatchContext:
+    """One event and its policy decision, shared by ordered feature handlers."""
+
+    matcher: Any
+    bot: Bot
+    event: Any
+    internal_event: Any
+    explicit_group_send: bool
+    soup: Any
+    decision: Any = None
+
+
 async def _dispatch_onebot_message(
     matcher: Any,
     bot: Bot,
@@ -350,97 +382,24 @@ async def _dispatch_onebot_message(
 
     async def send_game_response(text: str) -> None:
         await _send_response(
-            matcher, bot, event, _build_quoted_response(text, internal_event),
+            matcher,
+            bot,
+            event,
+            _build_quoted_response(text, internal_event),
             explicit_group_send=explicit_group_send,
         )
 
     soup = get_turtle_soup_service()
     if await soup.handle(
-        internal_event, str(bot.self_id), send_game_response,
+        internal_event,
+        str(bot.self_id),
+        send_game_response,
         authorize=lambda: get_policy_engine().evaluate(internal_event, self_id=bot.self_id),
     ):
         return
-    miniapp_image_source = extract_miniapp_image_source(internal_event.segments)
-    miniapp_feature = (
-        feature_id_for_platform(miniapp_image_source.platform)
-        if miniapp_image_source is not None
-        else None
-    )
-    if (
-        miniapp_image_source is not None
-        and (miniapp_feature is None or get_store().is_feature_enabled(miniapp_feature))
-        and _automatic_reply_allowed(internal_event)
-        and _miniapp_image_source_allowed(miniapp_image_source, internal_event)
-    ):
-        try:
-            with latency_phase("miniapp_fetch"):
-                if miniapp_image_source.platform == "twitter":
-                    cached_images = await cache_twitter_images(
-                        miniapp_image_source.source_url, proxy_url=get_settings().twitter_proxy_url,
-                    )
-                else:
-                    cached_images = await cache_miniapp_images(miniapp_image_source)
-        except TwitterImageError as exc:
-            logger.warning("Twitter image parsing failed: %s", exc)
-            await _finish_with_response(
-                matcher, bot, event, str(exc), explicit_group_send=explicit_group_send,
-            )
-            return
-        except XiaoheiheCaptchaRequired as exc:
-            await _send_xiaoheihe_captcha_to_group(
-                bot,
-                event,
-                miniapp_image_source.source_url,
-                exc.appid,
-            )
-            cached_images = CachedMiniAppImages(directory=None, paths=())
-        except (OSError, ValueError, json.JSONDecodeError) as exc:
-            logger.warning(f"Failed to cache mini app images: {exc}")
-            cached_images = CachedMiniAppImages(directory=None, paths=())
-        try:
-            if cached_images.paths:
-                await _finish_with_response(
-                    matcher,
-                    bot,
-                    event,
-                    _build_miniapp_image_response(cached_images),
-                    explicit_group_send=explicit_group_send,
-                )
-            elif miniapp_image_source.platform == "twitter":
-                await _finish_with_response(
-                    matcher, bot, event, "这条推文没有可解析的图片，暂不处理视频或动图。",
-                    explicit_group_send=explicit_group_send,
-                )
-        finally:
-            cached_images.cleanup()
-        if miniapp_image_source.platform == "twitter":
-            return
-
-    pending_command = pending_lua_command(internal_event)
-    if pending_command is not None:
-        annotate_latency(handler="lua_pending")
-        with latency_phase("lua"):
-            lua_result = await run_lua_message(
-                bot,
-                internal_event,
-                PolicyDecision(
-                    True,
-                    "ok",
-                    handler="lua",
-                    normalized_message=pending_command,
-                ),
-            )
-        if lua_result.reply:
-            await _finish_with_response(
-                matcher,
-                bot,
-                event,
-                _build_lua_response(lua_result.reply, event, quote=lua_result.quote),
-                explicit_group_send=explicit_group_send,
-            )
-        if lua_result.stop:
-            return
-
+    context = DispatchContext(matcher, bot, event, internal_event, explicit_group_send, soup)
+    if await _handle_shared_images(context) or await _handle_pending_lua(context):
+        return
     custom_flow_reply = handle_custom_flow(internal_event)
     if custom_flow_reply:
         await _finish_with_response(
@@ -454,321 +413,21 @@ async def _dispatch_onebot_message(
     with latency_phase("policy"):
         decision = get_policy_engine().evaluate(internal_event, self_id=bot.self_id)
     annotate_latency(handler=decision.handler or "none", outcome=decision.reason)
+    context = replace(context, decision=decision)
     if not decision.allowed:
-        if internal_event.is_at_bot and decision.reason in {
-            "group_rate_limited",
-            "user_rate_limited",
-        }:
-            await _finish_with_response(
-                matcher,
-                bot,
-                event,
-                "问得太快啦，让我缓一小会儿嘛 (｡•́︿•̀｡)",
-                explicit_group_send=explicit_group_send,
-            )
-        if decision.reason == "no_trigger":
-            if soup.active(internal_event.group_id):
-                return
-            if await _is_passive_bot_image_reply(bot, internal_event):
-                return
-            if not (
-                get_store().is_feature_enabled("ai.master")
-                and get_store().is_feature_enabled("ai.random")
-            ):
-                return
-            try:
-                with latency_phase("deepseek"):
-                    response = await generate_random_group_reply(
-                        internal_event,
-                        get_settings(),
-                        get_store(),
-                    )
-            except DSAPIError as exc:
-                logger.warning(f"DSAPI random group reply failed: {exc}")
-                return
-            if response:
-                if soup.active(internal_event.group_id):
-                    return
-                await _finish_ai_response(
-                    matcher,
-                    bot,
-                    event,
-                    response,
-                    explicit_group_send=explicit_group_send,
-                    random_reply=True,
-                )
+        await _handle_denied_message(context)
         return
-
-    evaluation_text = decision.normalized_message.strip()
-    targets = evaluation_target_ids(internal_event, self_id=bot.self_id)
-    if (
-        decision.handler in {"mention", "default", "person_evaluation"}
-        and is_person_evaluation_request(evaluation_text)
-        and (targets or evaluation_text in {"锐评", "锐评一下"})
+    for handler in (
+        _handle_person_evaluation,
+        _handle_classics,
+        _handle_gallery,
+        _handle_group_digest,
+        _handle_teacher_lookup,
+        _handle_lua_command,
+        _handle_ai_mention,
     ):
-        if len(targets) != 1:
-            response = "请一次 @一位群友，例如：评价一下 @群友、批判一下 @群友，或 ~锐评 @群友。"
-        else:
-            store = get_store()
-            config = store.get_dsapi_config()
-            if not (
-                store.is_feature_enabled("ai.master")
-                and store.is_feature_enabled("ai.roast")
-                and config["enabled"]
-                and internal_event.group_id in config["enabled_groups"]
-                and store.is_memory_group_enabled(internal_event.group_id)
-            ):
-                response = "本群尚未开启人物图谱评价。"
-            else:
-                await flush_group_activity()
-                try:
-                    with latency_phase("deepseek"):
-                        response = await generate_roast_reply(
-                            group_id=int(internal_event.group_id),
-                            target_user_id=targets[0],
-                            settings=get_settings(),
-                            store=store,
-                            request_text=evaluation_text,
-                        )
-                except DSAPIError as exc:
-                    logger.warning("DSAPI roast reply failed: %s", exc)
-                    response = "这次评价没生成完整，稍后再试一次。"
-                if response is None:
-                    response = "这位群友在本群的图谱还在整理或证据不足，等积累更多有内容的聊天后再试。"
-        if soup.active(internal_event.group_id):
+        if await handler(context):
             return
-        await _finish_with_response(
-            matcher,
-            bot,
-            event,
-            response,
-            explicit_group_send=explicit_group_send,
-        )
-        return
-
-    if decision.handler == "default" and decision.normalized_message.strip() == "爆典all":
-        if not get_store().is_feature_enabled("classics.forward_all"):
-            return
-        async def send_classic_forward(nodes: list[dict]) -> None:
-            await bot.call_api("send_group_forward_msg", group_id=int(internal_event.group_id),
-                               messages=nodes, _timeout=600)
-
-        async def send_classic_notice(text: str) -> None:
-            await _send_response(matcher, bot, event, MessageSegment.text(text),
-                                 explicit_group_send=explicit_group_send)
-
-        with latency_phase("classics"):
-            await send_all_classics(internal_event.group_id, str(bot.self_id),
-                                    send_classic_forward, send_classic_notice)
-        return
-
-    gallery_parts = decision.normalized_message.strip().split()
-    if decision.handler == "default" and gallery_parts and gallery_parts[0] == "涩图":
-        if not get_store().is_feature_enabled("gallery.random"):
-            return
-        count = None
-        if len(gallery_parts) > 1:
-            value = gallery_parts[1]
-            if (len(gallery_parts) != 2 or len(value) > 3 or not value.isascii()
-                    or not value.isdecimal() or not 1 <= int(value) <= MAX_FORWARD_IMAGES):
-                await _send_response(
-                    matcher, bot, event,
-                    MessageSegment.text(f"用法：~涩图 [数量]，数量须在 1—{MAX_FORWARD_IMAGES} 之间。"),
-                    explicit_group_send=explicit_group_send,
-                )
-                return
-            count = int(value)
-
-        if count is None:
-            async def send_gallery_image(path: Path) -> None:
-                await _send_response(
-                    matcher, bot, event, MessageSegment.image(path.resolve().as_uri()),
-                    explicit_group_send=explicit_group_send,
-                )
-
-            with latency_phase("gallery"):
-                notice = await send_random_gallery(send_gallery_image)
-        else:
-            async def send_gallery_forward(nodes: list[dict]) -> None:
-                await bot.call_api("send_group_forward_msg", group_id=int(internal_event.group_id),
-                                   messages=nodes, _timeout=600)
-
-            with latency_phase("gallery"):
-                notice = await send_random_gallery_forward(send_gallery_forward, str(bot.self_id), count)
-        if notice:
-            await _send_response(matcher, bot, event, MessageSegment.text(notice),
-                                 explicit_group_send=explicit_group_send)
-        return
-
-    digest_parts = decision.normalized_message.split() if decision.handler == "default" else []
-    if digest_parts and digest_parts[0] == "总结":
-        store = get_store()
-        if not store.is_admin(int(internal_event.user_id)):
-            return
-        if not all(
-            store.is_feature_enabled(feature_id)
-            for feature_id in ("activity.record", "lua.master", "lua.command.总结")
-        ):
-            return
-        if digest_parts not in (["总结"], ["总结", "昨天"]):
-            await _send_response(
-                matcher,
-                bot,
-                event,
-                MessageSegment.text("用法：~总结 或 ~总结 昨天"),
-                explicit_group_send=explicit_group_send,
-            )
-            return
-        yesterday = len(digest_parts) == 2
-        await _send_response(
-            matcher,
-            bot,
-            event,
-            MessageSegment.text(
-                f"⏳ 正在整理{'昨天' if yesterday else '今天'}的聊天记录并生成群聊速报……"
-            ),
-            explicit_group_send=explicit_group_send,
-        )
-        with latency_phase("activity_flush"):
-            await flush_group_activity()
-        try:
-            with latency_phase("digest"):
-                report = await generate_group_digest_report(
-                    bot,
-                    internal_event,
-                    get_settings(),
-                    store,
-                    yesterday=yesterday,
-                )
-        except GroupDigestEmptyError as exc:
-            if soup.active(internal_event.group_id):
-                return
-            await _send_response(
-                matcher,
-                bot,
-                event,
-                MessageSegment.text(str(exc)),
-                explicit_group_send=explicit_group_send,
-            )
-            return
-        except DSAPIError as exc:
-            logger.warning(f"Daily group digest generation failed: {exc}")
-            if soup.active(internal_event.group_id):
-                return
-            await _send_response(
-                matcher,
-                bot,
-                event,
-                MessageSegment.text("群聊速报生成失败，请检查 AI 供应商配置后再试。"),
-                explicit_group_send=explicit_group_send,
-            )
-            return
-        except Exception as exc:  # noqa: BLE001 - keep the bot handler alive on render failures
-            logger.exception(f"Daily group digest rendering failed: {exc}")
-            if soup.active(internal_event.group_id):
-                return
-            await _send_response(
-                matcher,
-                bot,
-                event,
-                MessageSegment.text("群聊速报生成时出了点问题，请稍后再试。"),
-                explicit_group_send=explicit_group_send,
-            )
-            return
-        if soup.active(internal_event.group_id):
-            return
-        await _send_response(
-            matcher,
-            bot,
-            event,
-            MessageSegment.image(report.image_path.as_uri()),
-            explicit_group_send=explicit_group_send,
-        )
-        return
-
-    teacher_args = (
-        parse_teacher_command(decision.normalized_message)
-        if decision.handler == "default" else None
-    )
-    if teacher_args is not None:
-        if not get_store().is_feature_enabled("teacher.lookup"):
-            return
-        with latency_phase("teacher"):
-            teacher_results = await query_teachers(*teacher_args)
-        for text in teacher_results:
-            await _send_response(
-                matcher, bot, event, MessageSegment.text(text),
-                explicit_group_send=explicit_group_send,
-            )
-        return
-
-    with latency_phase("lua"):
-        lua_result = await run_lua_message(bot, internal_event, decision)
-    if lua_result.reply:
-        await _finish_with_response(
-            matcher,
-            bot,
-            event,
-            _build_lua_response(lua_result.reply, event, quote=lua_result.quote),
-            explicit_group_send=explicit_group_send,
-        )
-    if lua_result.stop:
-        return
-
-    if decision.handler == "mention":
-        if await _is_passive_bot_image_reply(bot, internal_event):
-            return
-        if not (
-            get_store().is_feature_enabled("ai.master")
-            and get_store().is_feature_enabled("ai.mention")
-        ):
-            return
-        try:
-            with latency_phase("deepseek"):
-                response = await generate_mention_reply(
-                    bot,
-                    internal_event,
-                    get_settings(),
-                    get_store(),
-                )
-        except DSAPIError as exc:
-            logger.warning(f"DSAPI mention reply failed: {exc}")
-            if soup.active(internal_event.group_id):
-                return
-            await _finish_with_response(
-                matcher,
-                bot,
-                event,
-                (
-                    "当前消息模型未启用识图，请在网页的消息链路选择支持识图的模型后再试。"
-                    if isinstance(exc, DSAPIVisionUnsupportedError)
-                    else "引用的图片读取失败，请重新发送图片后再引用我。"
-                    if isinstance(exc, DSAPIImageError)
-                    else "这次回答没能完整生成，试着缩短问题再问一次。"
-                    if isinstance(exc, DSAPILengthError)
-                    else "这条消息触发了模型的内容限制，无法回答。"
-                    if isinstance(exc, DSAPIContentBlockedError)
-                    else "接口没有返回可用的回答，请稍后再试。"
-                    if isinstance(exc, DSAPIResponseError)
-                    else "接口请求超时，请稍后再试，或在网页适当提高供应商的请求超时。"
-                    if isinstance(exc, DSAPITimeoutError)
-                    else "脑袋刚刚卡住啦，再问我一次嘛 (｡•́︿•̀｡)"
-                ),
-                explicit_group_send=explicit_group_send,
-            )
-            return
-        if response:
-            if soup.active(internal_event.group_id):
-                return
-            await _finish_ai_response(
-                matcher,
-                bot,
-                event,
-                response,
-                explicit_group_send=explicit_group_send,
-            )
-        return
-
     if decision.handler == "lua":
         return
 
@@ -787,6 +446,516 @@ async def _dispatch_onebot_message(
         _build_default_response(decision.normalized_message, direct=decision.handler == "direct"),
         explicit_group_send=explicit_group_send,
     )
+
+
+async def _handle_shared_images(context: DispatchContext) -> bool:
+    matcher = context.matcher
+    bot = context.bot
+    event = context.event
+    internal_event = context.internal_event
+    explicit_group_send = context.explicit_group_send
+
+    miniapp_image_source = extract_miniapp_image_source(internal_event.segments)
+    miniapp_feature = (
+        feature_id_for_platform(miniapp_image_source.platform)
+        if miniapp_image_source is not None
+        else None
+    )
+    if (
+        miniapp_image_source is not None
+        and (miniapp_feature is None or get_store().is_feature_enabled(miniapp_feature))
+        and _automatic_reply_allowed(internal_event)
+        and _miniapp_image_source_allowed(miniapp_image_source, internal_event)
+    ):
+        try:
+            with latency_phase("miniapp_fetch"):
+                if miniapp_image_source.platform == "twitter":
+                    cached_images = await cache_twitter_images(
+                        miniapp_image_source.source_url, proxy_url=get_settings().twitter_proxy_url
+                    )
+                else:
+                    cached_images = await cache_miniapp_images(miniapp_image_source)
+        except TwitterImageError as exc:
+            logger.warning("Twitter image parsing failed: %s", exc)
+            await _finish_with_response(
+                matcher, bot, event, str(exc), explicit_group_send=explicit_group_send
+            )
+            return True
+        except XiaoheiheCaptchaRequired as exc:
+            await _send_xiaoheihe_captcha_to_group(
+                bot, event, miniapp_image_source.source_url, exc.appid
+            )
+            cached_images = CachedMiniAppImages(directory=None, paths=())
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            logger.warning(f"Failed to cache mini app images: {exc}")
+            cached_images = CachedMiniAppImages(directory=None, paths=())
+        try:
+            if cached_images.paths:
+                await _finish_with_response(
+                    matcher,
+                    bot,
+                    event,
+                    _build_miniapp_image_response(cached_images),
+                    explicit_group_send=explicit_group_send,
+                )
+            elif miniapp_image_source.platform == "twitter":
+                await _finish_with_response(
+                    matcher,
+                    bot,
+                    event,
+                    "这条推文没有可解析的图片，暂不处理视频或动图。",
+                    explicit_group_send=explicit_group_send,
+                )
+        finally:
+            cached_images.cleanup()
+        if miniapp_image_source.platform == "twitter":
+            return True
+    return False
+
+
+async def _handle_pending_lua(context: DispatchContext) -> bool:
+    matcher = context.matcher
+    bot = context.bot
+    event = context.event
+    internal_event = context.internal_event
+    explicit_group_send = context.explicit_group_send
+
+    pending_command = pending_lua_command(internal_event)
+    if pending_command is not None:
+        annotate_latency(handler="lua_pending")
+        with latency_phase("lua"):
+            lua_result = await run_lua_message(
+                bot,
+                internal_event,
+                PolicyDecision(True, "ok", handler="lua", normalized_message=pending_command),
+            )
+        if lua_result.reply:
+            await _finish_with_response(
+                matcher,
+                bot,
+                event,
+                _build_lua_response(lua_result.reply, event, quote=lua_result.quote),
+                explicit_group_send=explicit_group_send,
+            )
+        if lua_result.stop:
+            return True
+    return False
+
+
+async def _handle_denied_message(context: DispatchContext) -> bool:
+    matcher = context.matcher
+    bot = context.bot
+    event = context.event
+    internal_event = context.internal_event
+    explicit_group_send = context.explicit_group_send
+    soup = context.soup
+    decision = context.decision
+
+    if internal_event.is_at_bot and decision.reason in {"group_rate_limited", "user_rate_limited"}:
+        await _finish_with_response(
+            matcher,
+            bot,
+            event,
+            "问得太快啦，让我缓一小会儿嘛 (｡•́︿•̀｡)",
+            explicit_group_send=explicit_group_send,
+        )
+    if decision.reason == "no_trigger":
+        if soup.active(internal_event.group_id):
+            return True
+        if await _is_passive_bot_image_reply(bot, internal_event):
+            return True
+        if not (
+            get_store().is_feature_enabled("ai.master")
+            and get_store().is_feature_enabled("ai.random")
+        ):
+            return True
+        try:
+            with latency_phase("deepseek"):
+                response = await generate_random_group_reply(
+                    internal_event, get_settings(), get_store()
+                )
+        except DSAPIError as exc:
+            logger.warning(f"DSAPI random group reply failed: {exc}")
+            return True
+        if response:
+            if soup.active(internal_event.group_id):
+                return True
+            await _finish_ai_response(
+                matcher,
+                bot,
+                event,
+                response,
+                explicit_group_send=explicit_group_send,
+                random_reply=True,
+            )
+    return True
+    return False
+
+
+async def _handle_person_evaluation(context: DispatchContext) -> bool:
+    matcher = context.matcher
+    bot = context.bot
+    event = context.event
+    internal_event = context.internal_event
+    explicit_group_send = context.explicit_group_send
+    soup = context.soup
+    decision = context.decision
+
+    evaluation_text = decision.normalized_message.strip()
+    targets = evaluation_target_ids(internal_event, self_id=bot.self_id)
+    if (
+        decision.handler in {"mention", "default", "person_evaluation"}
+        and is_person_evaluation_request(evaluation_text)
+        and (targets or evaluation_text in {"锐评", "锐评一下"})
+    ):
+        if len(targets) != 1:
+            response = "请一次 @一位群友，例如：评价一下 @群友、批判一下 @群友，或 ~锐评 @群友。"
+        else:
+            store = get_store()
+            config = store.get_dsapi_config()
+            if not (
+                store.is_feature_enabled("ai.master")
+                and store.is_feature_enabled("ai.roast")
+                and config["enabled"]
+                and (internal_event.group_id in config["enabled_groups"])
+                and store.is_memory_group_enabled(internal_event.group_id)
+            ):
+                response = "本群尚未开启人物图谱评价。"
+            else:
+                await flush_group_activity()
+                try:
+                    with latency_phase("deepseek"):
+                        response = await generate_roast_reply(
+                            group_id=int(internal_event.group_id),
+                            target_user_id=targets[0],
+                            settings=get_settings(),
+                            store=store,
+                            request_text=evaluation_text,
+                        )
+                except DSAPIError as exc:
+                    logger.warning("DSAPI roast reply failed: %s", exc)
+                    response = "这次评价没生成完整，稍后再试一次。"
+                if response is None:
+                    response = (
+                        "这位群友在本群的图谱还在整理或证据不足，等积累更多有内容的聊天后再试。"
+                    )
+        if soup.active(internal_event.group_id):
+            return True
+        await _finish_with_response(
+            matcher, bot, event, response, explicit_group_send=explicit_group_send
+        )
+        return True
+    return False
+
+
+async def _handle_classics(context: DispatchContext) -> bool:
+    matcher = context.matcher
+    bot = context.bot
+    event = context.event
+    internal_event = context.internal_event
+    explicit_group_send = context.explicit_group_send
+    decision = context.decision
+
+    if decision.handler == "default" and decision.normalized_message.strip() == "爆典all":
+        if not get_store().is_feature_enabled("classics.forward_all"):
+            return True
+
+        async def send_classic_forward(nodes: list[dict]) -> None:
+            await bot.call_api(
+                "send_group_forward_msg",
+                group_id=int(internal_event.group_id),
+                messages=nodes,
+                _timeout=600,
+            )
+
+        async def send_classic_notice(text: str) -> None:
+            await _send_response(
+                matcher,
+                bot,
+                event,
+                MessageSegment.text(text),
+                explicit_group_send=explicit_group_send,
+            )
+
+        with latency_phase("classics"):
+            await send_all_classics(
+                internal_event.group_id, str(bot.self_id), send_classic_forward, send_classic_notice
+            )
+        return True
+    return False
+
+
+async def _handle_gallery(context: DispatchContext) -> bool:
+    matcher = context.matcher
+    bot = context.bot
+    event = context.event
+    internal_event = context.internal_event
+    explicit_group_send = context.explicit_group_send
+    decision = context.decision
+
+    gallery_parts = decision.normalized_message.strip().split()
+    if decision.handler == "default" and gallery_parts and (gallery_parts[0] == "涩图"):
+        if not get_store().is_feature_enabled("gallery.random"):
+            return True
+        count = None
+        if len(gallery_parts) > 1:
+            value = gallery_parts[1]
+            if (
+                len(gallery_parts) != 2
+                or len(value) > 3
+                or (not value.isascii())
+                or (not value.isdecimal())
+                or (not 1 <= int(value) <= MAX_FORWARD_IMAGES)
+            ):
+                await _send_response(
+                    matcher,
+                    bot,
+                    event,
+                    MessageSegment.text(
+                        f"用法：~涩图 [数量]，数量须在 1—{MAX_FORWARD_IMAGES} 之间。"
+                    ),
+                    explicit_group_send=explicit_group_send,
+                )
+                return True
+            count = int(value)
+        if count is None:
+
+            async def send_gallery_image(path: Path) -> None:
+                await _send_response(
+                    matcher,
+                    bot,
+                    event,
+                    MessageSegment.image(path.resolve().as_uri()),
+                    explicit_group_send=explicit_group_send,
+                )
+
+            with latency_phase("gallery"):
+                notice = await send_random_gallery(send_gallery_image)
+        else:
+
+            async def send_gallery_forward(nodes: list[dict]) -> None:
+                await bot.call_api(
+                    "send_group_forward_msg",
+                    group_id=int(internal_event.group_id),
+                    messages=nodes,
+                    _timeout=600,
+                )
+
+            with latency_phase("gallery"):
+                notice = await send_random_gallery_forward(
+                    send_gallery_forward, str(bot.self_id), count
+                )
+        if notice:
+            await _send_response(
+                matcher,
+                bot,
+                event,
+                MessageSegment.text(notice),
+                explicit_group_send=explicit_group_send,
+            )
+        return True
+    return False
+
+
+async def _handle_group_digest(context: DispatchContext) -> bool:
+    matcher = context.matcher
+    bot = context.bot
+    event = context.event
+    internal_event = context.internal_event
+    explicit_group_send = context.explicit_group_send
+    soup = context.soup
+    decision = context.decision
+
+    digest_parts = decision.normalized_message.split() if decision.handler == "default" else []
+    if digest_parts and digest_parts[0] == "总结":
+        store = get_store()
+        if not store.is_admin(int(internal_event.user_id)):
+            return True
+        if not all(
+            (
+                store.is_feature_enabled(feature_id)
+                for feature_id in ("activity.record", "lua.master", "lua.command.总结")
+            )
+        ):
+            return True
+        if digest_parts not in (["总结"], ["总结", "昨天"]):
+            await _send_response(
+                matcher,
+                bot,
+                event,
+                MessageSegment.text("用法：~总结 或 ~总结 昨天"),
+                explicit_group_send=explicit_group_send,
+            )
+            return True
+        yesterday = len(digest_parts) == 2
+        await _send_response(
+            matcher,
+            bot,
+            event,
+            MessageSegment.text(
+                f"⏳ 正在整理{('昨天' if yesterday else '今天')}的聊天记录并生成群聊速报……"
+            ),
+            explicit_group_send=explicit_group_send,
+        )
+        with latency_phase("activity_flush"):
+            await flush_group_activity()
+        try:
+            with latency_phase("digest"):
+                report = await generate_group_digest_report(
+                    bot, internal_event, get_settings(), store, yesterday=yesterday
+                )
+        except GroupDigestEmptyError as exc:
+            if soup.active(internal_event.group_id):
+                return True
+            await _send_response(
+                matcher,
+                bot,
+                event,
+                MessageSegment.text(str(exc)),
+                explicit_group_send=explicit_group_send,
+            )
+            return True
+        except DSAPIError as exc:
+            logger.warning(f"Daily group digest generation failed: {exc}")
+            if soup.active(internal_event.group_id):
+                return True
+            await _send_response(
+                matcher,
+                bot,
+                event,
+                MessageSegment.text("群聊速报生成失败，请检查 AI 供应商配置后再试。"),
+                explicit_group_send=explicit_group_send,
+            )
+            return True
+        except Exception as exc:
+            logger.exception(f"Daily group digest rendering failed: {exc}")
+            if soup.active(internal_event.group_id):
+                return True
+            await _send_response(
+                matcher,
+                bot,
+                event,
+                MessageSegment.text("群聊速报生成时出了点问题，请稍后再试。"),
+                explicit_group_send=explicit_group_send,
+            )
+            return True
+        if soup.active(internal_event.group_id):
+            return True
+        await _send_response(
+            matcher,
+            bot,
+            event,
+            MessageSegment.image(report.image_path.as_uri()),
+            explicit_group_send=explicit_group_send,
+        )
+        return True
+    return False
+
+
+async def _handle_teacher_lookup(context: DispatchContext) -> bool:
+    matcher = context.matcher
+    bot = context.bot
+    event = context.event
+    explicit_group_send = context.explicit_group_send
+    decision = context.decision
+
+    teacher_args = (
+        parse_teacher_command(decision.normalized_message)
+        if decision.handler == "default"
+        else None
+    )
+    if teacher_args is not None:
+        if not get_store().is_feature_enabled("teacher.lookup"):
+            return True
+        with latency_phase("teacher"):
+            teacher_results = await query_teachers(*teacher_args)
+        for text in teacher_results:
+            await _send_response(
+                matcher,
+                bot,
+                event,
+                MessageSegment.text(text),
+                explicit_group_send=explicit_group_send,
+            )
+        return True
+    return False
+
+
+async def _handle_lua_command(context: DispatchContext) -> bool:
+    matcher = context.matcher
+    bot = context.bot
+    event = context.event
+    internal_event = context.internal_event
+    explicit_group_send = context.explicit_group_send
+    decision = context.decision
+
+    with latency_phase("lua"):
+        lua_result = await run_lua_message(bot, internal_event, decision)
+    if lua_result.reply:
+        await _finish_with_response(
+            matcher,
+            bot,
+            event,
+            _build_lua_response(lua_result.reply, event, quote=lua_result.quote),
+            explicit_group_send=explicit_group_send,
+        )
+    return bool(lua_result.stop)
+
+
+async def _handle_ai_mention(context: DispatchContext) -> bool:
+    matcher = context.matcher
+    bot = context.bot
+    event = context.event
+    internal_event = context.internal_event
+    explicit_group_send = context.explicit_group_send
+    soup = context.soup
+    decision = context.decision
+
+    if decision.handler == "mention":
+        if await _is_passive_bot_image_reply(bot, internal_event):
+            return True
+        if not (
+            get_store().is_feature_enabled("ai.master")
+            and get_store().is_feature_enabled("ai.mention")
+        ):
+            return True
+        try:
+            with latency_phase("deepseek"):
+                response = await generate_mention_reply(
+                    bot, internal_event, get_settings(), get_store()
+                )
+        except DSAPIError as exc:
+            logger.warning(f"DSAPI mention reply failed: {exc}")
+            if soup.active(internal_event.group_id):
+                return True
+            await _finish_with_response(
+                matcher,
+                bot,
+                event,
+                "当前消息模型未启用识图，请在网页的消息链路选择支持识图的模型后再试。"
+                if isinstance(exc, DSAPIVisionUnsupportedError)
+                else "引用的图片读取失败，请重新发送图片后再引用我。"
+                if isinstance(exc, DSAPIImageError)
+                else "这次回答没能完整生成，试着缩短问题再问一次。"
+                if isinstance(exc, DSAPILengthError)
+                else "这条消息触发了模型的内容限制，无法回答。"
+                if isinstance(exc, DSAPIContentBlockedError)
+                else "接口没有返回可用的回答，请稍后再试。"
+                if isinstance(exc, DSAPIResponseError)
+                else "接口请求超时，请稍后再试，或在网页适当提高供应商的请求超时。"
+                if isinstance(exc, DSAPITimeoutError)
+                else "脑袋刚刚卡住啦，再问我一次嘛 (｡•́︿•̀｡)",
+                explicit_group_send=explicit_group_send,
+            )
+            return True
+        if response:
+            if soup.active(internal_event.group_id):
+                return True
+            await _finish_ai_response(
+                matcher, bot, event, response, explicit_group_send=explicit_group_send
+            )
+        return True
+    return False
 
 
 @chat.handle()
@@ -813,9 +982,8 @@ def _record_group_activity(event: Any, *, self_id: int | str) -> None:
         return
 
     record_activity = store.is_feature_enabled("activity.record")
-    record_memory = (
-        store.is_feature_enabled("ai.roast")
-        and store.is_memory_group_enabled(event.group_id)
+    record_memory = store.is_feature_enabled("ai.roast") and store.is_memory_group_enabled(
+        event.group_id
     )
     if not record_activity and not record_memory:
         return
@@ -824,9 +992,13 @@ def _record_group_activity(event: Any, *, self_id: int | str) -> None:
     if record_memory:
         is_bot_command = (
             is_memory_command(
-                {"raw_message": event.raw_message, "segments": event.segments,
-                 "is_at_bot": event.is_at_bot},
-                prefixes=store.prefixes(), bot_ids=[self_id],
+                {
+                    "raw_message": event.raw_message,
+                    "segments": event.segments,
+                    "is_at_bot": event.is_at_bot,
+                },
+                prefixes=store.prefixes(),
+                bot_ids=[self_id],
             )
             or pending_lua_command(event, store=store) is not None
             or has_pending_custom_flow(event, store=store)

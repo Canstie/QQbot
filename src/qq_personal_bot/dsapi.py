@@ -8,48 +8,63 @@ import html
 import json
 import logging
 import re
-import ssl
 import time
 from collections.abc import Mapping, Sequence
-from dataclasses import replace
 from functools import partial
-from io import BytesIO
 from pathlib import Path
-from typing import Any, NoReturn
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from typing import Any
 
+from qq_personal_bot import ai_client
 from qq_personal_bot.ai_errors import (
-    DSAPIContentBlockedError,
-    DSAPIEmptyResponseError,
-    DSAPIError,
-    DSAPIImageError,
-    DSAPILengthError,
-    DSAPIProtocolError,
-    DSAPIResponseError,
-    DSAPITimeoutError,
-    DSAPIVisionUnsupportedError,
+    DSAPIContentBlockedError as DSAPIContentBlockedError,
 )
-from qq_personal_bot.ai_models import catalog_model_option, is_vision_dsapi_model
+from qq_personal_bot.ai_errors import (
+    DSAPIEmptyResponseError as DSAPIEmptyResponseError,
+)
+from qq_personal_bot.ai_errors import (
+    DSAPIError as DSAPIError,
+)
+from qq_personal_bot.ai_errors import (
+    DSAPIImageError as DSAPIImageError,
+)
+from qq_personal_bot.ai_errors import (
+    DSAPILengthError as DSAPILengthError,
+)
+from qq_personal_bot.ai_errors import (
+    DSAPIProtocolError as DSAPIProtocolError,
+)
+from qq_personal_bot.ai_errors import (
+    DSAPIResponseError as DSAPIResponseError,
+)
+from qq_personal_bot.ai_errors import (
+    DSAPITimeoutError as DSAPITimeoutError,
+)
+from qq_personal_bot.ai_errors import (
+    DSAPIVisionUnsupportedError as DSAPIVisionUnsupportedError,
+)
+from qq_personal_bot.ai_models import is_vision_dsapi_model
 from qq_personal_bot.ai_providers import (
     active_ai_model,
     resolve_ai_settings,
     resolve_background_ai_settings,
 )
-from qq_personal_bot.ai_transport import AITransportError, AITransportTimeoutError, request_ai_bytes
-from qq_personal_bot.classic_storage import classic_image_type, read_classic_image_source
+from qq_personal_bot.classic_storage import (
+    classic_image_type,
+    read_classic_image_source,
+)
 from qq_personal_bot.core.models import MessageEvent
 from qq_personal_bot.core.store import PolicyStore
-from qq_personal_bot.memory_graph import build_graph_guidance, graph_enabled, refresh_memory_graph
+from qq_personal_bot.memory_graph import (
+    build_graph_guidance,
+    graph_enabled,
+    refresh_memory_graph,
+)
 from qq_personal_bot.menu_recipes import is_supported_image_file
 from qq_personal_bot.persona import build_persona_guidance
 from qq_personal_bot.settings import AppSettings
 from qq_personal_bot.vision_images import prepare_vision_image
 from qq_personal_bot.web_agent import generate_web_reply
 from qq_personal_bot.web_search import (
-    WEB_SEARCH_TOOL,
-    WebSearchSession,
-    format_web_results,
     web_search_guidance,
 )
 
@@ -94,92 +109,7 @@ _MULTI_REPLY_SEPARATOR = "<|消息分隔|>"
 _RELATIONSHIP_SUMMARY_MAX_CHARS = 500
 _RELATIONSHIP_SUMMARY_MAX_TOKENS = 1024
 _background_relationship_tasks: set[asyncio.Task[None]] = set()
-_web_tools_disabled_until: dict[tuple[int, str, str], float] = {}
-_json_output_disabled_until: dict[tuple[int, str, str], float] = {}
-_JSON_PROMPT_INSTRUCTION = (
-    "本轮最终输出必须是一个非空 JSON 对象，字段和类型严格遵守前文的业务协议。"
-    "只输出 JSON，不要输出空格空行、Markdown 或额外说明。"
-    "角色语气和长度要求仅用于 answer 字符串，不改变 JSON 结构。"
-    "当前请求仍以原始 current_request 为准。"
-)
 logger = logging.getLogger(__name__)
-
-
-def _open_ai_request(request: Request, settings: AppSettings):
-    if (settings.dsapi_provider_managed or settings.ai_proxy_url
-            or settings.ai_proxy_resolved or settings.ai_host_overrides):
-        try:
-            return BytesIO(request_ai_bytes(request, settings))
-        except AITransportTimeoutError as exc:
-            raise DSAPITimeoutError(str(exc)) from exc
-        except AITransportError as exc:
-            raise DSAPIError(str(exc)) from exc
-    if settings.dsapi_tls_mode == "tls12":
-        context = ssl.create_default_context()
-        context.maximum_version = ssl.TLSVersion.TLSv1_2
-        for attempt in range(2):
-            try:
-                return urlopen(request, timeout=settings.dsapi_timeout_seconds, context=context)
-            except HTTPError as exc:
-                if attempt or exc.code not in {408, 429, 500, 502, 503, 504}:
-                    raise
-            except (URLError, OSError):
-                if attempt:
-                    raise
-            time.sleep(0.5)
-    return urlopen(request, timeout=settings.dsapi_timeout_seconds)
-
-
-def fetch_dsapi_models(settings: AppSettings) -> list[dict[str, Any]]:
-    if not settings.dsapi_api_key:
-        raise DSAPIError("DSAPI key is not configured")
-    request = Request(
-        _models_url(settings.dsapi_base_url),
-        headers={
-            "Authorization": f"Bearer {settings.dsapi_api_key}",
-            "Accept": "application/json",
-            "User-Agent": "QQBot/0.1",
-        },
-        method="GET",
-    )
-    try:
-        with _open_ai_request(request, settings) as response:
-            result = json.loads(response.read().decode("utf-8"))
-    except HTTPError as exc:
-        raise DSAPIError(f"HTTP {exc.code}") from exc
-    except URLError as exc:
-        if isinstance(exc.reason, TimeoutError):
-            raise DSAPITimeoutError("request timed out") from exc
-        raise DSAPIError(f"network error: {exc.reason}") from exc
-    except TimeoutError as exc:
-        raise DSAPITimeoutError("request timed out") from exc
-    except OSError as exc:
-        raise DSAPIError("network connection interrupted") from exc
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise DSAPIError("invalid JSON response") from exc
-
-    entries = result.get("data") if isinstance(result, Mapping) else None
-    if not isinstance(entries, list):
-        raise DSAPIError("response does not contain a model list")
-
-    models: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for entry in entries:
-        if not isinstance(entry, Mapping):
-            continue
-        model_id = str(entry.get("id") or "").strip()
-        if not model_id:
-            continue
-        option = catalog_model_option(model_id)
-        if option["id"] in seen:
-            continue
-        seen.add(option["id"])
-        option["owned_by"] = str(entry.get("owned_by") or "").strip()
-        option["source"] = "live"
-        models.append(option)
-    if not models:
-        raise DSAPIError("model list is empty")
-    return models
 
 
 async def generate_mention_reply(
@@ -191,7 +121,10 @@ async def generate_mention_reply(
     if store.is_dsapi_user_blocked(event.user_id):
         return None
     settings = resolve_ai_settings(settings, store)
-    if not store.is_feature_enabled("ai.master", settings.dsapi_enabled) or not settings.dsapi_api_key:
+    if (
+        not store.is_feature_enabled("ai.master", settings.dsapi_enabled)
+        or not settings.dsapi_api_key
+    ):
         return None
 
     config = store.get_dsapi_config()
@@ -205,8 +138,11 @@ async def generate_mention_reply(
     prompt = await build_mention_prompt(
         bot,
         event,
-        vision_enabled=(settings.dsapi_vision_enabled if settings.dsapi_provider_managed
-                        else is_vision_dsapi_model(model)),
+        vision_enabled=(
+            settings.dsapi_vision_enabled
+            if settings.dsapi_provider_managed
+            else is_vision_dsapi_model(model)
+        ),
     )
     if prompt is None:
         return None
@@ -246,7 +182,10 @@ async def generate_random_group_reply(
     if store.is_dsapi_user_blocked(event.user_id):
         return None
     settings = resolve_ai_settings(settings, store)
-    if not store.is_feature_enabled("ai.master", settings.dsapi_enabled) or not settings.dsapi_api_key:
+    if (
+        not store.is_feature_enabled("ai.master", settings.dsapi_enabled)
+        or not settings.dsapi_api_key
+    ):
         return None
 
     config = store.get_dsapi_config()
@@ -314,11 +253,19 @@ async def generate_roast_reply(
         return None
     await refresh_memory_graph(store, settings, group_id, force=True)
     graph = await asyncio.to_thread(
-        store.get_person_graph, group_id, target_user_id, topic=request_text, limit=40,
+        store.get_person_graph,
+        group_id,
+        target_user_id,
+        topic=request_text,
+        limit=40,
         include_history=True,
     )
-    sources = {e["id"] for edge in graph["edges"] for e in edge["evidence"]
-               if e["user_id"] == int(target_user_id)}
+    sources = {
+        e["id"]
+        for edge in graph["edges"]
+        for e in edge["evidence"]
+        if e["user_id"] == int(target_user_id)
+    }
     if len(graph["edges"]) < 2 or len(sources) < 3:
         return None
     config = store.get_dsapi_config()
@@ -352,7 +299,7 @@ async def generate_roast_reply(
         },
     ]
     response = await asyncio.to_thread(
-        _request_chat_completion_with_fallback,
+        ai_client.complete_text,
         settings,
         messages,
         model=active_ai_model(config, settings),
@@ -374,7 +321,7 @@ def _build_random_group_prompt(
         return latest
     lines = [
         f"[QQ {int(item['user_id'])}] {' '.join(str(item['content']).split())[:300]}"
-        for item in recent_context[-max(1, int(context_limit)):]
+        for item in recent_context[-max(1, int(context_limit)) :]
     ]
     return (
         "群聊中当前消息之前的最近对话（从旧到新）：\n"
@@ -416,8 +363,7 @@ def _recent_group_context(
     if (
         fallback
         and fallback[-1]["user_id"] == event.user_id
-        and " ".join(fallback[-1]["content"].split())
-        == " ".join(event.raw_message.split())
+        and " ".join(fallback[-1]["content"].split()) == " ".join(event.raw_message.split())
     ):
         fallback.pop()
     return fallback[-message_limit:]
@@ -459,8 +405,7 @@ def _persona_topic_text(
     recent_context: Sequence[Mapping[str, Any]],
 ) -> str:
     context = " ".join(
-        " ".join(str(item.get("content") or "").split())
-        for item in recent_context[-8:]
+        " ".join(str(item.get("content") or "").split()) for item in recent_context[-8:]
     )
     return f"{context} {event.raw_message}".strip()[:2400]
 
@@ -486,7 +431,10 @@ async def _generate_text_reply(
         system_prompt = f"{system_prompt}\n\n{extra_instruction}"
     if event.group_id is not None:
         graph_guidance = await asyncio.to_thread(
-            build_graph_guidance, store, int(event.group_id), event.user_id,
+            build_graph_guidance,
+            store,
+            int(event.group_id),
+            event.user_id,
             _persona_topic_text(event, recent_context),
         )
         if graph_guidance:
@@ -501,7 +449,9 @@ async def _generate_text_reply(
         )
         if persona_guidance:
             system_prompt = f"{system_prompt}\n\n人物关系与动态示例：\n{persona_guidance}"
-    has_images = isinstance(prompt, list) and any(part.get("type") == "image_url" for part in prompt)
+    has_images = isinstance(prompt, list) and any(
+        part.get("type") == "image_url" for part in prompt
+    )
     web_enabled = bool(active_knowledge.get("web_search_enabled")) and not has_images
     if web_enabled:
         system_prompt = f"{system_prompt}\n\n{web_search_guidance()}"
@@ -534,19 +484,26 @@ async def _generate_text_reply(
         knowledge_id=knowledge_id,
     )
     history = store.get_dsapi_chat_history(
-        event.group_id, config["history_turns"], knowledge_id=knowledge_id,
+        event.group_id,
+        config["history_turns"],
+        knowledge_id=knowledge_id,
     )
     messages.extend(history)
     messages.append({"role": "user", "content": prompt})
 
     complete = partial(
-        _request_chat_completion_with_fallback, settings, model=active_ai_model(config, settings),
-        max_tokens=None, thinking_enabled=bool(active_knowledge.get("thinking_enabled", False)),
+        ai_client.complete_text,
+        settings,
+        model=active_ai_model(config, settings),
+        max_tokens=None,
+        thinking_enabled=bool(active_knowledge.get("thinking_enabled", False)),
         temperature=active_knowledge.get("temperature"),
     )
     if web_enabled:
         response = await generate_web_reply(
-            partial(complete, json_output=True), system_prompt, history,
+            partial(complete, json_output=True),
+            system_prompt,
+            history,
             current_prompt if current_prompt is not None else prompt,
             reply_separator=_MULTI_REPLY_SEPARATOR,
             recent_context=recent_context,
@@ -559,10 +516,17 @@ async def _generate_text_reply(
             if not has_images:
                 raise
             logger.info("AI direct vision protocol=repair")
-            response = await asyncio.to_thread(complete, [*messages, {
-                "role": "user", "content": "请直接用自然语言回答上面的图片问题，不要调用工具或函数。"
-                "不能确定时如实说明；不要输出JSON协议。",
-            }])
+            response = await asyncio.to_thread(
+                complete,
+                [
+                    *messages,
+                    {
+                        "role": "user",
+                        "content": "请直接用自然语言回答上面的图片问题，不要调用工具或函数。"
+                        "不能确定时如实说明；不要输出JSON协议。",
+                    },
+                ],
+            )
     response = _format_reply(
         response,
         response_mode,
@@ -643,7 +607,7 @@ async def _refresh_relationship_memory(
             {"role": "user", "content": payload},
         ]
         summary = await asyncio.to_thread(
-            _request_chat_completion_with_fallback,
+            ai_client.complete_text,
             settings,
             messages,
             model=model,
@@ -663,89 +627,6 @@ async def _refresh_relationship_memory(
         )
     except Exception as exc:  # noqa: BLE001 - background memory must not break replies
         logger.warning("failed to refresh DSAPI relationship memory: %s", exc)
-
-
-def _json_prompt_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    instruction = {"role": "user", "content": _JSON_PROMPT_INSTRUCTION}
-    return messages if messages and messages[-1] == instruction else [*messages, instruction]
-
-
-def _remember_json_prompt_mode(settings: AppSettings, model: str, *, reason: str) -> None:
-    if len(_json_output_disabled_until) >= 64:
-        _json_output_disabled_until.clear()
-    key = (settings.dsapi_provider_id, settings.dsapi_base_url, model)
-    _json_output_disabled_until[key] = time.monotonic() + 600
-    logger.info(
-        "AI JSON output provider=%s compatibility=prompt reason=%s",
-        settings.dsapi_provider_id, reason,
-    )
-
-
-def _is_json_object_response(response: str) -> bool:
-    value = re.sub(r"^```(?:json)?\s*|\s*```$", "", response.strip(), flags=re.IGNORECASE)
-    try:
-        return isinstance(json.loads(value), dict)
-    except (ValueError, TypeError):
-        return False
-
-
-def _request_chat_completion_with_fallback(
-    settings: AppSettings,
-    messages: list[dict[str, Any]],
-    *,
-    model: str,
-    max_tokens: int | None,
-    thinking_enabled: bool,
-    temperature: float | None,
-    web_session: WebSearchSession | None = None,
-    json_output: bool = False,
-) -> str:
-    thinking_enabled = thinking_enabled and settings.dsapi_api_format == "deepseek"
-    deadline = time.monotonic() + settings.dsapi_timeout_seconds
-    last_error: DSAPIError = DSAPIEmptyResponseError("empty assistant content")
-    for attempt in range(2):
-        request_settings = settings
-        prompt_json_retry = bool(
-            attempt and json_output and isinstance(last_error, DSAPIEmptyResponseError)
-        )
-        if attempt:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise last_error
-            request_settings = replace(settings, dsapi_timeout_seconds=remaining)
-            logger.info(
-                "AI response recovery provider=%s model=%s reason=%s retry=1 json_output=%s json_mode=%s",
-                settings.dsapi_provider_id, model, type(last_error).__name__, json_output,
-                "prompt" if prompt_json_retry else "native" if json_output else "off",
-            )
-        try:
-            response = _request_chat_completion(
-                request_settings,
-                _json_prompt_messages(messages) if prompt_json_retry else messages,
-                model=model,
-                max_tokens=max_tokens,
-                thinking_enabled=thinking_enabled,
-                temperature=temperature,
-                **({"web_session": web_session} if web_session is not None else {}),
-                **({"json_output": True} if json_output and not prompt_json_retry else {}),
-            )
-        except (DSAPIContentBlockedError, DSAPIProtocolError):
-            raise
-        except DSAPIEmptyResponseError as exc:
-            last_error = exc
-        except DSAPIError as exc:
-            if not thinking_enabled or attempt:
-                raise
-            last_error = exc
-        else:
-            if response and response.strip():
-                if prompt_json_retry and _is_json_object_response(response):
-                    _remember_json_prompt_mode(settings, model, reason="empty_response")
-                return response
-            last_error = DSAPIEmptyResponseError("empty assistant content")
-        if not attempt:
-            thinking_enabled = False
-    raise last_error
 
 
 def _random_reply_selected(
@@ -793,9 +674,7 @@ def _pick_random_sticker(
         return None
 
     images = [
-        path
-        for path in sorted(root.iterdir())
-        if path.is_file() and is_supported_image_file(path)
+        path for path in sorted(root.iterdir()) if path.is_file() and is_supported_image_file(path)
     ]
     if not images:
         return None
@@ -829,7 +708,9 @@ async def build_mention_prompt(
     image_sources: list[str] = []
     if quoted_segments is not None:
         if not vision_enabled and _image_data_from_message(quoted_segments):
-            raise DSAPIVisionUnsupportedError("selected model has no enabled image input capability")
+            raise DSAPIVisionUnsupportedError(
+                "selected model has no enabled image input capability"
+            )
         if _contains_unsupported_multimodal_value(
             quoted_segments,
             allow_images=vision_enabled,
@@ -849,9 +730,7 @@ async def build_mention_prompt(
 
     user_instruction = current_text or "请回复这条被引用的消息。"
     quoted_content = quoted_text or "（引用消息包含图片）"
-    text_prompt = (
-        f"被引用的消息：\n{quoted_content}\n\n用户的问题或补充：\n{user_instruction}"
-    )
+    text_prompt = f"被引用的消息：\n{quoted_content}\n\n用户的问题或补充：\n{user_instruction}"
     if not image_sources:
         return text_prompt
     return [
@@ -864,276 +743,6 @@ async def build_mention_prompt(
             for source in image_sources
         ],
     ]
-
-
-def _request_chat_completion(
-    settings: AppSettings,
-    messages: list[dict[str, Any]],
-    *,
-    model: str | None = None,
-    max_tokens: int | None = None,
-    thinking_enabled: bool = False,
-    temperature: float | None = None,
-    web_session: WebSearchSession | None = None,
-    json_output: bool = False,
-) -> str | None:
-    if web_session is not None and web_session.results:
-        evidence = format_web_results(web_session.results)
-        if not any(item.get("role") == "system" and evidence in str(item.get("content", ""))
-                   for item in messages):
-            messages = [{"role": "system", "content": evidence}, *messages]
-    body: dict[str, Any] = {
-        "model": model or settings.dsapi_model,
-        "messages": messages,
-        "stream": False,
-    }
-    if settings.dsapi_api_format == "deepseek":
-        body["thinking"] = {"type": "enabled" if thinking_enabled else "disabled"}
-    if max_tokens is not None:
-        body["max_tokens"] = int(max_tokens)
-    if temperature is not None:
-        body["temperature"] = float(temperature)
-    tool_key = (settings.dsapi_provider_id, settings.dsapi_base_url, body["model"])
-    use_json = json_output and _json_output_disabled_until.get(tool_key, 0) <= time.monotonic()
-    if use_json:
-        body["response_format"] = {"type": "json_object"}
-    use_tools = (web_session is not None and not web_session.searched
-                 and _web_tools_disabled_until.get(tool_key, 0) <= time.monotonic())
-    if use_tools:
-        body["tools"] = [WEB_SEARCH_TOOL]
-        body["tool_choice"] = "auto"
-    elif web_session is not None and not web_session.searched:
-        body["messages"] = [*messages, {"role": "system", "content":
-            "本接口当前不支持工具调用；没有检索资料时不能声称已核实实时事实。"}]
-    if json_output and not use_json:
-        body["messages"] = _json_prompt_messages(body["messages"])
-    try:
-        result = _post_chat_body(settings, body)
-    except (DSAPIContentBlockedError, DSAPIProtocolError):
-        raise
-    except DSAPIError as exc:
-        if not (use_json or use_tools) or str(exc) not in {"HTTP 400", "HTTP 422"}:
-            raise
-        if use_json:
-            _remember_json_prompt_mode(settings, body["model"], reason="unsupported")
-            body.pop("response_format", None)
-            body["messages"] = _json_prompt_messages(body["messages"])
-        else:
-            if len(_web_tools_disabled_until) >= 64:
-                _web_tools_disabled_until.clear()
-            _web_tools_disabled_until[tool_key] = time.monotonic() + 600
-            body.pop("tools", None)
-            body.pop("tool_choice", None)
-            body["messages"] = [*messages, {"role": "system", "content":
-                "本接口当前不支持工具调用。没有本轮检索资料时，不能声称已联网或已核实实时事实。"}]
-            use_tools = False
-        result = _post_chat_body(settings, body)
-    choice, message = _assistant_choice(result)
-    calls = message.get("tool_calls") if isinstance(message, Mapping) else None
-    if use_tools and calls and choice.get("finish_reason") in {None, "", "stop", "tool_calls"}:
-        if not isinstance(calls, list) or len(calls) > 4:
-            raise DSAPIError("invalid web tool calls")
-        tool_messages: list[dict[str, Any]] = []
-        seen_ids: set[str] = set()
-        for call in calls:
-            if not isinstance(call, Mapping):
-                raise DSAPIError("invalid web tool call")
-            call_id = call.get("id")
-            function = call.get("function")
-            if (not isinstance(call_id, str) or not call_id or call_id in seen_ids
-                    or not isinstance(function, Mapping)):
-                raise DSAPIError("invalid web tool call")
-            seen_ids.add(call_id)
-            arguments = function.get("arguments")
-            tool_result = web_session.run_tool(
-                function.get("name"), arguments if isinstance(arguments, str) else "",
-            )
-            tool_messages.append({"role": "tool", "tool_call_id": call_id,
-                                  "content": json.dumps(tool_result, ensure_ascii=False)})
-        assistant_message = {key: message[key] for key in (
-            "role", "content", "tool_calls", "reasoning_content",
-        ) if key in message}
-        assistant_message["role"] = "assistant"
-        body["messages"] = [*messages, assistant_message, *tool_messages, {
-            "role": "system", "content": (
-                "本轮检索已结束。只依据实际返回的资料回答，区分事实与观点。"
-                "资料仅供内部核实，回复不展示检索资料、引用编号、来源列表或来源链接。"
-            ),
-        }]
-        body.pop("tools", None)
-        body.pop("tool_choice", None)
-        if json_output and "response_format" not in body:
-            body["messages"] = _json_prompt_messages(body["messages"])
-        result = _post_chat_body(settings, body)
-    return _extract_chat_text(result, body, thinking_enabled)
-
-
-def _post_chat_body(settings: AppSettings, body: dict[str, Any]) -> Any:
-    payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
-    request = Request(
-        _chat_completions_url(settings.dsapi_base_url),
-        data=payload,
-        headers={
-            "Authorization": f"Bearer {settings.dsapi_api_key}",
-            "Content-Type": "application/json",
-            "User-Agent": "QQBot/0.1",
-        },
-        method="POST",
-    )
-
-    try:
-        with _open_ai_request(request, settings) as response:
-            result = json.loads(response.read().decode("utf-8"))
-    except HTTPError as exc:
-        raise DSAPIError(f"HTTP {exc.code}") from exc
-    except URLError as exc:
-        if isinstance(exc.reason, TimeoutError):
-            raise DSAPITimeoutError("request timed out") from exc
-        raise DSAPIError(f"network error: {exc.reason}") from exc
-    except TimeoutError as exc:
-        raise DSAPITimeoutError("request timed out") from exc
-    except OSError as exc:
-        raise DSAPIError("network connection interrupted") from exc
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise DSAPIResponseError("invalid JSON response") from exc
-    metadata = _response_metadata(result)
-    choices = result.get("choices") if isinstance(result, Mapping) else None
-    choice = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], Mapping) else {}
-    message = choice.get("message")
-    content = message.get("content") if isinstance(message, Mapping) else None
-    usage = result.get("usage") if isinstance(result, Mapping) else None
-    usage = usage if isinstance(usage, Mapping) else {}
-    details = usage.get("completion_tokens_details")
-    details = details if isinstance(details, Mapping) else {}
-    tokens = [value if type(value) is int and value >= 0 else None
-              for value in (usage.get("completion_tokens"), details.get("reasoning_tokens"))]
-    logger.info(
-        "AI completion provider=%s model=%s finish_reason=%s max_tokens=%s "
-        "output_chars=%s output_text_chars=%s completion_tokens=%s reasoning_tokens=%s",
-        settings.dsapi_provider_id, body.get("model"), metadata.get("finish_reason", ""),
-        body.get("max_tokens", "provider default"), len(content) if isinstance(content, str) else 0,
-        len(content.strip()) if isinstance(content, str) else 0,
-        *tokens,
-    )
-    return result
-
-
-_CONTENT_BLOCK_REASONS = {
-    "content_filter", "content_policy_violation", "safety", "prohibited_content",
-    "blocklist", "spii", "recitation", "image_safety", "image_prohibited_content",
-}
-
-
-def _response_code(value: Any) -> str:
-    return value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", value) else ""
-
-
-def _provider_block_reason(result: Mapping[str, Any]) -> str:
-    feedback = result.get("promptFeedback") or result.get("prompt_feedback")
-    if isinstance(feedback, Mapping):
-        code = _response_code(feedback.get("blockReason") or feedback.get("block_reason"))
-        if code and code.upper() != "BLOCK_REASON_UNSPECIFIED":
-            return code.lower()
-    error = result.get("error")
-    if isinstance(error, Mapping):
-        for key in ("code", "type"):
-            code = _response_code(error.get(key)).lower()
-            if code in _CONTENT_BLOCK_REASONS:
-                return code
-    for name in ("choices", "candidates"):
-        items = result.get(name)
-        if not isinstance(items, list) or not items or not isinstance(items[0], Mapping):
-            continue
-        item = items[0]
-        code = _response_code(item.get("finish_reason") or item.get("finishReason")).lower()
-        if code in _CONTENT_BLOCK_REASONS:
-            return code
-        message = item.get("message")
-        if isinstance(message, Mapping) and message.get("refusal"):
-            return "refusal"
-    return ""
-
-
-def _response_metadata(result: Any) -> dict[str, Any]:
-    """Log response structure and enum codes, never prompts, content or error messages."""
-    if not isinstance(result, Mapping):
-        return {"type": type(result).__name__}
-    choices = result.get("choices")
-    first = choices[0] if isinstance(choices, list) and choices else None
-    choice = first if isinstance(first, Mapping) else {}
-    message = choice.get("message")
-    content = message.get("content") if isinstance(message, Mapping) else None
-    return {
-        "fields": [key for key in ("choices", "candidates", "promptFeedback", "prompt_feedback", "error")
-                   if key in result],
-        "choices_count": len(choices) if isinstance(choices, list) else None,
-        "finish_reason": _response_code(choice.get("finish_reason")),
-        "message_type": type(message).__name__,
-        "content_type": type(content).__name__ if isinstance(message, Mapping) else None,
-        "content_chars": len(content) if isinstance(content, str) else None,
-        "text_chars": len(content.strip()) if isinstance(content, str) else None,
-        "block_reason": _provider_block_reason(result),
-    }
-
-
-def _unusable_response(
-    result: Any, reason: str, *, error_type: type[DSAPIResponseError] = DSAPIResponseError
-) -> NoReturn:
-    logger.warning("AI response unusable reason=%s metadata=%s", reason, _response_metadata(result))
-    raise error_type(reason)
-
-
-def _invalid_tool_response(result: Any, reason: str) -> NoReturn:
-    logger.warning("AI response protocol_error reason=%s metadata=%s", reason, _response_metadata(result))
-    raise DSAPIProtocolError(f"assistant generation stopped: {reason}")
-
-
-def _assistant_choice(result: Any) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
-    if isinstance(result, Mapping) and (reason := _provider_block_reason(result)):
-        logger.warning("AI response blocked reason=%s metadata=%s", reason, _response_metadata(result))
-        raise DSAPIContentBlockedError("provider blocked this request by content policy")
-    if isinstance(result, Mapping):
-        choices = result.get("choices")
-        if isinstance(choices, list) and choices and isinstance(choices[0], Mapping):
-            reason = _response_code(choices[0].get("finish_reason")).lower()
-            if reason == "malformed_function_call":
-                _invalid_tool_response(result, reason)
-            message = choices[0].get("message")
-            if isinstance(message, Mapping):
-                return choices[0], message
-    _unusable_response(result, "response does not contain assistant content")
-
-
-def _extract_chat_text(result: Any, body: dict[str, Any], thinking_enabled: bool) -> str | None:
-    choice, message = _assistant_choice(result)
-    finish_reason = choice.get("finish_reason")
-    if finish_reason in {"tool_calls", "function_call"}:
-        _invalid_tool_response(result, finish_reason)
-    if finish_reason == "length":
-        usage = result.get("usage") or {}
-        details = usage.get("completion_tokens_details") or {}
-        logger.warning(
-            "DSAPI reply reached length limit: model=%s max_tokens=%s thinking=%s "
-            "completion_tokens=%s reasoning_tokens=%s",
-            body["model"],
-            body.get("max_tokens", "provider default"),
-            thinking_enabled,
-            usage.get("completion_tokens"),
-            details.get("reasoning_tokens"),
-        )
-        raise DSAPILengthError("assistant response reached its length limit")
-    if message.get("tool_calls") or message.get("function_call"):
-        _invalid_tool_response(result, "unexpected_tool_call")
-    if "content" not in message:
-        _unusable_response(result, "response does not contain assistant content")
-    content = message.get("content")
-    if finish_reason not in (None, "", "stop"):
-        raise DSAPIError(f"assistant generation stopped: {finish_reason}")
-    if content is None or (isinstance(content, str) and not content.strip()):
-        _unusable_response(result, "empty assistant content", error_type=DSAPIEmptyResponseError)
-    if not isinstance(content, str):
-        _unusable_response(result, "assistant content is not text")
-    return content.strip()
 
 
 def _brief_reply(content: str | None) -> str | None:
@@ -1156,11 +765,7 @@ def _format_reply(
 ) -> str | list[str] | None:
     if not content:
         return None
-    parts = [
-        part.strip()
-        for part in str(content).split(_MULTI_REPLY_SEPARATOR)
-        if part.strip()
-    ]
+    parts = [part.strip() for part in str(content).split(_MULTI_REPLY_SEPARATOR) if part.strip()]
     limit = max(1, min(int(max_reply_messages), 3))
     input_parts = len(parts)
     short = str(response_mode).lower() == "short"
@@ -1169,32 +774,21 @@ def _format_reply(
         parts = [reply for part in parts[:limit] if (reply := _brief_reply(part))]
     elif merged:
         # The limit bounds QQ message count, not how much of an answer survives.
-        parts = [*parts[:limit - 1], "\n\n".join(parts[limit - 1:])]
+        parts = [*parts[: limit - 1], "\n\n".join(parts[limit - 1 :])]
     logger.info(
         "AI reply formatting mode=%s input_chars=%s output_chars=%s input_parts=%s "
         "output_parts=%s max_messages=%s merged_overflow=%s",
-        response_mode, len(content), sum(len(part) for part in parts), input_parts,
-        len(parts), limit, merged,
+        response_mode,
+        len(content),
+        sum(len(part) for part in parts),
+        input_parts,
+        len(parts),
+        limit,
+        merged,
     )
     if not parts:
         return None
     return parts[0] if len(parts) == 1 else parts
-
-
-def _chat_completions_url(base_url: str) -> str:
-    normalized = base_url.rstrip("/")
-    if normalized.endswith("/chat/completions"):
-        return normalized
-    return f"{normalized}/chat/completions"
-
-
-def _models_url(base_url: str) -> str:
-    normalized = base_url.rstrip("/")
-    if normalized.endswith("/models"):
-        return normalized
-    if normalized.endswith("/chat/completions"):
-        normalized = normalized.removesuffix("/chat/completions")
-    return f"{normalized}/models"
 
 
 def _contains_multimodal_segments(
@@ -1271,7 +865,9 @@ async def _resolve_vision_image_sources(bot: Any, message: Any) -> list[str]:
                 if fallback:
                     try:
                         source = await asyncio.to_thread(
-                            _inline_vision_image_source, fallback, allow_local=True,
+                            _inline_vision_image_source,
+                            fallback,
+                            allow_local=True,
                         )
                     except (ValueError, OSError):
                         pass
@@ -1320,7 +916,9 @@ def _onebot_vision_image_source(payload: Any) -> str | None:
         payload = payload["data"]
     encoded = str(payload.get("base64") or "").strip()
     if encoded and len(encoded) <= _MAX_INLINE_IMAGE_URL_CHARS:
-        return encoded if encoded.startswith(("base64://", "data:image/")) else f"base64://{encoded}"
+        return (
+            encoded if encoded.startswith(("base64://", "data:image/")) else f"base64://{encoded}"
+        )
     direct = _direct_vision_image_source(payload)
     if direct:
         return direct
