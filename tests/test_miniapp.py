@@ -117,7 +117,7 @@ def test_extracts_bilibili_card_source_and_fallback_fields():
     assert source.platform == "bilibili"
     assert source.source_url == "https://b23.tv/wrXwLXN?share_source=qq"
     assert source.fallback_title == "马儿空气动力学"
-    assert source.fallback_cover_url == "https://qq.ugcimg.cn/preview"
+    assert source.fallback_cover_url is None
 
 
 def test_extracts_plain_bilibili_short_url():

@@ -111,6 +111,93 @@ def test_fetches_bilibili_video_metadata(monkeypatch):
     assert metadata.author_avatar_url == "https://i2.hdslb.com/bfs/face/avatar.jpg"
 
 
+def _mobile_page(state: dict) -> bytes:
+    return (
+        "<html><script>window.__INITIAL_STATE__ = \n"
+        + json.dumps(state, ensure_ascii=False)
+        + ";(function(){})();</script></html>"
+    ).encode()
+
+
+def _mobile_state() -> dict:
+    return {
+        "video": {
+            "error": 0,
+            "viewInfo": {
+                "bvid": "BV1Gyu36LEfL",
+                "title": "马儿空气动力学",
+                "pic": "http://i1.hdslb.com/bfs/archive/cover.jpg",
+                "owner": {"name": "东海爱马仕", "face": "https://i2.hdslb.com/bfs/face/avatar.jpg"},
+            },
+        }
+    }
+
+
+@pytest.mark.parametrize("api_failure", ["http412", "invalid_json", "incomplete"])
+def test_fetches_original_metadata_from_mobile_when_api_fails(monkeypatch, api_failure):
+    calls = []
+
+    def fake_open(request, allowed_url, timeout):
+        calls.append(request.full_url)
+        assert allowed_url(request.full_url)
+        if len(calls) == 1:
+            if api_failure == "http412":
+                raise HTTPError(request.full_url, 412, "Precondition Failed", Message(), None)
+            body = b"not json" if api_failure == "invalid_json" else b'{"code":0,"data":{}}'
+            return FakeResponse(body, request.full_url)
+        assert request.full_url == "https://m.bilibili.com/video/BV1Gyu36LEfL"
+        assert "iPhone" in request.get_header("User-agent")
+        assert not allowed_url("https://evil.example/video/BV1Gyu36LEfL")
+        assert not allowed_url("https://m.bilibili.com/video/BV1xx411c7mD")
+        return FakeResponse(_mobile_page(_mobile_state()), request.full_url, "text/html")
+
+    monkeypatch.setattr(bilibili_card, "_open_restricted", fake_open)
+
+    metadata = bilibili_card._fetch_bilibili_metadata("BV1Gyu36LEfL")
+
+    assert len(calls) == 2
+    assert metadata.cover_url == "https://i1.hdslb.com/bfs/archive/cover.jpg"
+    assert metadata.author_name == "东海爱马仕"
+    assert metadata.author_avatar_url == "https://i2.hdslb.com/bfs/face/avatar.jpg"
+
+
+@pytest.mark.parametrize("invalid", ["unavailable", "other_video", "preview", "missing_author"])
+def test_rejects_unavailable_or_incorrect_mobile_metadata(monkeypatch, invalid):
+    state = _mobile_state()
+    view = state["video"]["viewInfo"]
+    if invalid == "unavailable":
+        state["video"]["error"] = -404
+    elif invalid == "other_video":
+        view["bvid"] = "BV1xx411c7mD"
+    elif invalid == "preview":
+        view["pic"] = "https://qq.ugcimg.cn/share-preview.jpg"
+    else:
+        view["owner"] = {}
+    monkeypatch.setattr(
+        bilibili_card,
+        "_open_restricted",
+        lambda request, allowed_url, timeout: FakeResponse(
+            _mobile_page(state), request.full_url, "text/html"
+        ),
+    )
+
+    with pytest.raises(ValueError):
+        bilibili_card._fetch_bilibili_mobile_metadata("BV1Gyu36LEfL")
+
+
+def test_rejects_mobile_redirect_to_other_host(monkeypatch):
+    monkeypatch.setattr(
+        bilibili_card,
+        "_open_restricted",
+        lambda request, allowed_url, timeout: FakeResponse(
+            _mobile_page(_mobile_state()), "https://evil.example/video/BV1Gyu36LEfL"
+        ),
+    )
+
+    with pytest.raises(ValueError, match="redirected"):
+        bilibili_card._fetch_bilibili_mobile_metadata("BV1Gyu36LEfL")
+
+
 def test_generates_complete_pink_bilibili_card(monkeypatch):
     metadata = BilibiliVideoMetadata(
         title="这是一个用于验证两行截断效果的超长B站视频标题" * 5,
@@ -145,13 +232,15 @@ def test_generates_complete_pink_bilibili_card(monkeypatch):
             assert card.size == (1200, 920)
             pixel = card.convert("RGB").getpixel((2, 2))
             assert pixel[0] > 240 and 90 < pixel[1] < 140 and 130 < pixel[2] < 180
+            # The cover and avatar must be separate original images.
+            assert card.getpixel((600, 300)) == pytest.approx((20, 80, 160), abs=5)
+            assert card.getpixel((95, 851)) == pytest.approx((220, 180, 120), abs=5)
     finally:
         shutil.rmtree(path.parent, ignore_errors=True)
 
 
-def test_metadata_failure_uses_qq_title_and_preview(monkeypatch):
-    cover_body = _image_bytes()
-    captured = {}
+def test_metadata_failure_skips_card_instead_of_using_qq_preview(monkeypatch):
+    downloads = []
     monkeypatch.setattr(
         bilibili_card,
         "_resolve_bilibili_video_url",
@@ -160,31 +249,18 @@ def test_metadata_failure_uses_qq_title_and_preview(monkeypatch):
     monkeypatch.setattr(
         bilibili_card,
         "_download_image_bytes",
-        lambda url, max_bytes: cover_body,
+        lambda url, max_bytes: downloads.append(url),
     )
-
-    def fake_render(**kwargs):
-        captured.update(kwargs)
-        kwargs["output"].write_bytes(b"card")
-
-    monkeypatch.setattr(bilibili_card, "_render_bilibili_card", fake_render)
 
     path = bilibili_card.generate_bilibili_card(
         BilibiliCardRequest(
             source_url="https://b23.tv/wrXwLXN",
             fallback_title="QQ卡片标题",
-            fallback_cover_url="https://qq.ugcimg.cn/preview.jpg",
         )
     )
 
-    assert path is not None
-    try:
-        assert captured["title"] == "QQ卡片标题"
-        assert captured["author_name"] == "哔哩哔哩"
-        assert captured["avatar_body"] is None
-        assert captured["cover_body"] == cover_body
-    finally:
-        shutil.rmtree(path.parent, ignore_errors=True)
+    assert path is None
+    assert downloads == []
 
 
 def test_avatar_failure_uses_text_placeholder(monkeypatch):
@@ -232,7 +308,17 @@ def test_cover_failure_returns_no_card(monkeypatch):
     monkeypatch.setattr(
         bilibili_card,
         "_resolve_bilibili_video_url",
-        lambda url: (_ for _ in ()).throw(OSError("offline")),
+        lambda url: url,
+    )
+    monkeypatch.setattr(
+        bilibili_card,
+        "_fetch_bilibili_metadata",
+        lambda bvid: BilibiliVideoMetadata(
+            title="标题",
+            cover_url="https://i1.hdslb.com/bfs/archive/cover.jpg",
+            author_name="作者",
+            author_avatar_url="https://i2.hdslb.com/bfs/face/avatar.jpg",
+        ),
     )
     monkeypatch.setattr(
         bilibili_card,
@@ -242,9 +328,8 @@ def test_cover_failure_returns_no_card(monkeypatch):
 
     path = bilibili_card.generate_bilibili_card(
         BilibiliCardRequest(
-            source_url="https://b23.tv/wrXwLXN",
+            source_url="https://www.bilibili.com/video/BV1Gyu36LEfL",
             fallback_title="标题",
-            fallback_cover_url="https://qq.ugcimg.cn/preview.jpg",
         )
     )
 

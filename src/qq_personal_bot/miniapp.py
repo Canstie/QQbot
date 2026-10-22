@@ -21,7 +21,6 @@ from nonebot import logger
 from qq_personal_bot.bilibili_card import (
     BilibiliCardRequest,
     generate_bilibili_card,
-    is_bilibili_preview_url,
     is_bilibili_share_url,
 )
 from qq_personal_bot.twitter import twitter_status_url
@@ -103,8 +102,8 @@ def extract_miniapp_image_source(
     segments: Sequence[Mapping[str, Any]],
 ) -> MiniAppImageSource | None:
     # Prefer the structured QQ share card when both it and its text fallback are
-    # present, because the card can provide a title and cover if Bilibili's API
-    # is temporarily unavailable.
+    # present, because the card can provide a fallback title. Bilibili previews
+    # may be composite share cards and must not be treated as video covers.
     for segment in segments:
         if str(segment.get("type", "")).lower() != "json":
             continue
@@ -140,7 +139,6 @@ async def cache_miniapp_images(source: MiniAppImageSource) -> CachedMiniAppImage
             BilibiliCardRequest(
                 source_url=source.source_url,
                 fallback_title=source.fallback_title,
-                fallback_cover_url=source.fallback_cover_url,
             ),
         )
         if card is not None:
@@ -231,7 +229,6 @@ def _find_supported_image_source(payload: Mapping[str, Any]) -> MiniAppImageSour
         source_url=source_url,
         platform=platform,
         fallback_title=_find_bilibili_fallback_title(payload),
-        fallback_cover_url=_find_bilibili_fallback_cover(payload),
     )
 
 
@@ -262,23 +259,6 @@ def _find_bilibili_fallback_title(payload: Mapping[str, Any]) -> str | None:
         if not title or title.casefold() in _BILIBILI_PLACEHOLDER_TITLES:
             continue
         candidates.append((_BILIBILI_TITLE_KEYS.index(key), title))
-    if not candidates:
-        return None
-    candidates.sort(key=lambda item: item[0])
-    return candidates[0][1]
-
-
-def _find_bilibili_fallback_cover(payload: Mapping[str, Any]) -> str | None:
-    candidates: list[tuple[int, str]] = []
-    cover_keys = ("preview", "cover", "image", "image_url", "imageurl")
-    for path, value in _walk(payload):
-        key = path[-1].lower() if path else ""
-        if key not in cover_keys or not isinstance(value, str):
-            continue
-        priority = cover_keys.index(key)
-        for match in _URL_RE.findall(html.unescape(value)):
-            if is_bilibili_preview_url(match):
-                candidates.append((priority, match))
     if not candidates:
         return None
     candidates.sort(key=lambda item: item[0])

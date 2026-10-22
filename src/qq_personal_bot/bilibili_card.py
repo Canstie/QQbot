@@ -12,6 +12,7 @@ from urllib.error import HTTPError
 from urllib.parse import urljoin, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+from nonebot import logger
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 _USER_AGENT = (
@@ -19,6 +20,11 @@ _USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36"
 )
 _BILIBILI_API_URL = "https://api.bilibili.com/x/web-interface/view?bvid={}"
+_MOBILE_USER_AGENT = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) "
+    "AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1"
+)
+_INITIAL_STATE_RE = re.compile(r"window\.__INITIAL_STATE__\s*=\s*")
 _BVID_RE = re.compile(r"(?:^|/)(BV[0-9A-Za-z]{10})(?:/|$)")
 _MAX_METADATA_BYTES = 3_000_000
 _MAX_COVER_BYTES = 12_000_000
@@ -32,7 +38,6 @@ _TEXT = (24, 25, 28)
 _MUTED_TEXT = (97, 102, 109)
 _PLATFORM_TITLES = {"bilibili", "哔哩哔哩", "哔哩哔哩弹幕网"}
 _BILIBILI_IMAGE_SUFFIXES = (".hdslb.com", ".biliimg.com")
-_QQ_PREVIEW_SUFFIXES = (".ugcimg.cn", ".qpic.cn", ".qq.com")
 _BOLD_FONT_PATHS = (
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
@@ -51,7 +56,6 @@ _REGULAR_FONT_PATHS = (
 class BilibiliCardRequest:
     source_url: str
     fallback_title: str | None = None
-    fallback_cover_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -84,46 +88,37 @@ def is_bilibili_share_url(url: str) -> bool:
     return _is_bilibili_page_url(url) and _extract_bvid(url) is not None
 
 
-def is_bilibili_preview_url(url: str) -> bool:
-    return _normalized_allowed_image_url(url) is not None
-
-
 def generate_bilibili_card(request: BilibiliCardRequest) -> Path | None:
-    metadata: BilibiliVideoMetadata | None = None
     try:
         video_url = _resolve_bilibili_video_url(request.source_url)
         bvid = _extract_bvid(video_url)
         if bvid is None:
             raise ValueError("Bilibili video id was not found")
         metadata = _fetch_bilibili_metadata(bvid)
-    except (OSError, ValueError, json.JSONDecodeError):
-        metadata = None
+    except (OSError, ValueError) as exc:
+        logger.warning(f"Bilibili metadata unavailable; skipping card ({type(exc).__name__})")
+        return None
 
-    title = _clean_text(metadata.title if metadata else None, 200)
+    title = _clean_text(metadata.title, 200)
     if not title:
         title = _clean_text(request.fallback_title, 200) or "B站视频"
-    author_name = _clean_text(metadata.author_name if metadata else None, 80)
+    author_name = _clean_text(metadata.author_name, 80)
     if not author_name:
         author_name = "哔哩哔哩"
 
-    cover_urls = _unique_nonempty(
-        (
-            metadata.cover_url if metadata else None,
-            request.fallback_cover_url,
-        )
-    )
-    cover_body: bytes | None = None
-    for cover_url in cover_urls:
-        try:
-            cover_body = _download_image_bytes(cover_url, max_bytes=_MAX_COVER_BYTES)
-        except (OSError, ValueError):
-            continue
-        break
-    if cover_body is None:
+    # QQ previews may contain the entire share card, including a play icon,
+    # author and title. Only the video's original Bilibili cover belongs here.
+    cover_url = _normalized_bilibili_image_url(metadata.cover_url)
+    if cover_url is None:
+        return None
+    try:
+        cover_body = _download_image_bytes(cover_url, max_bytes=_MAX_COVER_BYTES)
+    except (OSError, ValueError) as exc:
+        logger.warning(f"Bilibili cover unavailable; skipping card ({type(exc).__name__})")
         return None
 
     avatar_body: bytes | None = None
-    avatar_url = metadata.author_avatar_url if metadata else None
+    avatar_url = metadata.author_avatar_url
     if avatar_url:
         try:
             avatar_body = _download_image_bytes(avatar_url, max_bytes=_MAX_AVATAR_BYTES)
@@ -172,6 +167,16 @@ def _resolve_bilibili_video_url(source_url: str) -> str:
 def _fetch_bilibili_metadata(bvid: str) -> BilibiliVideoMetadata:
     if not re.fullmatch(r"BV[0-9A-Za-z]{10}", bvid):
         raise ValueError("invalid Bilibili video id")
+    try:
+        return _fetch_bilibili_api_metadata(bvid)
+    except (OSError, ValueError) as exc:
+        logger.warning(
+            f"Bilibili API metadata unavailable; trying mobile page ({type(exc).__name__})"
+        )
+    return _fetch_bilibili_mobile_metadata(bvid)
+
+
+def _fetch_bilibili_api_metadata(bvid: str) -> BilibiliVideoMetadata:
     request = Request(
         _BILIBILI_API_URL.format(bvid),
         headers={"User-Agent": _USER_AGENT, "Referer": "https://www.bilibili.com/"},
@@ -188,18 +193,59 @@ def _fetch_bilibili_metadata(bvid: str) -> BilibiliVideoMetadata:
     data = payload.get("data")
     if not isinstance(data, Mapping):
         raise ValueError("Bilibili metadata is missing")
+    return _metadata_from_video_data(data)
+
+
+def _fetch_bilibili_mobile_metadata(bvid: str) -> BilibiliVideoMetadata:
+    def allowed_url(url: str) -> bool:
+        parsed = urlparse(url)
+        return (
+            parsed.scheme == "https"
+            and (parsed.hostname or "").lower() == "m.bilibili.com"
+            and _extract_bvid(url) == bvid
+        )
+
+    request = Request(
+        f"https://m.bilibili.com/video/{bvid}",
+        headers={"User-Agent": _MOBILE_USER_AGENT, "Referer": "https://www.bilibili.com/"},
+    )
+    with _open_restricted(request, allowed_url, timeout=20) as response:
+        if not allowed_url(response.geturl()):
+            raise ValueError("Bilibili mobile page redirected to an unsupported video")
+        body = response.read(_MAX_METADATA_BYTES + 1)
+    if not body or len(body) > _MAX_METADATA_BYTES:
+        raise ValueError("Bilibili mobile page is empty or too large")
+    page = body.decode("utf-8")
+    marker = _INITIAL_STATE_RE.search(page)
+    if marker is None:
+        raise ValueError("Bilibili mobile metadata is missing")
+    # Decode only the JSON value; never execute the page's JavaScript.
+    state, _ = json.JSONDecoder().raw_decode(page[marker.end() :])
+    video = state.get("video") if isinstance(state, Mapping) else None
+    if not isinstance(video, Mapping) or video.get("error") != 0:
+        raise ValueError("Bilibili mobile video is unavailable")
+    data = video.get("viewInfo")
+    if not isinstance(data, Mapping) or data.get("bvid") != bvid:
+        raise ValueError("Bilibili mobile metadata does not match the video")
+    return _metadata_from_video_data(data)
+
+
+def _metadata_from_video_data(data: Mapping[str, Any]) -> BilibiliVideoMetadata:
     owner = data.get("owner")
     owner = owner if isinstance(owner, Mapping) else {}
-    return BilibiliVideoMetadata(
+    metadata = BilibiliVideoMetadata(
         title=_clean_text(data.get("title"), 200),
         cover_url=_normalized_bilibili_image_url(data.get("pic")),
         author_name=_clean_text(owner.get("name"), 80),
         author_avatar_url=_normalized_bilibili_image_url(owner.get("face")),
     )
+    if not all((metadata.cover_url, metadata.author_name, metadata.author_avatar_url)):
+        raise ValueError("Bilibili cover or author metadata is missing")
+    return metadata
 
 
 def _download_image_bytes(url: str, *, max_bytes: int) -> bytes:
-    normalized = _normalized_allowed_image_url(url)
+    normalized = _normalized_bilibili_image_url(url)
     if normalized is None:
         raise ValueError("unsupported Bilibili image host")
     request = Request(
@@ -332,8 +378,7 @@ def _is_allowed_card_image_url(url: str) -> bool:
     parsed = urlparse(str(url))
     host = (parsed.hostname or "").lower()
     return parsed.scheme == "https" and any(
-        host == suffix[1:] or host.endswith(suffix)
-        for suffix in (*_BILIBILI_IMAGE_SUFFIXES, *_QQ_PREVIEW_SUFFIXES)
+        host == suffix[1:] or host.endswith(suffix) for suffix in _BILIBILI_IMAGE_SUFFIXES
     )
 
 
@@ -344,18 +389,6 @@ def _extract_bvid(url: str) -> str | None:
 
 
 def _normalized_bilibili_image_url(value: Any) -> str | None:
-    normalized = _normalized_allowed_image_url(value)
-    if normalized is None:
-        return None
-    host = (urlparse(normalized).hostname or "").lower()
-    if not any(
-        host == suffix[1:] or host.endswith(suffix) for suffix in _BILIBILI_IMAGE_SUFFIXES
-    ):
-        return None
-    return normalized
-
-
-def _normalized_allowed_image_url(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
     parsed = urlparse(value.strip())
@@ -473,11 +506,3 @@ def _author_initial(author_name: str) -> str:
         if char.isalnum() or "\u3400" <= char <= "\u9fff":
             return char.upper()
     return "B"
-
-
-def _unique_nonempty(values: tuple[str | None, ...]) -> tuple[str, ...]:
-    result: list[str] = []
-    for value in values:
-        if isinstance(value, str) and value.strip() and value not in result:
-            result.append(value)
-    return tuple(result)
