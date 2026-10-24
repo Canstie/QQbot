@@ -9,7 +9,31 @@ from collections.abc import Iterable
 from qq_personal_bot.core.person_aliases import (
     matched_person_aliases,
     person_alias_records,
+    resolve_person_references,
 )
+
+
+def person_context_ids(
+    store,
+    *,
+    current_user_id: int,
+    text: str,
+    mentioned_user_ids: Iterable[int] = (),
+    excluded_user_ids: Iterable[int] = (),
+    limit: int = 3,
+) -> tuple[int, ...]:
+    """Resolve current-message subjects once for both interaction and graph memory."""
+    candidates = (
+        current_user_id,
+        *mentioned_user_ids,
+        *resolve_person_references(store, text).user_ids,
+    )
+    excluded = {int(user) for user in excluded_user_ids} - {int(current_user_id)}
+    return tuple(dict.fromkeys(
+        int(user) for user in candidates if int(user) > 0 and int(user) not in excluded
+    ))[
+        : max(1, min(int(limit), 8))
+    ]
 
 
 def build_identity_guidance(

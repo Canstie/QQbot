@@ -5,15 +5,15 @@ import json
 import logging
 import re
 import time
+from collections.abc import Iterable
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from qq_personal_bot import ai_client
 from qq_personal_bot.ai_providers import active_ai_model, resolve_background_ai_settings
-from qq_personal_bot.core.person_aliases import resolve_person_references
 from qq_personal_bot.core.store import PolicyStore
-from qq_personal_bot.identity import build_identity_guidance
+from qq_personal_bot.identity import build_identity_guidance, person_context_ids
 from qq_personal_bot.settings import AppSettings
 
 logger = logging.getLogger(__name__)
@@ -271,15 +271,27 @@ async def refresh_memory_graph(
         return False
 
 
-def build_graph_guidance(store: PolicyStore, group_id: int, user_id: int, topic: str) -> str:
+def get_graph_context(
+    store: PolicyStore, group_id: int | None, user_ids: Iterable[int], *, topic: str = "",
+) -> list[dict[str, Any]]:
+    """Read evidence for the selected people, respecting the graph's group switch."""
+    if group_id is None:
+        return []
     if not store.is_memory_group_enabled(group_id) or not store.is_feature_enabled("ai.roast"):
-        return ""
-    targets = [user_id, *resolve_person_references(store, topic).user_ids]
+        return []
     graphs = [
         store.get_person_graph(group_id, target, topic=topic, limit=8)
-        for target in list(dict.fromkeys(targets))[:3]
+        for target in list(dict.fromkeys(user_ids))[:3]
     ]
-    graphs = [graph for graph in graphs if graph["edges"]]
+    return [graph for graph in graphs if graph["edges"]]
+
+
+def build_graph_guidance(store: PolicyStore, group_id: int, user_id: int, topic: str) -> str:
+    graphs = get_graph_context(
+        store, group_id,
+        person_context_ids(store, current_user_id=user_id, text=topic),
+        topic=topic,
+    )
     if not graphs:
         return ""
     graph = graphs[0] if len(graphs) == 1 else {"people": graphs}

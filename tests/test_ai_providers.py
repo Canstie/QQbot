@@ -576,7 +576,7 @@ async def test_every_ai_entry_uses_selected_provider_and_model_without_deepseek_
     monkeypatch.setattr(dsapi, "build_mention_prompt", AsyncMock(return_value="你好"))
     monkeypatch.setattr(dsapi, "refresh_memory_graph", AsyncMock())
     monkeypatch.setattr(dsapi, "graph_enabled", lambda *args: True)
-    monkeypatch.setattr(dsapi, "build_graph_guidance", lambda *args: "")
+    monkeypatch.setattr(dsapi, "build_person_memory_guidance", lambda *args, **kwargs: "")
     monkeypatch.setattr(
         store,
         "get_person_graph",

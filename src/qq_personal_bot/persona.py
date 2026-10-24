@@ -26,6 +26,7 @@ def build_persona_guidance(
     *,
     target_user_id: int,
     topic_text: str,
+    include_relationship_memory: bool = True,
 ) -> str:
     """Build prompt-only style guidance without binding it to a source QQ account."""
     knowledge_id = int(knowledge.get("id") or 0)
@@ -49,7 +50,11 @@ def build_persona_guidance(
     selected = retrieve_similar_examples(examples, topic_text, limit=example_limit)
 
     relationship = None
-    if bool(knowledge.get("relationship_memory_enabled")) and knowledge_id > 0:
+    if (
+        include_relationship_memory
+        and bool(knowledge.get("relationship_memory_enabled"))
+        and knowledge_id > 0
+    ):
         relationship = store.get_dsapi_relationship_memory(
             knowledge_id,
             int(target_user_id),

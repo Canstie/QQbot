@@ -3,6 +3,15 @@ from __future__ import annotations
 import pytest
 
 from qq_personal_bot.core.memory_commands import is_memory_command
+from qq_personal_bot.replies import load_reply_config
+
+
+@pytest.fixture(autouse=True)
+def isolate_reply_config_cache():
+    # Web tests temporarily change cwd; a cached relative replies.json must not leak here.
+    load_reply_config.cache_clear()
+    yield
+    load_reply_config.cache_clear()
 
 
 @pytest.mark.parametrize("message", [

@@ -340,7 +340,7 @@ export default function AiPage({ refreshVersion, onChanged }) {
                   <Field label="Temperature" hint="留空使用服务商默认值"><input type="number" min="0" max="2" step="0.1" value={knowledgeDraft.temperature} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, temperature: event.target.value }))} /></Field>
                   <Switch checked={Boolean(data?.thinking_supported && knowledgeDraft.thinking_enabled)} disabled={!data?.thinking_supported} onChange={(value) => setKnowledgeDraft((current) => ({ ...current, thinking_enabled: value }))} label="Thinking 模式" description={!data?.thinking_supported ? "由模型档位控制，例如 high；接口不发送 DeepSeek 专属参数" : knowledgeDraft.thinking_enabled ? "请求模型进行思考" : "Non-thinking，直接快速回复"} />
                   <Switch checked={knowledgeDraft.web_search_enabled} onChange={(value) => setKnowledgeDraft((current) => ({ ...current, web_search_enabled: value }))} label="联网搜索与时事评价" description="后台检索近期资料后评价，只显示回答和观点；普通闲聊不强制搜索" />
-                  <Switch checked={knowledgeDraft.relationship_memory_enabled} onChange={(value) => setKnowledgeDraft((current) => ({ ...current, relationship_memory_enabled: value }))} label="AI 自动维护人物关系" description={`按对方 QQ 自动归纳，当前已记住 ${knowledgeDraft.relationship_count || 0} 人`} />
+                  <Switch checked={knowledgeDraft.relationship_memory_enabled} onChange={(value) => setKnowledgeDraft((current) => ({ ...current, relationship_memory_enabled: value }))} label="AI 自动维护人物关系" description={`按 QQ 保存互动摘要，回复时结合本群知识图谱；当前已有 ${knowledgeDraft.relationship_count || 0} 份摘要`} />
                   <Field label="当前话题示例数"><input type="number" min="0" max="8" value={knowledgeDraft.similar_examples} onChange={(event) => setKnowledgeDraft((current) => ({ ...current, similar_examples: event.target.value }))} /></Field>
                 </div>
                 <Field label="知识与角色设定" hint="写清身份、语气、世界观、人物关系、事实边界和禁止事项。">
@@ -374,7 +374,7 @@ export default function AiPage({ refreshVersion, onChanged }) {
             <Button tone="danger" icon={Eraser} onClick={clearHistory}>立即清空全部上下文</Button>
           </Panel>
           <Panel title="人物知识图谱" eyebrow="Personal memory">
-            <p className="quiet-note">保存指定群的新消息及回复关系，按群和 QQ 整理有来源的经历、偏好、计划。AI 总开关开启时后台自动提取。发送“评价一下 @群友”“你怎么看 @群友”等请求，会结合相关图谱给出中立评价；也支持 ~锐评 @群友。</p>
+            <p className="quiet-note">保存指定群的新消息及回复关系，按群和 QQ 整理有来源的经历、偏好、计划。AI 总开关开启时后台自动提取。普通回复会按 QQ 将本群图谱、成员别名和已开启的互动摘要一起检索，支持通过别名或 @ 讨论群友。发送“评价一下 @群友”“你怎么看 @群友”等请求，会结合相关图谱给出中立评价；也支持 ~锐评 @群友。</p>
             <Field label="启用记录的群" hint="一行一个群号。后台整理按此名单运行；群内 AI 回复和人物评价另由 AI 聊天群名单控制。"><textarea value={quoteGroups} onChange={(event) => setQuoteGroups(event.target.value)} /></Field>
             <Button icon={Save} onClick={saveQuotes}>保存图谱群设置</Button>
             <p className="quiet-note">已保存 {quoteData?.message_count ?? 0} 条消息、{quoteData?.edge_count ?? 0} 条图谱关系，待整理 {quoteData?.pending_messages ?? 0} 条。关闭采集后已有数据保留，可在下方清空。</p>
@@ -439,7 +439,7 @@ export default function AiPage({ refreshVersion, onChanged }) {
                 <Field label="Temperature" hint="留空使用服务商默认值"><input type="number" min="0" max="2" step="0.1" value={createDraft.temperature} onChange={(event) => setCreateDraft((current) => ({ ...current, temperature: event.target.value }))} /></Field>
               </div>
               <Switch checked={createDraft.thinking_enabled} onChange={(value) => setCreateDraft((current) => ({ ...current, thinking_enabled: value }))} label="开启 Thinking 模式" description={createDraft.thinking_enabled ? "随该知识库启用深度思考" : "保持 Non-thinking，优先快速回复"} />
-              <Switch checked={createDraft.relationship_memory_enabled} onChange={(value) => setCreateDraft((current) => ({ ...current, relationship_memory_enabled: value }))} label="AI 自动维护人物关系" description="根据实际对话按 QQ 自动归纳，不需手工填写" />
+              <Switch checked={createDraft.relationship_memory_enabled} onChange={(value) => setCreateDraft((current) => ({ ...current, relationship_memory_enabled: value }))} label="AI 自动维护人物关系" description="按 QQ 自动归纳互动摘要，回复时结合别名和本群知识图谱" />
               <Field label="知识与角色设定" hint="可留空，创建后仍可继续编辑。"><textarea value={createDraft.prompt} onChange={(event) => setCreateDraft((current) => ({ ...current, prompt: event.target.value }))} placeholder="输入身份、语气、世界观、人物关系与事实资料……" /></Field>
             </div>
             <footer className="knowledge-modal__actions"><Button tone="ghost" onClick={() => setCreateOpen(false)}>取消</Button><Button icon={Plus} onClick={createKnowledge}>创建知识库</Button></footer>
