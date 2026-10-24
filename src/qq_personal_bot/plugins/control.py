@@ -5,7 +5,14 @@ import re
 from typing import Any
 
 from nonebot import on, on_command
-from nonebot.adapters.onebot.v11 import Bot, Event, GroupMessageEvent, Message, MessageEvent
+from nonebot.adapters.onebot.v11 import (
+    Bot,
+    Event,
+    GroupMessageEvent,
+    Message,
+    MessageEvent,
+)
+from nonebot.adapters.onebot.v11.utils import unescape
 from nonebot.matcher import Matcher
 from nonebot.params import CommandArg
 
@@ -13,6 +20,7 @@ from qq_personal_bot.ai_models import (
     DSAPI_MODEL_OPTIONS,
     resolve_dsapi_model,
 )
+from qq_personal_bot.core.person_aliases import normalize_person_alias
 from qq_personal_bot.runtime import get_store
 from qq_personal_bot.system_metrics import collect_system_metrics, format_system_metrics
 
@@ -71,14 +79,57 @@ def _parse_ai_target_user_id(value: str) -> int:
     return int(qq)
 
 
+def _person_alias_command(store, parts: list[str], actor_id: int) -> str | None:
+    raw = " ".join(parts)
+    assignment = re.fullmatch(
+        r"(\[CQ:at,qq=[0-9]+(?:,[^\]]*)?\]|@?[0-9]+)\s*[=＝]\s*(.*)",
+        raw,
+    )
+    if assignment:
+        target = _parse_ai_target_user_id(assignment[1].removeprefix("@"))
+        alias = unescape(assignment[2]).strip()
+        if not alias:
+            count = store.remove_person_alias(target, actor_id=actor_id)
+            return f"已清空 QQ {target} 的别名（{count} 个）。"
+        store.add_person_alias(target, alias, actor_id=actor_id)
+        aliases = "、".join(row["alias"] for row in store.list_person_aliases(target))
+        return f"已记录 QQ {target} 的别名：{aliases}。所有群通用。"
+    if not parts or parts[0] != "别名":
+        return None
+    if len(parts) == 1:
+        records = store.list_person_aliases()
+        listing = "\n".join(f"QQ {row['user_id']} = {row['alias']}" for row in records[:30])
+        suffix = "\n仅显示前 30 条，可按 QQ 或别名查询。" if len(records) > 30 else ""
+        return "成员别名（所有群通用）\n" + (listing or "暂无") + suffix
+    if parts[1] in {"删除", "移除"}:
+        if len(parts) < 3:
+            return "用法：/bot 别名 删除 <QQ号或@成员> [别名]"
+        target = _parse_ai_target_user_id(parts[2].removeprefix("@"))
+        alias = unescape(" ".join(parts[3:])) or None
+        count = store.remove_person_alias(target, alias, actor_id=actor_id)
+        return f"已删除 QQ {target} 的别名（{count} 个）。"
+    query = " ".join(parts[1:])
+    try:
+        target = _parse_ai_target_user_id(query.removeprefix("@"))
+    except ValueError:
+        alias = normalize_person_alias(unescape(query)).casefold()
+        rows = [r for r in store.list_person_aliases() if r["alias"].casefold() == alias]
+    else:
+        rows = store.list_person_aliases(target)
+    return (
+        "\n".join(f"QQ {row['user_id']} = {row['alias']}" for row in rows)
+        or "没有找到这个 QQ 或别名的记录。"
+    )
+
+
 def _format_ai_models(current_model: str, options: list[dict[str, Any]] | None = None) -> str:
     lines = ["AI 模型列表"]
-    for index, option in enumerate(options if options is not None else DSAPI_MODEL_OPTIONS, start=1):
+    for index, option in enumerate(
+        options if options is not None else DSAPI_MODEL_OPTIONS, start=1
+    ):
         current = "（当前）" if option["id"] == current_model else ""
         vision = "，支持引用图片识别" if option["vision"] else ""
-        lines.append(
-            f"{index}. {option['key']} — {option['id']}{vision}{current}"
-        )
+        lines.append(f"{index}. {option['key']} — {option['id']}{vision}{current}")
     lines.append("使用：/bot aim <模型名>")
     return "\n".join(lines)
 
@@ -146,10 +197,24 @@ async def _handle_bot_command(
     command = parts[0].lower()
 
     try:
+        alias_response = _person_alias_command(store, parts, actor_id)
+        if alias_response is not None:
+            await _send_control_response(
+                matcher,
+                bot,
+                event,
+                alias_response,
+                explicit_group_send=explicit_group_send,
+            )
+            return
+
         if command in {"拉黑", "解黑"}:
             if len(parts) != 2:
                 await _send_control_response(
-                    matcher, bot, event, f"用法：/bot {command} <QQ号或@成员>",
+                    matcher,
+                    bot,
+                    event,
+                    f"用法：/bot {command} <QQ号或@成员>",
                     explicit_group_send=explicit_group_send,
                 )
             target_user_id = _parse_ai_target_user_id(parts[1])
@@ -158,27 +223,40 @@ async def _handle_bot_command(
             if blocked:
                 message = (
                     f"已将 {target_user_id} 加入 AI 黑名单，AI 将静默忽略他的消息。"
-                    if changed else f"{target_user_id} 已在 AI 黑名单中。"
+                    if changed
+                    else f"{target_user_id} 已在 AI 黑名单中。"
                 )
             else:
                 message = (
                     f"已将 {target_user_id} 移出 AI 黑名单。"
-                    if changed else f"{target_user_id} 不在 AI 黑名单中。"
+                    if changed
+                    else f"{target_user_id} 不在 AI 黑名单中。"
                 )
             await _send_control_response(
-                matcher, bot, event, message, explicit_group_send=explicit_group_send,
+                matcher,
+                bot,
+                event,
+                message,
+                explicit_group_send=explicit_group_send,
             )
 
         if command == "黑名单":
             if len(parts) != 1:
                 await _send_control_response(
-                    matcher, bot, event, "用法：/bot 黑名单",
+                    matcher,
+                    bot,
+                    event,
+                    "用法：/bot 黑名单",
                     explicit_group_send=explicit_group_send,
                 )
             users = store.get_dsapi_blocked_users()
             message = "AI 黑名单（所有群通用）\n" + ("\n".join(map(str, users)) or "暂无")
             await _send_control_response(
-                matcher, bot, event, message, explicit_group_send=explicit_group_send,
+                matcher,
+                bot,
+                event,
+                message,
+                explicit_group_send=explicit_group_send,
             )
 
         if command == "mode":
@@ -312,7 +390,9 @@ async def _handle_bot_command(
         if command == "aim":
             config = store.get_dsapi_config()
             current_model = str((config.get("active_knowledge") or {}).get("model") or "")
-            options = store.get_ai_model_options() if hasattr(store, "get_ai_model_options") else None
+            options = (
+                store.get_ai_model_options() if hasattr(store, "get_ai_model_options") else None
+            )
             if hasattr(store, "ai_provider_managed") and store.ai_provider_managed():
                 current_model = store.get_active_ai_provider()["default_model"]
             if len(parts) == 2 and parts[1].lower() == "list":
@@ -334,9 +414,7 @@ async def _handle_bot_command(
             option = resolve_dsapi_model(parts[1], options)
             knowledge = store.set_active_dsapi_model(option["id"], actor_id=actor_id)
             suffix = (
-                "\n🖼 已开启引用图片识别。"
-                if option["vision"]
-                else "\n📝 当前模型不识别引用图片。"
+                "\n🖼 已开启引用图片识别。" if option["vision"] else "\n📝 当前模型不识别引用图片。"
             )
             await _send_control_response(
                 matcher,
@@ -454,6 +532,7 @@ async def _handle_bot_command(
                 "aim list|flash|pro | "
                 "aik list|<index> | "
                 "拉黑 <QQ号或@成员> | 解黑 <QQ号或@成员> | 黑名单 | "
+                "@成员=别名 | 别名 [QQ号或别名] | 别名 删除 <QQ号或@成员> [别名] | "
                 "mode allowlist|blocklist | admin add <user_id> | "
                 "prefix add|remove|list [prefix]"
             ),
@@ -491,4 +570,3 @@ async def handle_self_sent_bot_command(matcher: Matcher, bot: Bot, event: Event)
                 bot=bot,
                 explicit_group_send=True,
             )
-

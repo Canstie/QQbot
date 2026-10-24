@@ -3,6 +3,10 @@ from __future__ import annotations
 import re
 
 from qq_personal_bot.core.models import MessageEvent
+from qq_personal_bot.core.person_aliases import (
+    PersonReferences,
+    resolve_person_references,
+)
 
 _QUOTED_TEXT = re.compile(r'“[^”]*”|「[^」]*」|『[^』]*』|"[^"\n]*"|`[^`]*`')
 _REQUEST_PREFIX = (
@@ -11,7 +15,8 @@ _REQUEST_PREFIX = (
     r"客观地?|中立地?|简单地?|认真地?|全面地?|好好地?)\s*)*+"
 )
 _EVALUATION_REQUEST = re.compile(
-    r"^" + _REQUEST_PREFIX
+    r"^"
+    + _REQUEST_PREFIX
     + r"(?:锐评|评价|点评|评论|评说|评判|评一评|评评|批判|批评|吐槽|分析)"
     + r"(?!了|过|的|是|这个词|是什么意思|功能|一下是什么意思)"
 )
@@ -42,3 +47,12 @@ def evaluation_target_ids(event: MessageEvent, *, self_id: int | str) -> list[in
         if user_id > 0 and str(user_id) != str(self_id) and user_id not in targets:
             targets.append(user_id)
     return targets
+
+
+def evaluation_person_references(
+    event: MessageEvent, store, *, self_id: int | str
+) -> PersonReferences:
+    targets = evaluation_target_ids(event, self_id=self_id)
+    if targets:
+        return PersonReferences(tuple(targets))
+    return resolve_person_references(store, event.raw_message, self_id=self_id)

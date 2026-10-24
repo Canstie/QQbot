@@ -27,7 +27,7 @@ from qq_personal_bot.classic_forward import send_all_classics
 from qq_personal_bot.core.memory_commands import is_memory_command
 from qq_personal_bot.core.models import PolicyDecision
 from qq_personal_bot.core.person_evaluation import (
-    evaluation_target_ids,
+    evaluation_person_references,
     is_person_evaluation_request,
 )
 from qq_personal_bot.dsapi import (
@@ -602,13 +602,26 @@ async def _handle_person_evaluation(context: DispatchContext) -> bool:
     decision = context.decision
 
     evaluation_text = decision.normalized_message.strip()
-    targets = evaluation_target_ids(internal_event, self_id=bot.self_id)
+    if decision.handler not in {
+        "mention",
+        "default",
+        "person_evaluation",
+    } or not is_person_evaluation_request(evaluation_text):
+        return False
+    references = evaluation_person_references(internal_event, get_store(), self_id=bot.self_id)
+    targets = references.user_ids
     if (
         decision.handler in {"mention", "default", "person_evaluation"}
         and is_person_evaluation_request(evaluation_text)
-        and (targets or evaluation_text in {"锐评", "锐评一下"})
+        and (targets or references.ambiguous_aliases or evaluation_text in {"锐评", "锐评一下"})
     ):
-        if len(targets) != 1:
+        if references.ambiguous_aliases:
+            response = (
+                "别名“"
+                + "、".join(references.ambiguous_aliases[:3])
+                + "”对应多个 QQ，请直接 @要讨论的那位成员。"
+            )
+        elif len(targets) != 1:
             response = "请一次 @一位群友，例如：评价一下 @群友、批判一下 @群友，或 ~锐评 @群友。"
         else:
             store = get_store()

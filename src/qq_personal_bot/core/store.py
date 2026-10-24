@@ -18,6 +18,7 @@ from qq_personal_bot.core.group_message_store import GroupMessageStore
 from qq_personal_bot.core.knowledge_store import KnowledgeStore
 from qq_personal_bot.core.memory_graph import MemoryGraphStore
 from qq_personal_bot.core.menu_store import MenuStore
+from qq_personal_bot.core.person_aliases import PersonAliasStore
 from qq_personal_bot.core.steam_store import SteamStore
 from qq_personal_bot.core.store_constants import _RUNTIME_CACHE_TTL_SECONDS, CHINA_TZ
 from qq_personal_bot.core.turtle_soup import TurtleSoupStore
@@ -26,6 +27,7 @@ from qq_personal_bot.settings import AppSettings
 
 
 class PolicyStore(
+    PersonAliasStore,
     KnowledgeStore,
     ConversationStore,
     SteamStore,
@@ -52,6 +54,7 @@ class PolicyStore(
         with self._connect() as conn:
             conn.execute("PRAGMA journal_mode = WAL")
             self._create_schema(conn)
+            self._create_person_alias_schema(conn)
             self._create_memory_schema(conn)
             self._create_turtle_soup_schema(conn)
             has_settings = conn.execute("SELECT 1 FROM settings LIMIT 1").fetchone() is not None

@@ -7,7 +7,7 @@ from collections.abc import Callable
 
 from qq_personal_bot.core.models import MessageEvent, PolicyDecision
 from qq_personal_bot.core.person_evaluation import (
-    evaluation_target_ids,
+    evaluation_person_references,
     is_person_evaluation_request,
 )
 from qq_personal_bot.core.store import PolicyStore
@@ -89,14 +89,16 @@ class PolicyEngine:
             return PolicyDecision(False, reason)
         trigger_text, handler = trigger
 
-        is_ai_request = handler == "mention" or (
-            handler in {"default", "person_evaluation"}
-            and is_person_evaluation_request(trigger_text)
-            and (
-                evaluation_target_ids(event, self_id=self_id)
+        is_ai_request = handler == "mention"
+        if handler in {"default", "person_evaluation"} and is_person_evaluation_request(
+            trigger_text
+        ):
+            references = evaluation_person_references(event, self.store, self_id=self_id)
+            is_ai_request = bool(
+                references.user_ids
+                or references.ambiguous_aliases
                 or trigger_text in {"锐评", "锐评一下"}
             )
-        )
         if is_ai_request and self.store.is_dsapi_user_blocked(event.user_id):
             return PolicyDecision(False, "ai_user_blocked")
 
@@ -172,10 +174,10 @@ class PolicyEngine:
         if lua_command is not None:
             return lua_command, "lua"
 
-        if is_person_evaluation_request(raw_message) and evaluation_target_ids(
-            event, self_id=self_id
-        ):
-            return raw_message, "person_evaluation"
+        if is_person_evaluation_request(raw_message):
+            references = evaluation_person_references(event, self.store, self_id=self_id)
+            if references.user_ids or references.ambiguous_aliases:
+                return raw_message, "person_evaluation"
 
         if has_direct_reply(raw_message):
             return raw_message, "direct"

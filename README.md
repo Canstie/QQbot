@@ -36,6 +36,10 @@ LLOneBot 或 NapCat Framework 使用。桌面 QQ 客户端可以正常使用，�
   - `/bot 拉黑 <QQ号或@成员>`（加入 AI 黑名单，所有群通用）
   - `/bot 解黑 <QQ号或@成员>`（移出 AI 黑名单，恢复 AI 互动）
   - `/bot 黑名单`（查看 AI 黑名单）
+  - `/bot @成员=别名`（管理员添加成员别名，也支持直接填写 QQ 号；同一 QQ 最多 8 个别名，所有群通用）
+  - `/bot @成员=`（清空该 QQ 的全部别名）
+  - `/bot 别名 [QQ号或别名]`（查看、按 QQ 查询或按别名反查）
+  - `/bot 别名 删除 @成员 [别名]`（删除指定别名；不填别名则清空）
   - `/bot mode allowlist|blocklist`
   - `/bot status`
   - `/bot admin add <user_id>`（删除管理员仅允许在 Web 管理页操作）

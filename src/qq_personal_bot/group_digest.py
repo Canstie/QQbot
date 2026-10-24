@@ -17,6 +17,7 @@ from qq_personal_bot.ai_providers import active_ai_model, resolve_ai_settings
 from qq_personal_bot.core.models import MessageEvent
 from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.group_digest_card import render_group_digest_card
+from qq_personal_bot.identity import build_identity_guidance
 from qq_personal_bot.performance import latency_phase
 from qq_personal_bot.settings import AppSettings
 
@@ -85,6 +86,12 @@ async def generate_group_digest_report(
 
     config = store.get_dsapi_config()
     model = active_ai_model(config, settings)
+    identity_guidance = await asyncio.to_thread(
+        build_identity_guidance,
+        store,
+        text="\n".join(str(m.get("content") or "") for m in messages),
+        user_ids=names,
+    )
     with latency_phase("digest_deepseek"):
         digest = await _summarize_transcript(
             transcript_path,
@@ -94,6 +101,7 @@ async def generate_group_digest_report(
             target_date=target_date,
             summary=_summary_for_model(summary, names),
             names=names,
+            identity_guidance=identity_guidance,
         )
     output_path = report_dir / f"group-{event.group_id}-digest.png"
     with latency_phase("digest_render"):
@@ -274,9 +282,11 @@ async def _summarize_transcript(
     target_date: str,
     summary: Mapping[str, Any],
     names: Mapping[int, str],
+    identity_guidance: str = "",
 ) -> dict[str, Any]:
     transcript = transcript_path.read_text(encoding="utf-8")
     chunks = _split_text(transcript, _TRANSCRIPT_CHUNK_CHARS)
+    system = _analysis_system_prompt() + ("\n" + identity_guidance if identity_guidance else "")
     if len(chunks) == 1:
         source = f"聊天记录文件内容：\n<chat-log>\n{chunks[0]}\n</chat-log>"
     else:
@@ -290,7 +300,7 @@ async def _summarize_transcript(
             note = await _complete(
                 settings,
                 model,
-                system=_analysis_system_prompt(),
+                system=system,
                 prompt=prompt,
             )
             notes.append(f"--- 第 {index} 部分笔记 ---\n{note}")
@@ -305,7 +315,7 @@ async def _summarize_transcript(
     raw = await _complete(
         settings,
         model,
-        system=_analysis_system_prompt(),
+        system=system,
         prompt=prompt,
     )
     try:
@@ -314,7 +324,7 @@ async def _summarize_transcript(
         repair = await _complete(
             settings,
             model,
-            system=_analysis_system_prompt(),
+            system=system,
             prompt=(
                 "把下面这份候选总结严格转换为指定 JSON 结构。不要添加候选内容中没有的事实。\n"
                 + _schema_text()
