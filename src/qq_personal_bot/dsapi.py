@@ -61,6 +61,7 @@ from qq_personal_bot.memory_graph import (
     refresh_memory_graph,
 )
 from qq_personal_bot.menu_recipes import is_supported_image_file
+from qq_personal_bot.person_conversation import PersonConversationSession
 from qq_personal_bot.person_memory import build_person_memory_guidance
 from qq_personal_bot.persona import build_persona_guidance
 from qq_personal_bot.settings import AppSettings
@@ -318,6 +319,7 @@ async def generate_roast_reply(
         max_tokens=None,
         thinking_enabled=bool(knowledge.get("thinking_enabled", False)),
         temperature=knowledge.get("temperature"),
+        tool_session=PersonConversationSession(store, settings, group_id=group_id),
     )
     return response.strip() or None
 
@@ -528,6 +530,13 @@ async def _generate_text_reply(
         thinking_enabled=bool(active_knowledge.get("thinking_enabled", False)),
         temperature=active_knowledge.get("temperature"),
     )
+    if not has_images:
+        person_session = PersonConversationSession(
+            store, settings, group_id=event.group_id,
+            requester_user_id=event.user_id, bot_user_id=bot_user_id,
+        )
+        if await asyncio.to_thread(lambda: bool(person_session.tools)):
+            complete = partial(complete, tool_session=person_session)
     if web_enabled:
         response = await generate_web_reply(
             partial(complete, json_output=True),

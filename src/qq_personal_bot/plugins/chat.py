@@ -542,6 +542,18 @@ async def _handle_pending_lua(context: DispatchContext) -> bool:
     return False
 
 
+def _person_evaluation_enabled(store: Any, group_id: int | None) -> bool:
+    config = store.get_dsapi_config()
+    return (
+        group_id is not None
+        and store.is_feature_enabled("ai.master")
+        and store.is_feature_enabled("ai.roast")
+        and config["enabled"]
+        and group_id in config["enabled_groups"]
+        and store.is_memory_group_enabled(group_id)
+    )
+
+
 async def _handle_denied_message(context: DispatchContext) -> bool:
     matcher = context.matcher
     bot = context.bot
@@ -552,6 +564,20 @@ async def _handle_denied_message(context: DispatchContext) -> bool:
     decision = context.decision
 
     if internal_event.is_at_bot and decision.reason in {"group_rate_limited", "user_rate_limited"}:
+        store = get_store()
+        evaluation_text = internal_event.raw_message.strip()
+        for prefix in store.prefixes():
+            if evaluation_text.startswith(prefix):
+                evaluation_text = evaluation_text[len(prefix):].strip()
+                break
+        if is_person_evaluation_request(evaluation_text):
+            references = evaluation_person_references(internal_event, store, self_id=bot.self_id)
+            if (
+                (references.user_ids or references.ambiguous_aliases
+                 or evaluation_text in {"锐评", "锐评一下"})
+                and not _person_evaluation_enabled(store, internal_event.group_id)
+            ):
+                return True
         await _finish_with_response(
             matcher,
             bot,
@@ -615,6 +641,9 @@ async def _handle_person_evaluation(context: DispatchContext) -> bool:
         and is_person_evaluation_request(evaluation_text)
         and (targets or references.ambiguous_aliases or evaluation_text in {"锐评", "锐评一下"})
     ):
+        store = get_store()
+        if not _person_evaluation_enabled(store, internal_event.group_id):
+            return True
         if references.ambiguous_aliases:
             response = (
                 "别名“"
@@ -624,34 +653,23 @@ async def _handle_person_evaluation(context: DispatchContext) -> bool:
         elif len(targets) != 1:
             response = "请一次 @一位群友，例如：评价一下 @群友、批判一下 @群友，或 ~锐评 @群友。"
         else:
-            store = get_store()
-            config = store.get_dsapi_config()
-            if not (
-                store.is_feature_enabled("ai.master")
-                and store.is_feature_enabled("ai.roast")
-                and config["enabled"]
-                and (internal_event.group_id in config["enabled_groups"])
-                and store.is_memory_group_enabled(internal_event.group_id)
-            ):
-                response = "本群尚未开启人物图谱评价。"
-            else:
-                await flush_group_activity()
-                try:
-                    with latency_phase("deepseek"):
-                        response = await generate_roast_reply(
-                            group_id=int(internal_event.group_id),
-                            target_user_id=targets[0],
-                            settings=get_settings(),
-                            store=store,
-                            request_text=evaluation_text,
-                        )
-                except DSAPIError as exc:
-                    logger.warning("DSAPI roast reply failed: %s", exc)
-                    response = "这次评价没生成完整，稍后再试一次。"
-                if response is None:
-                    response = (
-                        "这位群友在本群的图谱还在整理或证据不足，等积累更多有内容的聊天后再试。"
+            await flush_group_activity()
+            try:
+                with latency_phase("deepseek"):
+                    response = await generate_roast_reply(
+                        group_id=int(internal_event.group_id),
+                        target_user_id=targets[0],
+                        settings=get_settings(),
+                        store=store,
+                        request_text=evaluation_text,
                     )
+            except DSAPIError as exc:
+                logger.warning("DSAPI roast reply failed: %s", exc)
+                response = "这次评价没生成完整，稍后再试一次。"
+            if response is None:
+                response = (
+                    "这位群友在本群的图谱还在整理或证据不足，等积累更多有内容的聊天后再试。"
+                )
         if soup.active(internal_event.group_id):
             return True
         await _finish_with_response(

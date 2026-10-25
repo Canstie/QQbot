@@ -32,6 +32,8 @@ class MemoryGraphStore:
                 ON memory_messages(group_id, message_id) WHERE message_id <> '';
             CREATE INDEX IF NOT EXISTS idx_memory_group_id ON memory_messages(group_id, id);
             CREATE INDEX IF NOT EXISTS idx_memory_user ON memory_messages(group_id, user_id, id);
+            CREATE INDEX IF NOT EXISTS idx_memory_user_time
+                ON memory_messages(group_id, user_id, created_at DESC, id DESC);
             CREATE TABLE IF NOT EXISTS memory_edges (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 group_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
@@ -187,6 +189,54 @@ class MemoryGraphStore:
                 (int(group_id), int(user_id), max(1, min(int(limit), 1000))),
             ).fetchall()
         return [self._memory_message(r) for r in rows]
+
+    def get_person_conversation(
+        self, group_id: int, user_id: int, *, limit: int = 20, query: str = "",
+        before_id: int | None = None, bot_ids: Sequence[int] = (),
+    ) -> dict[str, Any]:
+        """Page original speech by event time, excluding commands even in legacy archives."""
+        group_id, user_id = int(group_id), int(user_id)
+        limit = max(1, min(int(limit), 40))
+        prefixes = self.prefixes()
+        bots = sorted(set(self.memory_bot_ids()) | set(bot_ids))
+        conditions = ["group_id=?", "user_id=?"]
+        parameters: list[Any] = [group_id, user_id]
+        if query:
+            conditions.append("instr(lower(content),lower(?))>0")
+            parameters.append(query)
+        with self._connect() as conn:
+            if before_id is not None:
+                cursor = conn.execute(
+                    "SELECT created_at,id FROM memory_messages WHERE id=? AND group_id=? "
+                    "AND user_id=?", (int(before_id), group_id, user_id),
+                ).fetchone()
+                if cursor is None:
+                    raise ValueError("invalid conversation cursor")
+                conditions.append("(created_at,id)<(?,?)")
+                parameters.extend((cursor["created_at"], cursor["id"]))
+            rows = conn.execute(
+                "SELECT * FROM memory_messages WHERE " + " AND ".join(conditions)
+                + " ORDER BY created_at DESC,id DESC LIMIT 501", parameters,
+            ).fetchall()
+        messages = []
+        scanned = 0
+        for row in rows[:500]:
+            scanned += 1
+            message = self._memory_message(row)
+            if is_memory_command(message, prefixes=prefixes, bot_ids=bots):
+                continue
+            messages.append({key: message[key] for key in (
+                "id", "user_id", "message_id", "display_name", "content", "created_at", "reply_to",
+                "memory_context",
+            )})
+            if len(messages) >= limit:
+                break
+        has_more = scanned < len(rows)
+        return {
+            "messages": list(reversed(messages)),
+            "has_more": has_more,
+            "next_before_id": int(rows[scanned - 1]["id"]) if has_more and scanned else None,
+        }
 
     def clear_memory(self, group_id: int, *, user_id: int | None = None, actor_id: int) -> int:
         group_id = int(group_id)

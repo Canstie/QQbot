@@ -258,9 +258,14 @@ def test_graph_guidance_fetches_discussed_alias_instead_of_only_sender(context, 
 
 
 @pytest.mark.asyncio
-async def test_ambiguous_alias_asks_for_at_without_calling_model(context, control, monkeypatch):
+@pytest.mark.parametrize("memory_group_enabled", [True, False])
+async def test_ambiguous_alias_asks_for_at_without_calling_model(
+    context, control, monkeypatch, memory_group_enabled
+):
     chat = importlib.import_module("qq_personal_bot.plugins.chat")
     store, _ = context
+    if memory_group_enabled:
+        store.set_memory_groups([123], actor_id=10000)
     store.add_person_alias(456, "小明", actor_id=10000)
     store.add_person_alias(111, "小明", actor_id=10000)
     finish = AsyncMock()
@@ -279,7 +284,10 @@ async def test_ambiguous_alias_asks_for_at_without_calling_model(context, contro
         SimpleNamespace(handler="mention", normalized_message="评价小明"),
     )
     assert await chat._handle_person_evaluation(ctx)
-    assert "对应多个 QQ" in finish.call_args.args[3]
+    if memory_group_enabled:
+        assert "对应多个 QQ" in finish.call_args.args[3]
+    else:
+        finish.assert_not_awaited()
     generate.assert_not_awaited()
 
 

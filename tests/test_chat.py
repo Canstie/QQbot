@@ -161,7 +161,7 @@ async def test_roast_command_uses_mentioned_target_in_same_group(monkeypatch, te
     if gate is not None:
         flush.assert_not_awaited()
         generate.assert_not_awaited()
-        assert finish.call_args.args[3] == "本群尚未开启人物图谱评价。"
+        finish.assert_not_awaited()
         return
     flush.assert_awaited_once()
     generate.assert_awaited_once()
@@ -172,6 +172,68 @@ async def test_roast_command_uses_mentioned_target_in_same_group(monkeypatch, te
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["group_rate_limited", "user_rate_limited"])
+@pytest.mark.parametrize("kind", ["mention", "alias", "ambiguous_alias", "missing_target", "ordinary"])
+@pytest.mark.parametrize("evaluation_enabled", [True, False])
+async def test_disabled_person_evaluation_remains_silent_when_rate_limited(
+    tmp_path, monkeypatch, reason, kind, evaluation_enabled
+):
+    settings = AppSettings(
+        db_path=tmp_path / "rate-limited-evaluation.sqlite3", admins=(), dsapi_api_key="test",
+        per_group_seconds=60 if reason == "group_rate_limited" else 0,
+        per_user_per_minute=1 if reason == "user_rate_limited" else 0,
+    )
+    store = PolicyStore(settings.db_path)
+    store.initialize(settings)
+    store.set_group_enabled(123, True, actor_id=0)
+    if evaluation_enabled:
+        store.set_memory_groups([123], actor_id=0)
+    store.set_dsapi_config(enabled=True, enabled_groups=[123], knowledge_enabled=False,
+                           knowledge_prompt="", history_turns=2, clear_history=False, actor_id=0)
+    if kind in {"alias", "ambiguous_alias"}:
+        store.add_person_alias(789, "小明", actor_id=0)
+    if kind == "ambiguous_alias":
+        store.add_person_alias(790, "小明", actor_id=0)
+    engine = PolicyEngine(store)
+    seed = MessageEvent(
+        platform="onebot.v11", group_id=123, user_id=456, message_id=1,
+        raw_message="~测试" if reason == "group_rate_limited" else "你好", is_at_bot=True,
+    )
+    assert engine.evaluate(seed, self_id=999).allowed
+    text = "你好" if kind == "ordinary" else "评价小明" if "alias" in kind else "评价一下"
+    if kind == "missing_target":
+        text = "锐评"
+    if reason == "group_rate_limited":
+        text = "~" + text
+    internal = MessageEvent(
+        platform="onebot.v11", group_id=123, user_id=456, message_id=2,
+        raw_message=text, is_at_bot=True,
+        segments=({"type": "at", "data": {"qq": "789"}},) if kind == "mention" else (),
+    )
+    assert engine.evaluate(internal, self_id=999).reason == reason
+    monkeypatch.setattr(chat, "get_store", lambda: store)
+    monkeypatch.setattr(chat, "get_policy_engine", lambda: engine)
+    monkeypatch.setattr(chat, "onebot_to_internal", lambda event, self_id: internal)
+    monkeypatch.setattr(chat, "_record_group_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(chat, "pending_lua_command", lambda event: None)
+    monkeypatch.setattr(chat, "handle_custom_flow", lambda event: None)
+    finish = AsyncMock()
+    generate = AsyncMock()
+    monkeypatch.setattr(chat, "_finish_with_response", finish)
+    monkeypatch.setattr(chat, "generate_roast_reply", generate)
+
+    await chat._dispatch_onebot_message(SimpleNamespace(), SimpleNamespace(self_id=999), None)
+
+    generate.assert_not_awaited()
+    if not evaluation_enabled and kind != "ordinary":
+        finish.assert_not_awaited()
+    else:
+        finish.assert_awaited_once()
+        assert "问得太快" in finish.call_args.args[3]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("memory_group_enabled", [True, False])
 @pytest.mark.parametrize("parts,target,request_text", [
     (["评价一下他的游戏习惯", 789], 789, "评价一下他的游戏习惯"),
     (["你对", 789, "有什么看法"], 789, "你对有什么看法"),
@@ -180,13 +242,14 @@ async def test_roast_command_uses_mentioned_target_in_same_group(monkeypatch, te
     (["~锐评"], None, None),
 ])
 async def test_person_evaluation_routes_real_onebot_mentions(
-    tmp_path, monkeypatch, parts, target, request_text
+    tmp_path, monkeypatch, parts, target, request_text, memory_group_enabled
 ):
     settings = AppSettings(db_path=tmp_path / "evaluation.sqlite3", admins=(), dsapi_api_key="test")
     store = PolicyStore(settings.db_path)
     store.initialize(settings)
     store.set_group_enabled(123, True, actor_id=0)
-    store.set_memory_groups([123], actor_id=0)
+    if memory_group_enabled:
+        store.set_memory_groups([123], actor_id=0)
     store.set_dsapi_config(enabled=True, enabled_groups=[123], knowledge_enabled=False,
                            knowledge_prompt="", history_turns=2, clear_history=False, actor_id=0)
     event = SimpleNamespace(
@@ -211,6 +274,10 @@ async def test_person_evaluation_routes_real_onebot_mentions(
 
     await chat._dispatch_onebot_message(SimpleNamespace(), SimpleNamespace(self_id=999), event)
 
+    if not memory_group_enabled:
+        generate.assert_not_awaited()
+        finish.assert_not_awaited()
+        return
     if target is None:
         generate.assert_not_awaited()
         assert "请一次 @一位群友" in finish.call_args.args[3]
