@@ -8,7 +8,7 @@ from unittest.mock import Mock
 import pytest
 from fastapi.testclient import TestClient
 
-from qq_personal_bot.ai_errors import DSAPIError, DSAPILengthError
+from qq_personal_bot.ai_errors import DSAPIError, DSAPILengthError, DSAPITimeoutError
 from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.memory_graph import MemoryGraphWorker, get_memory_status, refresh_memory_graph
 from qq_personal_bot.settings import AppSettings
@@ -118,6 +118,7 @@ def test_retry_is_scoped_and_rejects_disabled_groups(memory):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("error,reduced", [(DSAPILengthError("truncated"), True),
+    (DSAPITimeoutError("timeout"), True),
     (ValueError("bad schema"), True), (DSAPIError("HTTP 503"), False)])
 async def test_failed_batch_retries_without_skipping_and_adapts_size(memory, monkeypatch, error, reduced):
     store, settings = memory

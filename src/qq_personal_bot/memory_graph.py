@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from qq_personal_bot import ai_client
-from qq_personal_bot.ai_errors import DSAPILengthError
+from qq_personal_bot.ai_errors import DSAPILengthError, DSAPITimeoutError
 from qq_personal_bot.ai_providers import active_ai_model, resolve_background_ai_settings
 from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.identity import build_identity_guidance, person_context_ids
@@ -279,7 +279,7 @@ async def refresh_memory_graph(
             "DSAPITimeoutError": "模型请求超时",
         }
         reason = reasons.get(type(exc).__name__, "图谱提取遇到内部错误")
-        reduce_batch = isinstance(exc, (DSAPILengthError, ValueError))
+        reduce_batch = isinstance(exc, (DSAPILengthError, DSAPITimeoutError, ValueError))
         suffix = "，已缩小批次重试" if reduce_batch and batch.get("batch_size", 60) > 1 else "，等待自动重试"
         await asyncio.to_thread(store.fail_memory_batch, batch, reason=reason + suffix, reduce_batch=reduce_batch)
         logger.warning(
