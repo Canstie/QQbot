@@ -73,6 +73,8 @@ export default function AiPage({ refreshVersion, onChanged }) {
   const [quoteClearGroup, setQuoteClearGroup] = useState("");
   const [quoteClearUser, setQuoteClearUser] = useState("");
   const [personGraph, setPersonGraph] = useState(null);
+  const [memoryRetryBusy, setMemoryRetryBusy] = useState(false);
+  const [memoryRetryNotice, setMemoryRetryNotice] = useState("");
   const visionEnabled = Boolean(data?.model_options?.find((item) => item.id === data?.model)?.vision);
 
   const applyConfig = (result, preferredId = null) => {
@@ -120,6 +122,20 @@ export default function AiPage({ refreshVersion, onChanged }) {
       setPersonGraph(null);
       setNotice(`已删除 ${result.deleted} 条消息及关联记忆`);
     } catch (error) { setNotice(error.message); }
+  };
+
+  const retryMemory = async (groupId = null) => {
+    setMemoryRetryBusy(true);
+    setMemoryRetryNotice("正在重置重试状态……");
+    try {
+      const result = await post("/dsapi/memory/retry", { group_id: groupId });
+      setQuoteData(result);
+      const skipped = result.skipped_groups?.length || 0;
+      setMemoryRetryNotice(result.queued_groups.length
+        ? `已安排 ${result.queued_groups.length} 个群持续整理积压消息${skipped ? `；${skipped} 个群已暂停，请检查下方原因` : ""}。`
+        : skipped ? "当前群已暂停，请先处理下方显示的原因。" : "没有需要重试的积压消息。");
+    } catch (error) { setMemoryRetryNotice(error.message); }
+    finally { setMemoryRetryBusy(false); }
   };
 
   const inspectMemory = async () => {
@@ -373,15 +389,23 @@ export default function AiPage({ refreshVersion, onChanged }) {
             <p className="quiet-note">当前知识库会读取最多 {knowledgeDraft.context_messages || 10} 句群聊；连续 {Math.round((data?.history_idle_seconds || 1200) / 60)} 分钟无人对话后自动清空。</p>
             <Button tone="danger" icon={Eraser} onClick={clearHistory}>立即清空全部上下文</Button>
           </Panel>
-          <Panel title="人物知识图谱" eyebrow="Personal memory">
+          <Panel title="人物知识图谱" eyebrow="Personal memory" actions={<Button tone="secondary" icon={RefreshCw} disabled={memoryRetryBusy || !quoteData?.pending_messages} onClick={() => retryMemory()}>重试全部积压</Button>}>
             <p className="quiet-note">保存指定群的新消息及回复关系，按群和 QQ 整理有来源的经历、偏好、计划。AI 总开关开启时后台自动提取。普通回复会按 QQ 将本群图谱、成员别名和已开启的互动摘要一起检索，支持通过别名或 @ 讨论群友。发送“评价一下 @群友”“你怎么看 @群友”等请求，会结合相关图谱给出中立评价；也支持 ~锐评 @群友。</p>
             <Field label="启用记录的群" hint="一行一个群号。后台整理按此名单运行；群内 AI 回复和人物评价另由 AI 聊天群名单控制。"><textarea value={quoteGroups} onChange={(event) => setQuoteGroups(event.target.value)} /></Field>
             <Button icon={Save} onClick={saveQuotes}>保存图谱群设置</Button>
             <p className="quiet-note">已保存 {quoteData?.message_count ?? 0} 条消息、{quoteData?.edge_count ?? 0} 条图谱关系，待整理 {quoteData?.pending_messages ?? 0} 条。关闭采集后已有数据保留，可在下方清空。</p>
-            <div role="status" aria-live="polite">
-              {quoteData?.extraction_status?.map((item) => <p className="quiet-note" key={item.group_id}>
-                群 {item.group_id}：{item.detail}（待整理 {item.pending_messages} 条）
-              </p>)}
+            <p className="quiet-note">手动重试会清除失败等待，接着上次进度持续整理，不删除消息或已有关系。进度每 15 秒刷新，刷新网页或重启服务后任务仍会继续。</p>
+            {memoryRetryNotice && <div role="status" aria-live="polite"><Status>{memoryRetryNotice}</Status></div>}
+            <div className="memory-retry-list" aria-label="各群图谱整理进度">
+              {quoteData?.extraction_status?.map((item) => <div className="memory-retry-row" key={item.group_id}>
+                <div><strong>群 {item.group_id}</strong><p className="quiet-note">{item.detail} · 待整理 {item.pending_messages} 条</p>
+                  {item.manual_retry_pending && <small>持续整理已开启</small>}
+                  {item.state === "retrying" && item.retry_after > 0 && <small>下次自动重试：{new Date(item.retry_after * 1000).toLocaleTimeString("zh-CN")}</small>}
+                </div>
+                <Button tone="secondary" icon={RefreshCw} disabled={memoryRetryBusy || item.state === "paused" || !item.pending_messages || (item.manual_retry_pending && item.state !== "retrying")} onClick={() => retryMemory(item.group_id)}>
+                  {item.manual_retry_pending && item.state !== "retrying" ? "正在持续整理" : "重置并重试"}
+                </Button>
+              </div>)}
             </div>
             <div className="form-grid form-grid--2">
               <Field label="群号"><input value={quoteClearGroup} onChange={(event) => setQuoteClearGroup(event.target.value)} placeholder="群号" /></Field>

@@ -12,8 +12,8 @@ from qq_personal_bot.ai_providers import (
     ai_proxy_state,
     resolve_ai_settings,
 )
-from qq_personal_bot.memory_graph import get_memory_status
-from qq_personal_bot.runtime import get_settings, get_store
+from qq_personal_bot.memory_graph import get_memory_status, memory_pause_reason
+from qq_personal_bot.runtime import get_memory_graph_worker, get_settings, get_store
 
 
 class DSAPIConfigPayload(BaseModel):
@@ -30,6 +30,10 @@ class DSAPIConfigPayload(BaseModel):
 
 class QuoteMemoryPayload(BaseModel):
     enabled_groups: list[int] = Field(default_factory=list)
+
+
+class MemoryRetryPayload(BaseModel):
+    group_id: int | None = Field(default=None, gt=0)
 
 
 class KnowledgeBasePayload(BaseModel):
@@ -131,6 +135,28 @@ def register_routes(app, require_token):
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         return await get_memory_config()
+
+    @app.post("/api/dsapi/memory/retry")
+    async def retry_memory(payload: MemoryRetryPayload, request: Request) -> dict:
+        require_token(request)
+        store, settings = get_store(), get_settings()
+        groups = [payload.group_id] if payload.group_id is not None else store.memory_enabled_groups()
+        ready, skipped = [], []
+        for group_id in groups:
+            reason = await asyncio.to_thread(memory_pause_reason, store, settings, group_id)
+            if reason:
+                if payload.group_id is not None:
+                    raise HTTPException(status_code=409, detail=reason)
+                skipped.append({"group_id": group_id, "detail": reason})
+            else:
+                ready.append(group_id)
+        try:
+            queued = await asyncio.to_thread(store.request_memory_retry, ready, actor_id=0)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if queued:
+            get_memory_graph_worker().wake()
+        return {"queued_groups": queued, "skipped_groups": skipped, **await get_memory_config()}
 
     @app.delete("/api/dsapi/quotes/{group_id}")
     @app.delete("/api/dsapi/memory/{group_id}")

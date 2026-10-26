@@ -61,6 +61,10 @@ class MemoryGraphStore:
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(memory_messages)')}
         if 'memory_context' not in columns:
             conn.execute("ALTER TABLE memory_messages ADD COLUMN memory_context TEXT NOT NULL DEFAULT ''")
+        progress_columns = {r['name'] for r in conn.execute('PRAGMA table_info(memory_progress)')}
+        for name, default in (("retry_until_id", 0), ("batch_size", 60)):
+            if name not in progress_columns:
+                conn.execute(f"ALTER TABLE memory_progress ADD COLUMN {name} INTEGER NOT NULL DEFAULT {default}")
 
     def _retire_quote_library(self, conn) -> None:
         # Explicit one-time replacement: never backfill deleted quotes from other archives.
@@ -113,7 +117,7 @@ class MemoryGraphStore:
             ).fetchone()[0]
             progress = [dict(r) for r in conn.execute(
                 "SELECT p.group_id, p.cursor, p.failures, p.last_error, p.updated_at, "
-                "p.lease_until, p.retry_after, "
+                "p.lease_until, p.retry_after, p.retry_until_id, p.batch_size, "
                 "(SELECT COUNT(*) FROM memory_messages m WHERE m.group_id=p.group_id "
                 "AND m.id>p.cursor) AS pending_messages, "
                 "(SELECT MIN(m.created_at) FROM memory_messages m WHERE m.group_id=p.group_id "
@@ -122,6 +126,32 @@ class MemoryGraphStore:
         return {"enabled_groups": self.memory_enabled_groups(), "group_counts": counts,
                 "message_count": sum(counts.values()), "edge_count": edges,
                 "pending_messages": pending, "progress": progress}
+
+    def request_memory_retry(self, group_ids: Sequence[int], *, actor_id: int) -> list[int]:
+        """Reset backoff and persist a bounded drain request without rewinding or deleting evidence."""
+        groups = self._normalize_int_ids(list(group_ids), "group_ids")
+        enabled = set(self.memory_enabled_groups())
+        if any(group not in enabled for group in groups):
+            raise ValueError("只能重试已开启图谱采集的群")
+        queued = []
+        now = time.time()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            for group in groups:
+                state = conn.execute("SELECT * FROM memory_progress WHERE group_id=?", (group,)).fetchone()
+                target = conn.execute("SELECT MAX(id) FROM memory_messages WHERE group_id=?", (group,)).fetchone()[0]
+                if not state or target is None or target <= state["cursor"]:
+                    continue
+                # A live lease may still finish successfully; never create duplicate in-flight work.
+                conn.execute(
+                    "UPDATE memory_progress SET retry_until_id=?,failures=0,retry_after=0,last_error='',"
+                    "lease=CASE WHEN lease_until>? THEN lease ELSE '' END,"
+                    "lease_until=CASE WHEN lease_until>? THEN lease_until ELSE 0 END WHERE group_id=?",
+                    (target, now, now, group),
+                )
+                queued.append(group)
+            self.audit(actor_id, "retry_memory_graph", "memory_graph", {"group_ids": queued}, conn=conn)
+        return queued
 
     def memory_bot_ids(self) -> list[int]:
         try:
@@ -260,7 +290,8 @@ class MemoryGraphStore:
             else:
                 conn.execute("DELETE FROM memory_edges WHERE group_id=?", (group_id,))
                 deleted = conn.execute("DELETE FROM memory_messages WHERE group_id=?", (group_id,)).rowcount
-            conn.execute("UPDATE memory_progress SET lease='', lease_until=0 WHERE group_id=?", (group_id,))
+            conn.execute("UPDATE memory_progress SET lease='',lease_until=0,retry_until_id=0 "
+                         "WHERE group_id=?", (group_id,))
             self.audit(actor_id, "clear_memory", str(group_id),
                        {"user_id": user_id, "deleted": deleted}, conn=conn)
         return deleted
@@ -277,9 +308,10 @@ class MemoryGraphStore:
             if not state or state["lease_until"] > now or state["retry_after"] > now:
                 return None
             rows = conn.execute(
-                "SELECT * FROM memory_messages WHERE group_id=? AND id>? ORDER BY id LIMIT 60",
-                (group_id, state["cursor"]),
+                "SELECT * FROM memory_messages WHERE group_id=? AND id>? ORDER BY id LIMIT ?",
+                (group_id, state["cursor"], max(1, min(state["batch_size"], 60))),
             ).fetchall()
+            force = force or state["retry_until_id"] > state["cursor"]
             if not rows or (not force and len(rows) < 12 and rows[0]["created_at"] > now - 600):
                 return None
             # Recent context and explicitly quoted older messages are evidence, never instructions.
@@ -306,6 +338,7 @@ class MemoryGraphStore:
             conn.execute("UPDATE memory_progress SET lease=?, lease_until=? WHERE group_id=?",
                          (lease, now + 600, group_id))
         return {"group_id": group_id, "lease": lease, "cursor": rows[-1]["id"],
+                "batch_size": state["batch_size"],
                 "new_ids": [r["id"] for r in rows if r["id"] in selected],
                 "messages": list(selected.values())}
 
@@ -351,8 +384,9 @@ class MemoryGraphStore:
                                  [(edge_id, source_id) for source_id in evidence])
             conn.execute(
                 "UPDATE memory_progress SET cursor=?,lease='',lease_until=0,retry_after=0,"
-                "failures=0,last_error='',updated_at=? WHERE group_id=?",
-                (batch["cursor"], time.time(), group_id),
+                "failures=0,last_error='',updated_at=?,"
+                "retry_until_id=CASE WHEN retry_until_id<=? THEN 0 ELSE retry_until_id END WHERE group_id=?",
+                (batch["cursor"], time.time(), batch["cursor"], group_id),
             )
         return True
 
@@ -396,13 +430,18 @@ class MemoryGraphStore:
                 self.audit(actor_id, "purge_memory_commands", str(group_id), result, conn=conn)
         return result
 
-    def fail_memory_batch(self, batch: Mapping[str, Any], *, reason: str = "提取失败，等待自动重试") -> None:
+    def fail_memory_batch(
+        self, batch: Mapping[str, Any], *, reason: str = "提取失败，等待自动重试",
+        reduce_batch: bool = False,
+    ) -> None:
         with self._connect() as conn:
             conn.execute(
                 "UPDATE memory_progress SET lease='',lease_until=0,failures=failures+1,"
-                "retry_after=?+MIN(3600,60*(1<<MIN(failures,6))),last_error=? "
+                "retry_after=CASE WHEN ? AND batch_size>1 THEN 0 "
+                "ELSE ?+MIN(3600,60*(1<<MIN(failures,6))) END,"
+                "batch_size=CASE WHEN ? THEN MAX(1,batch_size/2) ELSE batch_size END,last_error=? "
                 "WHERE group_id=? AND lease=?",
-                (time.time(), reason[:120], batch["group_id"], batch["lease"]),
+                (reduce_batch, time.time(), reduce_batch, reason[:120], batch["group_id"], batch["lease"]),
             )
 
     def get_person_graph(

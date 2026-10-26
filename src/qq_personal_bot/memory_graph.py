@@ -7,10 +7,12 @@ import re
 import time
 from collections.abc import Iterable
 from contextlib import suppress
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from qq_personal_bot import ai_client
+from qq_personal_bot.ai_errors import DSAPILengthError
 from qq_personal_bot.ai_providers import active_ai_model, resolve_background_ai_settings
 from qq_personal_bot.core.store import PolicyStore
 from qq_personal_bot.identity import build_identity_guidance, person_context_ids
@@ -164,6 +166,7 @@ def get_memory_status(store: PolicyStore, settings: AppSettings) -> dict[str, An
     for group_id in sorted(groups):
         item = progress.get(group_id, {})
         pending = item.get("pending_messages", 0)
+        manual_retry = item.get("retry_until_id", 0) > item.get("cursor", 0)
         reason = memory_pause_reason(store, settings, group_id)
         if reason:
             state, detail = "paused", reason
@@ -171,8 +174,10 @@ def get_memory_status(store: PolicyStore, settings: AppSettings) -> dict[str, An
             state, detail = "processing", "正在整理消息"
         elif item.get("retry_after", 0) > now:
             state, detail = "retrying", item.get("last_error") or "提取失败，等待自动重试"
-        elif pending >= 12 or (pending and item.get("oldest_pending_at", now) <= now - 600):
-            state, detail = "queued", "等待后台整理"
+        elif pending and item.get("last_error"):
+            state, detail = "queued", item["last_error"]
+        elif manual_retry or pending >= 12 or (pending and item.get("oldest_pending_at", now) <= now - 600):
+            state, detail = "queued", "已安排手动重试，将持续整理积压消息" if manual_retry else "等待后台整理"
         elif pending:
             state, detail = "waiting", "等待积累 12 条消息或最早待处理消息满 10 分钟"
         else:
@@ -184,6 +189,9 @@ def get_memory_status(store: PolicyStore, settings: AppSettings) -> dict[str, An
                 "detail": detail,
                 "pending_messages": pending,
                 "updated_at": item.get("updated_at", 0),
+                "manual_retry_pending": manual_retry,
+                "retry_after": item.get("retry_after", 0),
+                "batch_size": item.get("batch_size", 60),
             }
         )
     result["extraction_status"] = statuses
@@ -221,6 +229,11 @@ async def refresh_memory_graph(
             for m in sorted(batch["messages"], key=lambda m: (m["created_at"], m["id"]))
         ]
         config = store.get_dsapi_config()
+        model = active_ai_model(config, settings)
+        # DeepSeek enables thinking by default even through its OpenAI-compatible API.
+        # Extraction explicitly uses non-thinking mode; keep the selected provider and model.
+        if model.casefold().rsplit("/", 1)[-1].startswith("deepseek-"):
+            settings = replace(settings, dsapi_api_format="deepseek")
         identity_guidance = await asyncio.to_thread(
             build_identity_guidance,
             store,
@@ -246,10 +259,11 @@ async def refresh_memory_graph(
                     ),
                 },
             ],
-            model=active_ai_model(config, settings),
-            max_tokens=4000,
+            model=model,
+            max_tokens=8192,
             thinking_enabled=False,
             temperature=0.1,
+            json_output=True,
         )
         claims = parse_claims(response, batch)
         return await asyncio.to_thread(store.save_memory_batch, batch, claims)
@@ -264,7 +278,9 @@ async def refresh_memory_graph(
             "DSAPIError": "模型服务请求失败",
         }
         reason = reasons.get(type(exc).__name__, "图谱提取遇到内部错误")
-        await asyncio.to_thread(store.fail_memory_batch, batch, reason=reason + "，等待自动重试")
+        reduce_batch = isinstance(exc, (DSAPILengthError, ValueError))
+        suffix = "，已缩小批次重试" if reduce_batch and batch.get("batch_size", 60) > 1 else "，等待自动重试"
+        await asyncio.to_thread(store.fail_memory_batch, batch, reason=reason + suffix, reduce_batch=reduce_batch)
         logger.warning(
             "Memory graph extraction failed group=%s error_type=%s", group_id, type(exc).__name__
         )
@@ -307,6 +323,11 @@ class MemoryGraphWorker:
     def __init__(self, store: PolicyStore, settings: AppSettings):
         self.store, self.settings = store, settings
         self.task: asyncio.Task | None = None
+        self._wakeup = asyncio.Event()
+        self._concurrency = asyncio.Semaphore(3)
+
+    def wake(self) -> None:
+        self._wakeup.set()
 
     def start(self) -> None:
         self.task = asyncio.create_task(self._run(), name="qqbot-memory-graph")
@@ -320,10 +341,19 @@ class MemoryGraphWorker:
 
     async def _run(self) -> None:
         while True:
+            self._wakeup.clear()
+            delay = 30
             try:
                 groups = await asyncio.to_thread(self.store.memory_enabled_groups)
-                for group_id in groups:
-                    await refresh_memory_graph(self.store, self.settings, group_id)
+                async def process(group_id):
+                    async with self._concurrency:
+                        return await refresh_memory_graph(self.store, self.settings, group_id)
+                await asyncio.gather(*(process(group_id) for group_id in groups))
+                status = await asyncio.to_thread(get_memory_status, self.store, self.settings)
+                if any(item["manual_retry_pending"] and item["state"] == "queued"
+                       for item in status["extraction_status"]):
+                    delay = 1
             except Exception:
                 logger.exception("Memory graph worker iteration failed")
-            await asyncio.sleep(30)
+            with suppress(TimeoutError):
+                await asyncio.wait_for(self._wakeup.wait(), timeout=delay)

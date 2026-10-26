@@ -49,6 +49,13 @@
   background: var(--canvas);
 }
 
+.memory-retry-list { display: grid; gap: 12px; margin: 16px 0; }
+.memory-retry-row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; }
+.memory-retry-row > div { min-width: 0; }
+.memory-retry-row .quiet-note { margin: 6px 0; overflow-wrap: anywhere; }
+.memory-retry-row small { display: block; color: var(--ink-soft); }
+.memory-retry-row .button { justify-self: start; }
+
 .ai-providers { margin-bottom: 22px; }
 .provider-route { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 14px 16px; margin-bottom: 20px; border-radius: 10px; color: var(--blue-deep); background: var(--blue-wash); border-left: 4px solid var(--blue); }
 .provider-route code { overflow-wrap: anywhere; font-family: "JetBrains Mono", monospace; font-size: 12px; }

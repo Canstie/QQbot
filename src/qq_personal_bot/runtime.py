@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from qq_personal_bot.core.policy import PolicyEngine
 from qq_personal_bot.core.store import PolicyStore
+from qq_personal_bot.memory_graph import MemoryGraphWorker
 from qq_personal_bot.mhwa.service import MhwaService
 from qq_personal_bot.settings import AppSettings
 from qq_personal_bot.steam.service import SteamMonitorService
@@ -13,6 +14,7 @@ _policy_engine: PolicyEngine | None = None
 _steam_service: SteamMonitorService | None = None
 _mhwa_service: MhwaService | None = None
 _turtle_soup_service: TurtleSoupService | None = None
+_memory_graph_worker: MemoryGraphWorker | None = None
 
 
 def get_settings() -> AppSettings:
@@ -60,12 +62,21 @@ def get_turtle_soup_service() -> TurtleSoupService:
     return _turtle_soup_service
 
 
+def get_memory_graph_worker() -> MemoryGraphWorker:
+    global _memory_graph_worker
+    if _memory_graph_worker is None:
+        _memory_graph_worker = MemoryGraphWorker(get_store(), get_settings())
+    return _memory_graph_worker
+
+
 def reset_runtime() -> None:
     global _settings, _store, _policy_engine, _steam_service, _mhwa_service, _turtle_soup_service
+    global _memory_graph_worker
     _settings = None
     _store = None
     _policy_engine = None
     _steam_service = None
     _mhwa_service = None
     _turtle_soup_service = None
+    _memory_graph_worker = None
 

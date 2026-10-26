@@ -8,8 +8,12 @@ from nonebot.log import LoguruHandler
 
 from qq_personal_bot.activity import close_group_activity
 from qq_personal_bot.ai_transport import close_ai_clients
-from qq_personal_bot.memory_graph import MemoryGraphWorker
-from qq_personal_bot.runtime import get_settings, get_store, get_turtle_soup_service
+from qq_personal_bot.runtime import (
+    get_memory_graph_worker,
+    get_settings,
+    get_store,
+    get_turtle_soup_service,
+)
 from qq_personal_bot.teachers import close_teacher_client
 
 settings = get_settings()
@@ -38,7 +42,7 @@ for component in (
 
 driver = nonebot.get_driver()
 driver.register_adapter(OneBotV11Adapter)
-memory_worker = MemoryGraphWorker(get_store(), settings)
+memory_worker = get_memory_graph_worker()
 
 
 async def _send_turtle_soup_notice(game: dict, text: str) -> None:
