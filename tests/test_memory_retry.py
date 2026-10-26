@@ -154,6 +154,29 @@ def test_single_message_failure_backs_off_and_stale_failure_cannot_change_state(
     assert progress(store) == snapshot
 
 
+def test_successful_batches_recover_throughput_after_transient_failures(memory):
+    store, _ = memory
+    record(store, 30)
+    store.request_memory_retry([123], actor_id=0)
+    with store._connect() as conn:
+        conn.execute("UPDATE memory_progress SET batch_size=2 WHERE group_id=123")
+    for _ in range(3):
+        batch = store.claim_memory_batch(123)
+        assert len(batch["new_ids"]) == 2
+        assert store.save_memory_batch(batch, [])
+    assert progress(store)["batch_size"] == 4
+    batch = store.claim_memory_batch(123)
+    assert len(batch["new_ids"]) == 4
+    assert store.save_memory_batch(batch, [])
+    batch = store.claim_memory_batch(123)
+    store.fail_memory_batch(batch, reduce_batch=True)
+    assert progress(store)["batch_size"] == 2
+    for _ in range(2):
+        batch = store.claim_memory_batch(123)
+        assert store.save_memory_batch(batch, [])
+    assert progress(store)["batch_size"] == 2  # A failure reset the success streak.
+
+
 @pytest.mark.asyncio
 async def test_worker_drains_recent_tail_and_clears_persistent_request(memory, monkeypatch):
     store, settings = memory

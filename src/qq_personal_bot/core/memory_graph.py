@@ -62,7 +62,7 @@ class MemoryGraphStore:
         if 'memory_context' not in columns:
             conn.execute("ALTER TABLE memory_messages ADD COLUMN memory_context TEXT NOT NULL DEFAULT ''")
         progress_columns = {r['name'] for r in conn.execute('PRAGMA table_info(memory_progress)')}
-        for name, default in (("retry_until_id", 0), ("batch_size", 60)):
+        for name, default in (("retry_until_id", 0), ("batch_size", 60), ("success_streak", 0)):
             if name not in progress_columns:
                 conn.execute(f"ALTER TABLE memory_progress ADD COLUMN {name} INTEGER NOT NULL DEFAULT {default}")
 
@@ -144,7 +144,7 @@ class MemoryGraphStore:
                     continue
                 # A live lease may still finish successfully; never create duplicate in-flight work.
                 conn.execute(
-                    "UPDATE memory_progress SET retry_until_id=?,failures=0,retry_after=0,last_error='',"
+                    "UPDATE memory_progress SET retry_until_id=?,failures=0,success_streak=0,retry_after=0,last_error='',"
                     "lease=CASE WHEN lease_until>? THEN lease ELSE '' END,"
                     "lease_until=CASE WHEN lease_until>? THEN lease_until ELSE 0 END WHERE group_id=?",
                     (target, now, now, group),
@@ -385,6 +385,8 @@ class MemoryGraphStore:
             conn.execute(
                 "UPDATE memory_progress SET cursor=?,lease='',lease_until=0,retry_after=0,"
                 "failures=0,last_error='',updated_at=?,"
+                "batch_size=CASE WHEN success_streak>=2 THEN MIN(60,batch_size*2) ELSE batch_size END,"
+                "success_streak=CASE WHEN success_streak>=2 THEN 0 ELSE success_streak+1 END,"
                 "retry_until_id=CASE WHEN retry_until_id<=? THEN 0 ELSE retry_until_id END WHERE group_id=?",
                 (batch["cursor"], time.time(), batch["cursor"], group_id),
             )
@@ -436,7 +438,7 @@ class MemoryGraphStore:
     ) -> None:
         with self._connect() as conn:
             conn.execute(
-                "UPDATE memory_progress SET lease='',lease_until=0,failures=failures+1,"
+                "UPDATE memory_progress SET lease='',lease_until=0,failures=failures+1,success_streak=0,"
                 "retry_after=CASE WHEN ? AND batch_size>1 THEN 0 "
                 "ELSE ?+MIN(3600,60*(1<<MIN(failures,6))) END,"
                 "batch_size=CASE WHEN ? THEN MAX(1,batch_size/2) ELSE batch_size END,last_error=? "
