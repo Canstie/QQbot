@@ -276,6 +276,7 @@ async def refresh_memory_graph(
             "ValueError": "模型返回的记忆结构不合规范",
             "DSAPILengthError": "模型返回内容被截断",
             "DSAPIError": "模型服务请求失败",
+            "DSAPITimeoutError": "模型请求超时",
         }
         reason = reasons.get(type(exc).__name__, "图谱提取遇到内部错误")
         reduce_batch = isinstance(exc, (DSAPILengthError, ValueError))
@@ -330,7 +331,8 @@ class MemoryGraphWorker:
         self._wakeup.set()
 
     def start(self) -> None:
-        self.task = asyncio.create_task(self._run(), name="qqbot-memory-graph")
+        if self.task is None or self.task.done():
+            self.task = asyncio.create_task(self._run(), name="qqbot-memory-graph")
 
     async def stop(self) -> None:
         if self.task is not None:
@@ -339,21 +341,39 @@ class MemoryGraphWorker:
                 await self.task
             self.task = None
 
-    async def _run(self) -> None:
+    async def _run_group(self, group_id: int) -> None:
         while True:
-            self._wakeup.clear()
             delay = 30
             try:
-                groups = await asyncio.to_thread(self.store.memory_enabled_groups)
-                async def process(group_id):
-                    async with self._concurrency:
-                        return await refresh_memory_graph(self.store, self.settings, group_id)
-                await asyncio.gather(*(process(group_id) for group_id in groups))
+                async with self._concurrency:
+                    await refresh_memory_graph(self.store, self.settings, group_id)
                 status = await asyncio.to_thread(get_memory_status, self.store, self.settings)
-                if any(item["manual_retry_pending"] and item["state"] == "queued"
+                if any(item["group_id"] == group_id and item["manual_retry_pending"] and item["state"] == "queued"
                        for item in status["extraction_status"]):
                     delay = 1
             except Exception:
-                logger.exception("Memory graph worker iteration failed")
+                logger.exception("Memory graph worker iteration failed group=%s", group_id)
             with suppress(TimeoutError):
                 await asyncio.wait_for(self._wakeup.wait(), timeout=delay)
+
+    async def _run(self) -> None:
+        tasks: dict[int, asyncio.Task] = {}
+        try:
+            while True:
+                self._wakeup.clear()
+                groups = set(await asyncio.to_thread(self.store.memory_enabled_groups))
+                for group_id in set(tasks) - groups:
+                    task = tasks.pop(group_id)
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+                for group_id in groups:
+                    if group_id not in tasks or tasks[group_id].done():
+                        tasks[group_id] = asyncio.create_task(
+                            self._run_group(group_id), name=f"qqbot-memory-graph-{group_id}",
+                        )
+                with suppress(TimeoutError):
+                    await asyncio.wait_for(self._wakeup.wait(), timeout=30)
+        finally:
+            for task in tasks.values():
+                task.cancel()
+            await asyncio.gather(*tasks.values(), return_exceptions=True)

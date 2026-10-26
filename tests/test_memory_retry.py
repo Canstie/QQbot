@@ -172,6 +172,59 @@ async def test_worker_drains_recent_tail_and_clears_persistent_request(memory, m
 
 
 @pytest.mark.asyncio
+async def test_slow_group_does_not_block_other_groups_continuing_drain(memory, monkeypatch):
+    store, settings = memory
+    store.set_memory_groups([123, 789], actor_id=0)
+    store.set_group_enabled(789, True, actor_id=0)
+    record(store, 1)
+    record(store, 1, group=789)
+    store.request_memory_retry([123, 789], actor_id=0)
+    fast_calls = 0
+
+    async def refresh(_store, _settings, group_id):
+        nonlocal fast_calls
+        if group_id == 789:
+            await asyncio.sleep(30)
+        else:
+            fast_calls += 1
+        return True
+
+    monkeypatch.setattr("qq_personal_bot.memory_graph.refresh_memory_graph", refresh)
+    worker = MemoryGraphWorker(store, settings)
+    worker.start()
+    try:
+        deadline = time.monotonic() + 3
+        while fast_calls < 2 and time.monotonic() < deadline:
+            await asyncio.sleep(0.03)
+        assert fast_calls >= 2
+    finally:
+        await worker.stop()
+
+
+@pytest.mark.asyncio
+async def test_manual_retry_wakes_an_idle_worker_and_start_is_idempotent(memory, monkeypatch):
+    store, settings = memory
+    record(store, 1)
+    monkeypatch.setattr("qq_personal_bot.ai_client.complete_text", lambda *a, **kw: '{"claims":[]}')
+    worker = MemoryGraphWorker(store, settings)
+    worker.start()
+    task = worker.task
+    worker.start()
+    assert worker.task is task
+    try:
+        await asyncio.sleep(0.1)
+        assert store.get_memory_config()["pending_messages"] == 1
+        store.request_memory_retry([123], actor_id=0)
+        worker.wake()
+        deadline = time.monotonic() + 3
+        while store.get_memory_config()["pending_messages"] and time.monotonic() < deadline:
+            await asyncio.sleep(0.03)
+        assert store.get_memory_config()["pending_messages"] == 0
+    finally:
+        await worker.stop()
+
+
+@pytest.mark.asyncio
 async def test_deepseek_extraction_sends_non_thinking_json_with_larger_budget(memory, monkeypatch):
     from dataclasses import replace
 
