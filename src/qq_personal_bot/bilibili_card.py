@@ -4,10 +4,11 @@ import json
 import re
 import shutil
 import tempfile
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any
 from urllib.error import HTTPError
 from urllib.parse import urljoin, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -15,10 +16,11 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 from nonebot import logger
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
-from qq_personal_bot.drawing import draw_centered_text as _draw_centered_text
-from qq_personal_bot.drawing import ellipsize_text as _ellipsize_text
-from qq_personal_bot.drawing import load_font_candidates
-from qq_personal_bot.drawing import text_width as _text_width
+from qq_personal_bot.drawing import draw_centered_text_with_fallback as _draw_centered_text
+from qq_personal_bot.drawing import draw_text_with_fallback as _draw_text
+from qq_personal_bot.drawing import ellipsize_text_with_fallback as _ellipsize_text
+from qq_personal_bot.drawing import grapheme_clusters, load_font_candidates
+from qq_personal_bot.drawing import text_width_with_fallback as _text_width
 from qq_personal_bot.image_utils import validate_dimensions
 
 _USER_AGENT = (
@@ -45,14 +47,14 @@ _MUTED_TEXT = (97, 102, 109)
 _PLATFORM_TITLES = {"bilibili", "哔哩哔哩", "哔哩哔哩弹幕网"}
 _BILIBILI_IMAGE_SUFFIXES = (".hdslb.com", ".biliimg.com")
 _BOLD_FONT_PATHS = (
-    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
-    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    (Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"), 2),
+    (Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"), 2),
     "C:/Windows/Fonts/msyhbd.ttc",
     "C:/Windows/Fonts/msyh.ttc",
 )
 _REGULAR_FONT_PATHS = (
-    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+    (Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"), 2),
+    (Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"), 2),
     "C:/Windows/Fonts/msyh.ttc",
     "C:/Windows/Fonts/msyhbd.ttc",
 )
@@ -294,7 +296,7 @@ def _render_bilibili_card(
     title_lines = _wrap_text(draw, title, title_font, max_width=1072, max_lines=2)
     line_y = 704
     for line in title_lines:
-        draw.text((64, line_y), line, font=title_font, fill=_TEXT)
+        _draw_text(draw, (64, line_y), line, font=title_font, fill=_TEXT)
         line_y += 58
 
     avatar_size = 62
@@ -339,7 +341,7 @@ def _render_bilibili_card(
         )
 
     display_author = _ellipsize_text(draw, author_name, author_font, max_width=720)
-    draw.text((146, 833), display_author, font=author_font, fill=_MUTED_TEXT)
+    _draw_text(draw, (146, 833), display_author, font=author_font, fill=_MUTED_TEXT)
     badge_box = (1002, 824, 1136, 878)
     draw.rounded_rectangle(badge_box, radius=18, fill=_LIGHT_PINK)
     _draw_centered_text(
@@ -429,13 +431,13 @@ def _wrap_text(
     remaining = normalized
     while remaining and len(lines) < max_lines:
         line = ""
-        for char in remaining:
-            candidate = line + char
+        for cluster in grapheme_clusters(remaining):
+            candidate = line + cluster
             if line and _text_width(draw, candidate, font) > max_width:
                 break
             line = candidate
         if not line:
-            line = remaining[0]
+            line = grapheme_clusters(remaining)[0]
         lines.append(line)
         remaining = remaining[len(line) :].lstrip()
     if remaining:
@@ -449,7 +451,9 @@ def _clean_text(value: Any, limit: int) -> str | None:
     cleaned = " ".join(char for char in value.split() if char).strip()
     if not cleaned:
         return None
-    return cleaned[:limit]
+    if len(cleaned) > limit:
+        cleaned = "".join(grapheme_clusters(cleaned[:limit + 1])[:-1])
+    return cleaned or None
 
 
 def _author_initial(author_name: str) -> str:

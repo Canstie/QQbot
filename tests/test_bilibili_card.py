@@ -351,3 +351,42 @@ def test_long_title_is_limited_to_two_lines():
 
     assert len(lines) == 2
     assert lines[-1].endswith("…")
+
+
+def test_title_wrap_and_truncation_keep_complete_emoji_clusters(monkeypatch):
+    from qq_personal_bot.drawing import grapheme_clusters
+
+    font = object()
+    monkeypatch.setattr(bilibili_card, "_text_width", lambda draw, text, font: len(grapheme_clusters(text)) * 10)
+    monkeypatch.setattr("qq_personal_bot.drawing.text_width_with_fallback",
+                        lambda draw, text, font: len(grapheme_clusters(text)) * 10)
+    text = "甲👩‍💻🇨🇳👍🏽乙丙"
+    lines = bilibili_card._wrap_text(None, text, font, max_width=20, max_lines=2)
+    assert lines == ["甲👩‍💻", "🇨🇳…"]
+
+
+@pytest.mark.parametrize("text,limit,expected", [
+    ("甲👩‍💻乙", 2, "甲"),
+    ("甲🇨🇳乙", 2, "甲"),
+    ("甲👍🏽乙", 2, "甲"),
+    ("甲🌸乙", 2, "甲🌸"),
+])
+def test_metadata_length_limit_never_cuts_an_emoji(text, limit, expected):
+    assert bilibili_card._clean_text(text, limit) == expected
+
+
+def test_card_title_and_author_use_fallback_renderer(tmp_path, monkeypatch):
+    calls = []
+    original = bilibili_card._draw_text
+
+    def track(draw, position, text, **kwargs):
+        calls.append(text)
+        return original(draw, position, text, **kwargs)
+
+    monkeypatch.setattr(bilibili_card, "_draw_text", track)
+    bilibili_card._render_bilibili_card(
+        cover_body=_image_bytes((20, 80, 160), (1280, 720)), title="测试 😊🌸",
+        author_name="UP 主🎮", avatar_body=None, output=tmp_path / "emoji.jpg",
+    )
+    assert "测试 😊🌸" in calls
+    assert "UP 主🎮" in calls
