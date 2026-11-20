@@ -1,0 +1,70 @@
+{
+  "boss_1": {
+    "name": "假想敌：胄",
+    "hidden": false
+  },
+  "boss_2": {
+    "name": "假想敌：铳",
+    "hidden": false
+  },
+  "boss_3": {
+    "name": "假想敌：管",
+    "hidden": false
+  },
+  "boss_4": {
+    "name": "盐风主教昆图斯",
+    "hidden": false
+  },
+  "boss_6": {
+    "name": "阿利斯泰尔，帝国余晖",
+    "hidden": false
+  },
+  "boss_7": {
+    "name": "“萨米的意志”",
+    "hidden": false
+  },
+  "boss_8": {
+    "name": "假想敌：胄",
+    "hidden": true
+  },
+  "boss_9": {
+    "name": "假想敌：铳",
+    "hidden": true
+  },
+  "boss_10": {
+    "name": "假想敌：管",
+    "hidden": true
+  },
+  "boss_11": {
+    "name": "假想敌：械",
+    "hidden": false
+  },
+  "boss_12": {
+    "name": "假想敌：茧",
+    "hidden": false
+  },
+  "boss_13": {
+    "name": "假想敌：鳍",
+    "hidden": false
+  },
+  "boss_14": {
+    "name": "假想敌：械",
+    "hidden": true
+  },
+  "boss_15": {
+    "name": "假想敌：茧",
+    "hidden": true
+  },
+  "boss_16": {
+    "name": "假想敌：鳍",
+    "hidden": true
+  },
+  "boss_17": {
+    "name": "矩兽",
+    "hidden": false
+  },
+  "boss_5": {
+    "name": "卢西恩，“猩红血钻”",
+    "hidden": false
+  }
+}

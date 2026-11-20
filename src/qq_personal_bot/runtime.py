@@ -7,6 +7,7 @@ from qq_personal_bot.mhwa.service import MhwaService
 from qq_personal_bot.settings import AppSettings
 from qq_personal_bot.steam.service import SteamMonitorService
 from qq_personal_bot.turtle_soup import TurtleSoupService
+from qq_personal_bot.weizhu.store import WeizhuStore
 
 _settings: AppSettings | None = None
 _store: PolicyStore | None = None
@@ -15,6 +16,14 @@ _steam_service: SteamMonitorService | None = None
 _mhwa_service: MhwaService | None = None
 _turtle_soup_service: TurtleSoupService | None = None
 _memory_graph_worker: MemoryGraphWorker | None = None
+_weizhu_store: WeizhuStore | None = None
+
+
+def get_weizhu_store() -> WeizhuStore:
+    global _weizhu_store
+    if _weizhu_store is None:
+        _weizhu_store = WeizhuStore(get_settings().db_path.parent / "weizhu")
+    return _weizhu_store
 
 
 def get_settings() -> AppSettings:
@@ -72,6 +81,8 @@ def get_memory_graph_worker() -> MemoryGraphWorker:
 def reset_runtime() -> None:
     global _settings, _store, _policy_engine, _steam_service, _mhwa_service, _turtle_soup_service
     global _memory_graph_worker
+    global _weizhu_store
+    _weizhu_store = None
     _settings = None
     _store = None
     _policy_engine = None

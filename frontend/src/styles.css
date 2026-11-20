@@ -345,6 +345,22 @@ textarea { min-height: 110px; resize: vertical; line-height: 1.55; }
 .steam-group-switches .button { grid-column: 1 / -1; }
 @media (max-width: 580px) { .steam-binding-bar { grid-template-columns: 20px 1fr; }.steam-binding-bar input,.steam-binding-bar .button { grid-column: 2; } }
 .classics-binding-panel { margin-bottom: 18px; }
+.weizhu-bindings {
+  width: 100%;
+  margin-top: 18px;
+  border-collapse: collapse;
+  text-align: left;
+  table-layout: fixed;
+}
+.weizhu-bindings th, .weizhu-bindings td {
+  padding: 12px 8px;
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+.weizhu-bindings th { font-size: 12px; color: var(--ink-soft); }
+.weizhu-bindings td { font-size: 15px; }
+.weizhu-bindings code { font: 13px "JetBrains Mono", monospace; }
+.weizhu-bindings td:nth-child(2) code { color: var(--blue-deep); }
 .classics-binding-actions { margin: 14px 0; }
 .classics-binding-list { display: grid; gap: 8px; color: var(--ink-soft); font-size: 11px; }
 .classics-binding-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid var(--line); padding-top: 8px; }

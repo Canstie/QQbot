@@ -14,6 +14,7 @@ import {
   MessageSquareText,
   RefreshCw,
   Settings2,
+  Shield,
   Store,
   X,
 } from "lucide-react";
@@ -31,6 +32,7 @@ import PolicyPage from "./pages/PolicyPage";
 import RepliesPage from "./pages/RepliesPage";
 import RestaurantsPage from "./pages/RestaurantsPage";
 import SteamPage from "./pages/SteamPage";
+import WeizhuPage from "./pages/WeizhuPage";
 
 const navigation = [
   { id: "overview", label: "运行总览", short: "总览", icon: LayoutDashboard },
@@ -38,6 +40,7 @@ const navigation = [
   { id: "steam", label: "Steam 监控", short: "Steam", icon: Gamepad2 },
   { id: "policy", label: "群与策略", short: "策略", icon: Settings2 },
   { id: "ai", label: "AI 角色", short: "AI", icon: BrainCircuit },
+  { id: "weizhu", label: "卫戍绑定", short: "卫戍", icon: Shield },
   { id: "replies", label: "回复规则", short: "回复", icon: MessageSquareText },
   { id: "lua", label: "Lua 指令", short: "Lua", icon: Code2 },
   { id: "menus", label: "今日菜单", short: "菜单", icon: ChefHat },
@@ -50,6 +53,7 @@ const pageMap = {
   overview: OverviewPage,
   features: FeaturesPage,
   steam: SteamPage,
+  weizhu: WeizhuPage,
   policy: PolicyPage,
   ai: AiPage,
   replies: RepliesPage,

@@ -117,6 +117,12 @@ class AppSettings:
         "不要声称看到了未提供的图片、语音、视频或文件。"
     )
     steam_api_key: str = ""
+    weizhu_proxy_url: str = ""
+    weizhu_poll_seconds: int = 300
+    weizhu_max_push: int = 3
+    weizhu_push_default: bool = False
+    weizhu_qr_timeout: int = 100
+    weizhu_admin_ids: tuple[int, ...] = ()
     sgdb_api_key: str = ""
     itad_api_key: str = ""
     steam_proxy_url: str = ""
@@ -195,6 +201,12 @@ class AppSettings:
                 or cls.dsapi_system_prompt
             ),
             steam_api_key=env.get("QQBOT_STEAM_API_KEY", "").strip(),
+            weizhu_proxy_url=env.get("QQBOT_WEIZHU_PROXY_URL", "").strip(),
+            weizhu_poll_seconds=max(120, _env_int(env.get("QQBOT_WEIZHU_POLL_SECONDS"), 300)),
+            weizhu_max_push=max(1, _env_int(env.get("QQBOT_WEIZHU_MAX_PUSH"), 3)),
+            weizhu_push_default=_env_bool(env.get("QQBOT_WEIZHU_PUSH_DEFAULT"), False),
+            weizhu_qr_timeout=max(30, _env_int(env.get("QQBOT_WEIZHU_QR_TIMEOUT"), 100)),
+            weizhu_admin_ids=_split_ints(env.get("QQBOT_WEIZHU_ADMIN_IDS", "").replace("，", ",")),
             sgdb_api_key=env.get("QQBOT_SGDB_API_KEY", "").strip(),
             itad_api_key=env.get("QQBOT_ITAD_API_KEY", "").strip(),
             steam_proxy_url=env.get("QQBOT_STEAM_PROXY_URL", "").strip(),

@@ -141,6 +141,14 @@ def build_help_sections(
         ),
     )
 
+    add(
+        "明日方舟 · 卫戍协议",
+        (
+            (enabled("weizhu.master"), "@机器人 /卫戍 绑定  在群里用森空岛 App 扫码"),
+            (enabled("weizhu.master"), "@机器人 /卫戍 帮助  查看战绩查询和播报指令"),
+        ),
+    )
+
     steam_base = bool(settings.steam_api_key) and enabled("steam.master", "steam.commands")
     add(
         "Steam",

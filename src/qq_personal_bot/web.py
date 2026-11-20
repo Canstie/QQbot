@@ -12,6 +12,7 @@ from qq_personal_bot.admin_routes import (
     media,
     policy,
     steam,
+    weizhu,
 )
 from qq_personal_bot.provider_web import register_ai_provider_routes
 from qq_personal_bot.runtime import get_settings, get_store
@@ -35,6 +36,6 @@ def create_app():
             raise HTTPException(status_code=401, detail="invalid admin token")
 
     register_ai_provider_routes(app, get_settings, get_store, require_token)
-    for routes in (auth, captcha, policy, ai, content, media, steam):
+    for routes in (auth, captcha, policy, ai, content, media, steam, weizhu):
         routes.register_routes(app, require_token)
     return app

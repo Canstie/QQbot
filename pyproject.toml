@@ -16,6 +16,7 @@ dependencies = [
   "lupa>=2.8",
   "minio>=7.2.0,<8",
   "Pillow>=10.0.0",
+  "qrcode>=7.4,<9",
   "psutil>=6.0.0,<8",
   "pydantic>=2.7.0",
   "python-dotenv>=1.0.1",
@@ -30,6 +31,9 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"qq_personal_bot.weizhu" = ["boss_names.json", "LICENSE", "fonts/*.ttf", "fonts/*.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
