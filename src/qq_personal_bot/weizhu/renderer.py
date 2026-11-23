@@ -17,7 +17,7 @@ from io import BytesIO
 from pathlib import Path
 
 import httpx
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from qq_personal_bot.drawing import wrap_text
 from qq_personal_bot.image_utils import validate_dimensions
@@ -217,7 +217,8 @@ class WeizhuRenderer:
                 if isinstance(eq, dict):
                     item_id = eq.get("equipId") or eq.get("itemId") or eq.get("id")
                 if isinstance(item_id, str) and item_id:
-                    equips.append((self.items.get(item_id) or {}).get("name") or item_id)
+                    item = self.items.get(item_id) or {}
+                    equips.append((item.get("name") or item_id, item.get("iconUrl")))
             # 卫戍的干员等级/精英化以「合成等级(mergeLevel)」对应的 traits 为准（官方卡片逻辑）
             try:
                 merge_level = int(q.get("mergeLevel") or 0)
@@ -553,23 +554,33 @@ class WeizhuRenderer:
         events = record.get("events") or []
         ok = self.is_success(record)
         delta = self.trophy_delta(record)
-        equipment_font = font(16)
-        equipment_line_height = 22
+        equipment_font = font(14)
+        equipment_line_height = 18
+        equipment_width = 100
+        icon_size = 42
+        equipment_label_top = icon_size + 5
         measure = ImageDraw.Draw(Image.new("RGB", (1, 1)))
-        equipment_lines = [
-            [
-                line
-                for name in member["equips"]
-                for line in wrap_text(measure, name, equipment_font, 200)
-            ]
-            for member in members
-        ]
+        equipment_layouts = []
+        for member in members:
+            tiles = []
+            layout_height = 0
+            items = member["equips"]
+            for start in range(0, len(items), 2):
+                row = items[start : start + 2]
+                labels = [
+                    wrap_text(measure, name, equipment_font, equipment_width - 8)
+                    for name, _ in row
+                ]
+                for column, ((_, url), lines) in enumerate(zip(row, labels, strict=True)):
+                    tiles.append((column * (equipment_width + 8), layout_height, url, lines))
+                layout_height += equipment_label_top + max(map(len, labels)) * equipment_line_height + 8
+            equipment_layouts.append((tiles, layout_height))
         row_offsets = []
         squad_height = 0
         for i in range(0, len(members), 5):
             row_offsets.append(squad_height)
-            line_count = max(map(len, equipment_lines[i : i + 5]))
-            squad_height += max(150, 104 + line_count * equipment_line_height)
+            row_height = max(height for _, height in equipment_layouts[i : i + 5])
+            squad_height += max(150, 104 + row_height)
         if not members:
             squad_height = 64
         width = 1200
@@ -668,13 +679,30 @@ class WeizhuRenderer:
             if tier > 0:
                 stars = "★" * min(6, tier)
                 draw.text((cx + 84, cy + 46), stars, font=font(12), fill=GOLD)
-            for line_index, line in enumerate(equipment_lines[i]):
-                draw.text(
-                    (cx, cy + 78 + line_index * equipment_line_height),
-                    line,
-                    font=equipment_font,
-                    fill=TEAL,
-                )
+            for left, top, url, lines in equipment_layouts[i][0]:
+                center_x = cx + left + equipment_width // 2
+                tile_y = cy + 78 + top
+                icon = self._asset(url)
+                if icon is not None:
+                    icon_x = center_x - icon_size // 2
+                    draw.rounded_rectangle(
+                        (icon_x, tile_y, icon_x + icon_size, tile_y + icon_size),
+                        radius=6,
+                        fill=PANEL2,
+                        outline=BORDER,
+                    )
+                    icon = ImageOps.contain(icon, (icon_size - 6, icon_size - 6), Image.Resampling.LANCZOS)
+                    icon_pos = (center_x - icon.width // 2, tile_y + (icon_size - icon.height) // 2)
+                    img.paste(icon, icon_pos, icon)
+                label_y = tile_y + (equipment_label_top if icon is not None else 12)
+                for line_index, line in enumerate(lines):
+                    draw.text(
+                        (center_x, label_y + line_index * equipment_line_height),
+                        line,
+                        anchor="mt",
+                        font=equipment_font,
+                        fill=TEAL,
+                    )
         y += squad_height + 10
 
         self._section(draw, y, "本局盟约", f"{len(bonds)} 个激活")

@@ -265,6 +265,22 @@ async def test_match_card_displays_all_equipment_from_history(svc, monkeypatch):
         {"itemId": item_id, "name": name}
         for item_id, name in zip([*item_ids, "long_equipment"], [*names, long_name], strict=True)
     ]
+    colors = {"hammer.png": (255, 90, 40), "shield.png": (48, 61, 233)}
+    for item, file in zip(items[:3], [*colors, "missing.png"], strict=True):
+        item["iconUrl"] = f"https://web.hycdn.cn/{file}"
+    requests = []
+
+    def serve_icon(request):
+        file = request.url.path.rsplit("/", 1)[-1]
+        requests.append(file)
+        if file not in colors:
+            return httpx.Response(404)
+        buffer = BytesIO()
+        Image.new("RGBA", (128, 128), (*colors[file], 255)).save(buffer, format="PNG")
+        return httpx.Response(200, content=buffer.getvalue())
+
+    client = httpx.Client(transport=httpx.MockTransport(serve_icon))
+    monkeypatch.setattr(httpx, "Client", lambda **kwargs: client)
     first_loadout = [
         {"equipId": item_ids[0]},
         {"itemId": item_ids[1]},
@@ -295,11 +311,20 @@ async def test_match_card_displays_all_equipment_from_history(svc, monkeypatch):
     await svc.handle(GROUP, "对局 1")
     chat, _, body = svc.send.await_args.args
     assert chat == GROUP
-    assert Image.open(BytesIO(body)).format == "PNG"
-    assert [text for _, text in drawn[:6]] == [*names, "unknown_item"]
-    assert drawn[5][0][1] + 22 < drawn[6][0][1] and drawn[6][1] == "干员乙"
-    assert len(drawn[7:-1]) > 1
-    assert "".join(text for _, text in drawn[7:-1]) == long_name
+    with Image.open(BytesIO(body)) as card:
+        assert card.format == "PNG"
+        first_xy, second_xy = drawn[0][0], drawn[1][0]
+        assert first_xy[1] == second_xy[1] and first_xy[0] < second_xy[0]
+        for xy, color in zip((first_xy, second_xy), colors.values(), strict=True):
+            assert card.getpixel((xy[0], xy[1] - 26)) == color
+    assert requests == ["hammer.png", "shield.png", "missing.png"]
+    assert [text for _, text in drawn[:5]] == names
+    next_member = next(i for i, (_, text) in enumerate(drawn) if text == "干员乙")
+    assert "".join(text for _, text in drawn[5:next_member]) == "unknown_item"
+    assert drawn[next_member - 1][0][1] + 22 < drawn[next_member][0][1]
+    wrapped = drawn[next_member + 1 : -1]
+    assert len(wrapped) > 1
+    assert "".join(text for _, text in wrapped) == long_name
     assert drawn[-2][0][1] + 22 < drawn[-1][0][1] and drawn[-1][1] == "本局盟约"
 
 
