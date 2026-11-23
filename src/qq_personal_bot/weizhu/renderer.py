@@ -21,6 +21,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from qq_personal_bot.drawing import wrap_text
 from qq_personal_bot.image_utils import validate_dimensions
+from qq_personal_bot.weizhu.bonds import active_bonds, equipment_ids
 
 # Keep the Chinese glyphs available in headless Linux containers as well as Windows.
 FONT_PATH = Path(__file__).resolve().parent / "fonts" / "NotoSansSC.ttf"
@@ -212,13 +213,9 @@ class WeizhuRenderer:
             cid = info.get("charId") or q.get("charId") or ""
             char = self.chars.get(cid) or {}
             equips = []
-            for eq in q.get("equips") or []:
-                item_id = eq
-                if isinstance(eq, dict):
-                    item_id = eq.get("equipId") or eq.get("itemId") or eq.get("id")
-                if isinstance(item_id, str) and item_id:
-                    item = self.items.get(item_id) or {}
-                    equips.append((item.get("name") or item_id, item.get("iconUrl")))
+            for item_id in equipment_ids(q):
+                item = self.items.get(item_id) or {}
+                equips.append((item.get("name") or item_id, item.get("iconUrl")))
             # 卫戍的干员等级/精英化以「合成等级(mergeLevel)」对应的 traits 为准（官方卡片逻辑）
             try:
                 merge_level = int(q.get("mergeLevel") or 0)
@@ -254,16 +251,36 @@ class WeizhuRenderer:
             )
         return out
 
-    def active_bonds(self, record) -> list:
-        rows = []
-        for b in record.get("bondInfo") or []:
-            if not b.get("activate"):
-                continue
-            layer = int(b.get("layer") or 0)
-            if layer <= 0:
-                continue
-            rows.append((b.get("bondId"), self.bond_name(b.get("bondId")), layer))
-        return sorted(rows, key=lambda x: -x[2])
+    def _bond_layout(self, measure, record, max_width):
+        bonds = active_bonds(record, self.bonds, self.chars, self.version)
+        placements = []
+        x = y = 0
+        for bond in bonds:
+            label = cut(measure, bond.label, font(17, True), max_width - 58)
+            width = text_w(measure, label, font(17, True)) + 58
+            if x and x + width > max_width:
+                x = 0
+                y += 48
+            placements.append((x, y, width, bond.id, label))
+            x += width + 10
+        height = y + 42 if placements else 0
+        summary = f"{len(bonds)} 个激活"
+        if any(bond.roster_based for bond in bonds):
+            summary += " · 人数档按结算阵容估算"
+        return placements, height, summary
+
+    def _draw_bond_chips(self, img, draw, origin, placements):
+        for left, top, width, bond_id, label in placements:
+            x, y = origin[0] + left, origin[1] + top
+            draw.rounded_rectangle(
+                (x, y, x + width, y + 42), 10, fill=PANEL2, outline=BORDER_HI, width=1
+            )
+            icon = self._bond_icon(bond_id, 28)
+            if icon is not None:
+                img.paste(icon, (x + 8, y + 7), icon)
+            else:
+                draw.ellipse((x + 10, y + 9, x + 34, y + 33), fill=(42, 50, 45))
+            draw.text((x + 42, y + 9), label, font=font(17, True), fill=GOLD_HI)
 
     def _asset(self, url):
         if not url or not url.startswith("https://"):
@@ -549,16 +566,15 @@ class WeizhuRenderer:
     # ---------- 单局详情卡 ----------
     def render_match_card(self, player, record) -> bytes:
         members = self.squad_members(record)
-        bonds = self.active_bonds(record)
         bosses = record.get("acBossInfo") or []
         events = record.get("events") or []
         ok = self.is_success(record)
         delta = self.trophy_delta(record)
         equipment_font = font(14)
         equipment_line_height = 18
-        equipment_width = 100
-        icon_size = 42
-        equipment_label_top = icon_size + 5
+        equipment_width = 86
+        icon_size = 58
+        equipment_label_top = icon_size + 3
         measure = ImageDraw.Draw(Image.new("RGB", (1, 1)))
         equipment_layouts = []
         for member in members:
@@ -573,12 +589,12 @@ class WeizhuRenderer:
             for start in range(0, len(items), 2):
                 row = items[start : start + 2]
                 labels = [
-                    wrap_text(measure, name, equipment_font, equipment_width - 8) if name else ()
+                    wrap_text(measure, name, equipment_font, equipment_width - 2) if name else ()
                     for name, _ in row
                 ]
                 for column, ((_, url), lines) in enumerate(zip(row, labels, strict=True)):
-                    tiles.append((column * (equipment_width + 8), layout_height, url, lines))
-                layout_height += equipment_label_top + max(map(len, labels)) * equipment_line_height + 8
+                    tiles.append((column * equipment_width, layout_height, url, lines))
+                layout_height += equipment_label_top + max(map(len, labels)) * equipment_line_height + 5
             equipment_layouts.append((tiles, layout_height))
         row_offsets = []
         squad_height = 0
@@ -589,10 +605,11 @@ class WeizhuRenderer:
         if not members:
             squad_height = 64
         width = 1200
-        bond_rows_n = ((len(bonds) + 3) // 4) if bonds else 1
+        bond_chips, bond_height, bond_summary = self._bond_layout(measure, record, width - 80)
+        bond_height = max(bond_height, 42)
         height = 172 + 100 + 22 + 2 * 104 + 22
         height += 44 + squad_height + 10
-        height += 44 + 48 * bond_rows_n + 14
+        height += 44 + bond_height + 20
         if bosses:
             height += 44 + 20 + 40 * min(len(bosses), 10)
         if events:
@@ -713,28 +730,13 @@ class WeizhuRenderer:
                     )
         y += squad_height + 10
 
-        self._section(draw, y, "本局盟约", f"{len(bonds)} 个激活")
+        self._section(draw, y, "本局盟约", bond_summary)
         y += 44
-        if bonds:
-            cx = 40
-            for bid, name, layer in bonds[:12]:
-                txt = f"{name}  {layer}"
-                w = text_w(draw, txt, font(18, True)) + 76
-                if cx + w > width - 40:
-                    cx = 40
-                    y += 48 + 4
-                draw.rounded_rectangle((cx, y, cx + w, y + 42), 10, fill=PANEL2, outline=BORDER_HI, width=1)
-                icon = self._bond_icon(bid, 30)
-                if icon is not None:
-                    img.paste(icon, (cx + 8, y + 6), icon)
-                else:
-                    draw.ellipse((cx + 10, y + 9, cx + 36, y + 35), fill=(42, 50, 45))
-                draw.text((cx + 46, y + 8), txt, font=font(18, True), fill=GOLD_HI)
-                cx += w + 12
-            y += 48 + 14
+        if bond_chips:
+            self._draw_bond_chips(img, draw, (40, y), bond_chips)
         else:
             draw.text((64, y), "本局没有激活的盟约（对局中断或盟约未成形时常见）", font=font(17), fill=DIM)
-            y += 48 + 14
+        y += bond_height + 20
 
         if bosses:
             self._section(draw, y, "Boss 击杀明细", f"{sum(1 for b in bosses if b.get('isKilled'))} / {len(bosses)}")
@@ -769,7 +771,9 @@ class WeizhuRenderer:
         records = [record for _, record in players_records]
         width = 1400
         meta_h = 96
-        panel_h = 330
+        measure = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+        bond_layouts = [self._bond_layout(measure, record, width - 128) for record in records]
+        panel_heights = [max(330, 302 + height) for _, height, _ in bond_layouts]
         first_rec = records[0]
         killed_names = []
         for b in first_rec.get("acBossInfo") or []:
@@ -777,7 +781,7 @@ class WeizhuRenderer:
                 binfo = self.boss_names.get(str(b.get("bossId") or "")) or {}
                 killed_names.append(binfo.get("name") or str(b.get("bossId") or ""))
         boss_strip_h = 40 if killed_names else 0
-        height = 172 + meta_h + boss_strip_h + panel_h * len(players_records) + 76
+        height = 172 + meta_h + boss_strip_h + sum(panel_heights) + 76
         img = Image.new("RGB", (width, height), BG)
         draw = ImageDraw.Draw(img)
         ok_all = all(self.is_success(r) for r in records)
@@ -823,8 +827,11 @@ class WeizhuRenderer:
             y += boss_strip_h
 
         # 每人一块
-        for idx, (player, record) in enumerate(players_records):
-            top = y + idx * panel_h
+        for (player, record), (bond_chips, _, summary), panel_h in zip(
+            players_records, bond_layouts, panel_heights, strict=True
+        ):
+            top = y
+            y += panel_h
             ok = self.is_success(record)
             delta = self.trophy_delta(record)
             draw.rounded_rectangle((40, top, width - 40, top + panel_h - 16), 14, fill=PANEL, outline=BORDER, width=1)
@@ -884,21 +891,9 @@ class WeizhuRenderer:
                 draw.text((cell, my + 70), lv, font=font(11), fill=GOLD_HI)
 
             # 盟约
-            bonds = self.active_bonds(record)
             bx, by = 64, top + 244
-            draw.text((bx, by), f"盟约 {len(bonds)}", font=font(14), fill=DIM)
-            by += 26
-            for bid, name, layer in bonds[:8]:
-                txt = f"{name} {layer}"
-                w = text_w(draw, txt, font(15)) + 56
-                if bx + w > width - 64:
-                    break
-                draw.rounded_rectangle((bx, by, bx + w, by + 34), 10, fill=PANEL2, outline=BORDER_HI, width=1)
-                icon = self._bond_icon(bid, 24)
-                if icon is not None:
-                    img.paste(icon, (bx + 8, by + 5), icon)
-                draw.text((bx + 38, by + 8), txt, font=font(15), fill=GOLD_HI)
-                bx += w + 10
+            draw.text((bx, by), f"盟约 · {summary}", font=font(14), fill=DIM)
+            self._draw_bond_chips(img, draw, (bx, by + 26), bond_chips)
 
         self._footer(draw, img, height - 62)
         return _png(img)

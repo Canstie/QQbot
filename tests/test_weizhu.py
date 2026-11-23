@@ -21,6 +21,7 @@ from qq_personal_bot.runtime import get_settings, get_store, get_weizhu_store, r
 from qq_personal_bot.settings import AppSettings
 from qq_personal_bot.web import create_app
 from qq_personal_bot.weizhu import service, skland
+from qq_personal_bot.weizhu.bonds import active_bonds
 from qq_personal_bot.weizhu.renderer import BORDER, TEAL
 from qq_personal_bot.weizhu.service import WeizhuService
 from qq_personal_bot.weizhu.store import Binding, Chat, WeizhuStore
@@ -29,6 +30,12 @@ nonebot.init()
 plugin = importlib.import_module("qq_personal_bot.plugins.weizhu")
 GROUP = Chat(10, 21, group_id=33)
 SEASON = {"versionInfo": {"seasonId": "s1"}}
+SKILLFUL = {
+    "bondId": "skillfulShip",
+    "name": "灵巧",
+    "activeCount": 2,
+    "effect": "基础效果\n<达到<@autochess.dgreen>40</>层>提升范围",
+}
 
 
 def bound(chat=GROUP, **changes):
@@ -258,7 +265,7 @@ async def test_cards_from_saved_binding(svc, cmd, width):
 @pytest.mark.asyncio
 async def test_match_card_displays_all_equipment_from_history(svc, monkeypatch):
     svc.store.save(bound())
-    names = ["奥术法阵", "乌萨斯呼吸器", "精准狙击镜", "变形同构体", "谢拉格不融冰"]
+    names = ["奥术法阵", "坚守盾牌", "精准狙击镜", "变形同构体", "维式重锤"]
     item_ids = ["chess_item_3_07_e_a", "item_2", "item_3", "item_4", "item_5"]
     long_name = "非常长的装备名称需要在同一名干员下完整换行显示"
     items = [
@@ -299,16 +306,27 @@ async def test_match_card_displays_all_equipment_from_history(svc, monkeypatch):
         *[{"chessInfo": {"charName": "无装备干员"}, "equips": []} for _ in range(4)],
         {"chessInfo": {"charName": "干员乙"}, "equips": [{"equipId": "long_equipment"}]},
     ]
-    svc.client.get_garrison_resource = AsyncMock(return_value={**SEASON, "items": items})
+    svc.client.get_garrison_resource = AsyncMock(
+        return_value={**SEASON, "items": items, "bonds": [SKILLFUL]}
+    )
     svc.client.get_garrison_history = AsyncMock(
-        return_value=[{"gameEndTs": 200, "chessSquad": squad}]
+        return_value=[
+            {
+                "gameEndTs": 200,
+                "chessSquad": squad,
+                "bondInfo": [{"bondId": "skillfulShip", "activate": 1, "layer": 40}],
+            }
+        ]
     )
     drawn = []
+    bond_labels = []
     original_text = ImageDraw.ImageDraw.text
 
     def capture(draw, xy, text, *args, **kwargs):
         if kwargs.get("fill") == TEAL or text in {"干员乙", "本局盟约"}:
             drawn.append((xy, text))
+        if "灵巧" in text:
+            bond_labels.append(text)
         return original_text(draw, xy, text, *args, **kwargs)
 
     monkeypatch.setattr(ImageDraw.ImageDraw, "text", capture)
@@ -318,11 +336,12 @@ async def test_match_card_displays_all_equipment_from_history(svc, monkeypatch):
     with Image.open(BytesIO(body)) as card:
         assert card.format == "PNG"
         first_xy, second_xy = drawn[0][0], drawn[1][0]
-        assert first_xy[1] == second_xy[1] and first_xy[0] < second_xy[0]
+        assert first_xy[1] == second_xy[1] and second_xy[0] - first_xy[0] == 86
         for xy, color in zip((first_xy, second_xy), colors.values(), strict=True):
-            assert card.getpixel((xy[0], xy[1] - 26)) == color
-        assert card.getpixel((first_xy[0] + 224, first_xy[1] - 26)) == BORDER
-        assert card.getpixel((second_xy[0] + 224, second_xy[1] - 26)) == BORDER
+            assert card.getpixel((xy[0], xy[1] - 32)) == color
+            assert card.getpixel((xy[0] + 24, xy[1] - 32)) == color
+        assert card.getpixel((first_xy[0] + 224, first_xy[1] - 32)) == BORDER
+        assert card.getpixel((second_xy[0] + 224, second_xy[1] - 32)) == BORDER
     assert requests == ["hammer.png", "shield.png", "missing.png"]
     assert [text for _, text in drawn[:5]] == names
     next_member = next(i for i, (_, text) in enumerate(drawn) if text == "干员乙")
@@ -332,6 +351,60 @@ async def test_match_card_displays_all_equipment_from_history(svc, monkeypatch):
     assert len(wrapped) > 1
     assert "".join(text for _, text in wrapped) == long_name
     assert drawn[-2][0][1] + 22 < drawn[-1][0][1] and drawn[-1][1] == "本局盟约"
+    assert bond_labels == ["灵巧 Ⅱ · 40层"]
+
+
+def test_bond_tiers_use_layers_distinct_members_and_elites():
+    catalog = {
+        "skillfulShip": SKILLFUL,
+        "arcaneShip": {
+            "name": "奥术",
+            "activeCount": 2,
+            "effect": "基础效果\n<在场<@autochess.dgreen>3</>名不同【奥术】干员>进阶效果",
+            "chars": [{"charId": "a"}, {"charId": "b"}],
+        },
+        "suntShip": {
+            "name": "绝技",
+            "activeCount": 2,
+            "effect": "<在场2名精锐状态的干员>基础效果\n<在场5名精锐状态的干员>进阶效果",
+        },
+        "visiShip": {
+            "name": "远见",
+            "activeCount": 2,
+            "effect": "<每叠加10层>触发\n<首次达到80层>进阶\n<首次达到150层>最高",
+        },
+    }
+    squad = [
+        {"charId": "a", "mergeLevel": 1},
+        {"charId": "a", "mergeLevel": 1},
+        {"charId": "b", "mergeLevel": 1},
+        {"charId": "c", "mergeLevel": 1},
+        {"charId": "d", "mergeLevel": 1},
+    ]
+    report = [
+        {"bondId": key, "activate": 1, "layer": layer}
+        for key, layer in [
+            ("skillfulShip", 39), ("arcaneShip", 100), ("suntShip", 0), ("visiShip", 150)
+        ]
+    ]
+    record = {"versionId": "V3_1", "bondInfo": report, "chessSquad": squad}
+    version = {"versionId": "V3_1"}
+
+    def labels():
+        return {bond.id: bond.label for bond in active_bonds(record, catalog, {}, version)}
+
+    assert labels() == {
+        "skillfulShip": "灵巧 Ⅰ · 39层",
+        "arcaneShip": "奥术 Ⅰ · 2人 · 100层",
+        "suntShip": "绝技 Ⅱ · 5名精锐",
+        "visiShip": "远见 Ⅲ · 150层",
+    }
+    report[0]["layer"] = 40
+    squad[3]["equips"] = [{"equipId": "chess_item_6_03_e_a"}, {"equipId": "chess_item_3_07_e_a"}]
+    assert labels()["skillfulShip"] == "灵巧 Ⅱ · 40层"
+    assert labels()["arcaneShip"] == "奥术 Ⅱ · 3人 · 100层"
+    record["versionId"] = "old"
+    assert labels()["arcaneShip"] == "奥术 · 100层"
 
 
 @pytest.mark.asyncio
