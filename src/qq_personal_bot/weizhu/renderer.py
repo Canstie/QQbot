@@ -19,6 +19,7 @@ from pathlib import Path
 import httpx
 from PIL import Image, ImageDraw, ImageFont
 
+from qq_personal_bot.drawing import wrap_text
 from qq_personal_bot.image_utils import validate_dimensions
 
 # Keep the Chinese glyphs available in headless Linux containers as well as Windows.
@@ -212,11 +213,11 @@ class WeizhuRenderer:
             char = self.chars.get(cid) or {}
             equips = []
             for eq in q.get("equips") or []:
-                if isinstance(eq, str):
-                    equips.append((self.items.get(eq) or {}).get("name") or eq)
-                elif isinstance(eq, dict):
-                    eid = eq.get("itemId") or eq.get("id") or ""
-                    equips.append((self.items.get(eid) or {}).get("name") or eid)
+                item_id = eq
+                if isinstance(eq, dict):
+                    item_id = eq.get("equipId") or eq.get("itemId") or eq.get("id")
+                if isinstance(item_id, str) and item_id:
+                    equips.append((self.items.get(item_id) or {}).get("name") or item_id)
             # 卫戍的干员等级/精英化以「合成等级(mergeLevel)」对应的 traits 为准（官方卡片逻辑）
             try:
                 merge_level = int(q.get("mergeLevel") or 0)
@@ -552,7 +553,25 @@ class WeizhuRenderer:
         events = record.get("events") or []
         ok = self.is_success(record)
         delta = self.trophy_delta(record)
-        squad_height = ((len(members) + 4) // 5) * 150 if members else 64
+        equipment_font = font(16)
+        equipment_line_height = 22
+        measure = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+        equipment_lines = [
+            [
+                line
+                for name in member["equips"]
+                for line in wrap_text(measure, name, equipment_font, 200)
+            ]
+            for member in members
+        ]
+        row_offsets = []
+        squad_height = 0
+        for i in range(0, len(members), 5):
+            row_offsets.append(squad_height)
+            line_count = max(map(len, equipment_lines[i : i + 5]))
+            squad_height += max(150, 104 + line_count * equipment_line_height)
+        if not members:
+            squad_height = 64
         width = 1200
         bond_rows_n = ((len(bonds) + 3) // 4) if bonds else 1
         height = 172 + 100 + 22 + 2 * 104 + 22
@@ -622,7 +641,7 @@ class WeizhuRenderer:
             col = i % 5
             row = i // 5
             cx = 62 + col * 224
-            cy = y + 16 + row * 150
+            cy = y + 16 + row_offsets[row]
             av = self._avatar(m["char_id"], 70)
             if av is not None:
                 img.paste(av, (cx, cy), av)
@@ -649,8 +668,13 @@ class WeizhuRenderer:
             if tier > 0:
                 stars = "★" * min(6, tier)
                 draw.text((cx + 84, cy + 46), stars, font=font(12), fill=GOLD)
-            if m["equips"]:
-                draw.text((cx, cy + 78), cut(draw, "、".join(m["equips"]), font(13), 200), font=font(13), fill=TEAL)
+            for line_index, line in enumerate(equipment_lines[i]):
+                draw.text(
+                    (cx, cy + 78 + line_index * equipment_line_height),
+                    line,
+                    font=equipment_font,
+                    fill=TEAL,
+                )
         y += squad_height + 10
 
         self._section(draw, y, "本局盟约", f"{len(bonds)} 个激活")

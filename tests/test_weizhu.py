@@ -14,13 +14,14 @@ from nonebot.adapters.onebot.v11 import (
     MessageSegment,
     PrivateMessageEvent,
 )
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from qq_personal_bot.help_card import build_help_sections
 from qq_personal_bot.runtime import get_settings, get_store, get_weizhu_store, reset_runtime
 from qq_personal_bot.settings import AppSettings
 from qq_personal_bot.web import create_app
 from qq_personal_bot.weizhu import service, skland
+from qq_personal_bot.weizhu.renderer import TEAL
 from qq_personal_bot.weizhu.service import WeizhuService
 from qq_personal_bot.weizhu.store import Binding, Chat, WeizhuStore
 
@@ -252,6 +253,54 @@ async def test_cards_from_saved_binding(svc, cmd, width):
         assert card.format == "PNG" and card.width == width
     await svc.handle(GROUP, "对局 3")
     assert svc.send.await_args.args[1] == "只有 2 局战绩。"
+
+
+@pytest.mark.asyncio
+async def test_match_card_displays_all_equipment_from_history(svc, monkeypatch):
+    svc.store.save(bound())
+    names = ["奥术法阵", "乌萨斯呼吸器", "精准狙击镜", "变形同构体", "谢拉格不融冰"]
+    item_ids = ["chess_item_3_07_e_a", "item_2", "item_3", "item_4", "item_5"]
+    long_name = "非常长的装备名称需要在同一名干员下完整换行显示"
+    items = [
+        {"itemId": item_id, "name": name}
+        for item_id, name in zip([*item_ids, "long_equipment"], [*names, long_name], strict=True)
+    ]
+    first_loadout = [
+        {"equipId": item_ids[0]},
+        {"itemId": item_ids[1]},
+        {"id": item_ids[2]},
+        item_ids[3],
+        {"equipId": item_ids[4]},
+        {"equipId": "unknown_item"},
+        {},
+    ]
+    squad = [
+        {"chessInfo": {"charName": "干员甲"}, "equips": first_loadout},
+        *[{"chessInfo": {"charName": "无装备干员"}, "equips": []} for _ in range(4)],
+        {"chessInfo": {"charName": "干员乙"}, "equips": [{"equipId": "long_equipment"}]},
+    ]
+    svc.client.get_garrison_resource = AsyncMock(return_value={**SEASON, "items": items})
+    svc.client.get_garrison_history = AsyncMock(
+        return_value=[{"gameEndTs": 200, "chessSquad": squad}]
+    )
+    drawn = []
+    original_text = ImageDraw.ImageDraw.text
+
+    def capture(draw, xy, text, *args, **kwargs):
+        if kwargs.get("fill") == TEAL or text in {"干员乙", "本局盟约"}:
+            drawn.append((xy, text))
+        return original_text(draw, xy, text, *args, **kwargs)
+
+    monkeypatch.setattr(ImageDraw.ImageDraw, "text", capture)
+    await svc.handle(GROUP, "对局 1")
+    chat, _, body = svc.send.await_args.args
+    assert chat == GROUP
+    assert Image.open(BytesIO(body)).format == "PNG"
+    assert [text for _, text in drawn[:6]] == [*names, "unknown_item"]
+    assert drawn[5][0][1] + 22 < drawn[6][0][1] and drawn[6][1] == "干员乙"
+    assert len(drawn[7:-1]) > 1
+    assert "".join(text for _, text in drawn[7:-1]) == long_name
+    assert drawn[-2][0][1] + 22 < drawn[-1][0][1] and drawn[-1][1] == "本局盟约"
 
 
 @pytest.mark.asyncio
