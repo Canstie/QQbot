@@ -21,7 +21,7 @@ from qq_personal_bot.runtime import get_settings, get_store, get_weizhu_store, r
 from qq_personal_bot.settings import AppSettings
 from qq_personal_bot.web import create_app
 from qq_personal_bot.weizhu import service, skland
-from qq_personal_bot.weizhu.renderer import TEAL
+from qq_personal_bot.weizhu.renderer import BORDER, TEAL
 from qq_personal_bot.weizhu.service import WeizhuService
 from qq_personal_bot.weizhu.store import Binding, Chat, WeizhuStore
 
@@ -291,7 +291,11 @@ async def test_match_card_displays_all_equipment_from_history(svc, monkeypatch):
         {},
     ]
     squad = [
-        {"chessInfo": {"charName": "干员甲"}, "equips": first_loadout},
+        {
+            "chessInfo": {"charId": "char_618_acrbot", "charName": "“暴躁铁皮”"},
+            "mergeLevel": 1,
+            "equips": first_loadout,
+        },
         *[{"chessInfo": {"charName": "无装备干员"}, "equips": []} for _ in range(4)],
         {"chessInfo": {"charName": "干员乙"}, "equips": [{"equipId": "long_equipment"}]},
     ]
@@ -317,6 +321,8 @@ async def test_match_card_displays_all_equipment_from_history(svc, monkeypatch):
         assert first_xy[1] == second_xy[1] and first_xy[0] < second_xy[0]
         for xy, color in zip((first_xy, second_xy), colors.values(), strict=True):
             assert card.getpixel((xy[0], xy[1] - 26)) == color
+        assert card.getpixel((first_xy[0] + 224, first_xy[1] - 26)) == BORDER
+        assert card.getpixel((second_xy[0] + 224, second_xy[1] - 26)) == BORDER
     assert requests == ["hammer.png", "shield.png", "missing.png"]
     assert [text for _, text in drawn[:5]] == names
     next_member = next(i for i, (_, text) in enumerate(drawn) if text == "干员乙")

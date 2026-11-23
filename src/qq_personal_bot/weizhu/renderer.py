@@ -564,11 +564,16 @@ class WeizhuRenderer:
         for member in members:
             tiles = []
             layout_height = 0
-            items = member["equips"]
+            slot_count = 2
+            if member["char_id"] == "char_618_acrbot":  # “暴躁铁皮”
+                is_elite = member["merge_level"] > 0 or member["level"] == 60
+                slot_count = 6 if is_elite or len(member["equips"]) > 4 else 4
+            items = member["equips"][:slot_count]
+            items += [("", None)] * (slot_count - len(items))
             for start in range(0, len(items), 2):
                 row = items[start : start + 2]
                 labels = [
-                    wrap_text(measure, name, equipment_font, equipment_width - 8)
+                    wrap_text(measure, name, equipment_font, equipment_width - 8) if name else ()
                     for name, _ in row
                 ]
                 for column, ((_, url), lines) in enumerate(zip(row, labels, strict=True)):
@@ -682,19 +687,22 @@ class WeizhuRenderer:
             for left, top, url, lines in equipment_layouts[i][0]:
                 center_x = cx + left + equipment_width // 2
                 tile_y = cy + 78 + top
+                icon_x = center_x - icon_size // 2
+                draw.rounded_rectangle(
+                    (icon_x, tile_y, icon_x + icon_size, tile_y + icon_size),
+                    radius=6,
+                    fill=PANEL2,
+                    outline=BORDER,
+                )
                 icon = self._asset(url)
                 if icon is not None:
-                    icon_x = center_x - icon_size // 2
-                    draw.rounded_rectangle(
-                        (icon_x, tile_y, icon_x + icon_size, tile_y + icon_size),
-                        radius=6,
-                        fill=PANEL2,
-                        outline=BORDER,
-                    )
                     icon = ImageOps.contain(icon, (icon_size - 6, icon_size - 6), Image.Resampling.LANCZOS)
                     icon_pos = (center_x - icon.width // 2, tile_y + (icon_size - icon.height) // 2)
                     img.paste(icon, icon_pos, icon)
-                label_y = tile_y + (equipment_label_top if icon is not None else 12)
+                elif not lines:
+                    middle_y = tile_y + icon_size // 2
+                    draw.line((center_x - 5, middle_y, center_x + 5, middle_y), fill=BORDER)
+                label_y = tile_y + equipment_label_top
                 for line_index, line in enumerate(lines):
                     draw.text(
                         (center_x, label_y + line_index * equipment_line_height),
