@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import re
 from collections import Counter, defaultdict
-from collections.abc import Iterator
 from dataclasses import dataclass
+
+from .equipment import read_equipment
 
 _RICH_TAG = re.compile(r"<@[^>]+>|</>")
 _THRESHOLD = re.compile(
@@ -50,15 +51,6 @@ class ActiveBond:
     roster_based: bool = False
 
 
-def equipment_ids(member: dict) -> Iterator[str]:
-    for entry in member.get("equips") or ():
-        item_id = entry
-        if isinstance(entry, dict):
-            item_id = entry.get("equipId") or entry.get("itemId") or entry.get("id")
-        if isinstance(item_id, str) and item_id:
-            yield item_id
-
-
 def _number(value: object) -> int:
     try:
         return int(str(value))
@@ -85,7 +77,7 @@ def _roster_counts(record, catalog, chars, use_transfers):
         recorded = {bid for bid in info.get("bondIds") or () if isinstance(bid, str)}
         affiliations = recorded or native[char_id].copy()
         if use_transfers and not recorded:
-            items = {item_id.rpartition("_")[0] for item_id in equipment_ids(member)}
+            items = {item.id.rpartition("_")[0] for item in read_equipment(member) or ()}
             if "chess_item_6_03_e" in items:
                 extra = {_TRANSFER_BONDS[item] for item in items if item in _TRANSFER_BONDS}
                 # A multi-slot loadout can contain several possible partners. Avoid guessing.

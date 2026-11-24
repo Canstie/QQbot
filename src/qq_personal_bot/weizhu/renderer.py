@@ -1,4 +1,4 @@
-"""卫戍协议卡片渲染：赛季统计卡 / 单局详情卡 / 战绩列表卡（卫戍视觉风格）。
+"""卫戍协议卡片渲染：赛季统计、单局详情、战绩列表和盟约趋势。
 
 资源与图标来自森空岛 garrison resource 接口：
 - 赛季背景/LOGO（bbs.hycdn.cn）
@@ -10,7 +10,7 @@ import json
 import os
 import tempfile
 import time
-from collections import Counter, defaultdict
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from io import BytesIO
@@ -21,7 +21,10 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from qq_personal_bot.drawing import wrap_text
 from qq_personal_bot.image_utils import validate_dimensions
-from qq_personal_bot.weizhu.bonds import active_bonds, equipment_ids
+
+from .bonds import active_bonds
+from .equipment import read_equipment
+from .insights import rankings
 
 # Keep the Chinese glyphs available in headless Linux containers as well as Windows.
 FONT_PATH = Path(__file__).resolve().parent / "fonts" / "NotoSansSC.ttf"
@@ -159,7 +162,7 @@ class WeizhuRenderer:
     # ---------- 资源映射 ----------
     def set_resource(self, resource: dict):
         self.chars = {c.get("charId"): c for c in resource.get("chars") or []}
-        self.items = {i.get("itemId"): i for i in resource.get("items") or []}
+        self.items = {str(i["itemId"]): i for i in resource.get("items") or [] if i.get("itemId") is not None}
         self.strategies = {s.get("strategyId"): s for s in resource.get("strategies") or []}
         self.bonds = {b.get("bondId"): b for b in resource.get("bonds") or []}
         self.version = resource.get("versionInfo") or {}
@@ -212,10 +215,11 @@ class WeizhuRenderer:
             info = q.get("chessInfo") or {}
             cid = info.get("charId") or q.get("charId") or ""
             char = self.chars.get(cid) or {}
+            loadout = read_equipment(q)
             equips = []
-            for item_id in equipment_ids(q):
-                item = self.items.get(item_id) or {}
-                equips.append((item.get("name") or item_id, item.get("iconUrl")))
+            for entry in loadout or ():
+                item = self.items.get(entry.id) or {}
+                equips.append((item.get("name") or entry.name or entry.id, item.get("iconUrl")))
             # 卫戍的干员等级/精英化以「合成等级(mergeLevel)」对应的 traits 为准（官方卡片逻辑）
             try:
                 merge_level = int(q.get("mergeLevel") or 0)
@@ -247,6 +251,7 @@ class WeizhuRenderer:
                     "tier": tier,
                     "merge_level": merge_level,
                     "equips": equips,
+                    "equipment_known": loadout is not None,
                 }
             )
         return out
@@ -417,22 +422,15 @@ class WeizhuRenderer:
         max_dur = max(durs) if durs else 0
         avg_kill = sum(kills) / len(kills) if kills else 0
         max_kill = max(kills) if kills else 0
-        trophy_now = max((int(r.get("trophyAfter") or 0) for r in records), default=0)
-        trophy_min = min((int(r.get("trophyAfter") or 0) for r in records), default=0)
+        trophy_now = records[0].get("trophyAfter") if records else None
+        trophies = [int(r["trophyAfter"]) for r in records if r.get("trophyAfter") not in (None, "")]
+        trophy_peak = max(trophies, default="—")
         band_cnt = Counter(r.get("bandId") for r in records)
         band_rows = []
         for bid, cnt in band_cnt.most_common(5):
             wins = sum(1 for r in records if r.get("bandId") == bid and self.is_success(r))
             band_rows.append((bid, self.band_label(bid), cnt, wins / cnt * 100 if cnt else 0))
-        bond_layers = defaultdict(list)
-        for r in records:
-            for b in r.get("bondInfo") or []:
-                if b.get("activate") and int(b.get("layer") or 0) > 0:
-                    bond_layers[b.get("bondId")].append(int(b.get("layer") or 0))
-        bond_rows = sorted(
-            ((bid, self.bond_name(bid), sum(v) / len(v), len(v)) for bid, v in bond_layers.items()),
-            key=lambda x: -x[2],
-        )[:6]
+        bond_rows = rankings(records)[:6]
         diff_cnt = Counter(self.diff_label(r) for r in records)
         mode_cnt = Counter(self.mode_label(r) for r in records)
         boss_killed = sum(1 for r in records for b in r.get("acBossInfo") or [] if b.get("isKilled"))
@@ -448,7 +446,8 @@ class WeizhuRenderer:
         draw = ImageDraw.Draw(img)
         self._header(img, draw, f"STRONGHOLD PROTOCOL · {self.season_label()}", self.season_label(), GOLD)
         y = 172 + 18
-        self._player_line(img, draw, y, player, f"当前奖杯 {trophy_now}", width)
+        current_trophy = "—" if trophy_now in (None, "") else str(trophy_now)
+        self._player_line(img, draw, y, player, f"当前奖杯 {current_trophy}", width)
         y += 104
 
         stats = [
@@ -484,7 +483,7 @@ class WeizhuRenderer:
         )
         draw.text(
             (62, y + 76),
-            f"Boss 击杀累计 {boss_killed} / {boss_total} · 总击杀 {sum(kills)} · 奖杯区间 {trophy_min} → {trophy_now}",
+            f"Boss 击杀累计 {boss_killed} / {boss_total} · 总击杀 {sum(kills)} · 赛季最高奖杯 {trophy_peak}",
             font=font(16),
             fill=DIM,
         )
@@ -509,10 +508,9 @@ class WeizhuRenderer:
             draw.text((width - 60 - text_w(draw, info, font(17)), ry + 12), info, font=font(17), fill=GOLD_HI)
         y += band_h - 46
 
-        self._section(draw, y, "常用盟约", "平均叠层")
+        self._section(draw, y, "常用盟约", "按激活场次排序")
         y += 46
-        max_layer = max((v for _, _, v, _ in bond_rows), default=1)
-        for i, (bid, name, avg, cnt) in enumerate(bond_rows):
+        for i, (bid, count, peak, average) in enumerate(bond_rows):
             ry = y + i * 50
             draw.rounded_rectangle((40, ry, width - 40, ry + 44), 10, fill=PANEL, outline=BORDER, width=1)
             icon = self._bond_icon(bid, 34)
@@ -521,10 +519,12 @@ class WeizhuRenderer:
                 tx = 100
             else:
                 tx = 62
-            draw.text((tx, ry + 10), cut(draw, name, font(19, True), 190), font=font(19, True), fill=TEXT)
-            bar_w = int(540 * avg / max_layer) if max_layer else 0
-            draw.rectangle((tx + 230, ry + 17, tx + 230 + max(bar_w, 6), ry + 27), fill=TEAL)
-            info = f"层数 {avg:.0f} · {cnt} 局"
+            draw.text((tx, ry + 10), cut(draw, self.bond_name(bid), font(19, True), 190), font=font(19, True), fill=TEXT)
+            bar_w = int(450 * count / bond_rows[0][1])
+            draw.rectangle((tx + 230, ry + 17, tx + 230 + bar_w, ry + 27), fill=TEAL)
+            high = str(peak) if peak is not None else "—"
+            mean = f"{average:.1f}" if average is not None else "—"
+            info = f"{count} 局 · 最高 {high} · 平均 {mean}"
             draw.text((width - 60 - text_w(draw, info, font(17)), ry + 11), info, font=font(17), fill=GOLD_HI)
         y += bond_h - 46
 
@@ -563,6 +563,53 @@ class WeizhuRenderer:
         self._footer(draw, img, height - 62)
         return _png(img)
 
+    def render_trend(self, name: str, mode: str, points: list[tuple[int, int | None]]) -> bytes:
+        img = Image.new("RGB", (1200, 585), BG)
+        draw = ImageDraw.Draw(img)
+        values = [value for _, value in points if value is not None]
+        average = sum(values) / len(values) if values else None
+        self._header(img, draw, f"盟约叠层 · {mode} · 最近 {len(points)} 场", self.season_label())
+        draw.rounded_rectangle((40, 190, 1160, 512), 12, fill=PANEL, outline=BORDER)
+        title = cut(draw, name, font(26, True), 550)
+        draw.text((65, 206), title, font=font(26, True), fill=TEXT)
+        stats = f"有层数 {len(values)} 场 · 最高 {max(values)} · 平均 {average:.1f}" if values else "暂无可用层数"
+        draw.text((1135, 217), stats, anchor="ra", font=font(18), fill=DIM)
+
+        chart_left, chart_right, chart_top, chart_bottom = 120, 1120, 277, 422
+        step = max(1, (max(values, default=1) + 3) // 4)
+
+        def value_y(value: float) -> float:
+            return chart_bottom - (chart_bottom - chart_top) * value / (step * 4)
+
+        for value in range(0, step * 4 + 1, step):
+            y = value_y(value)
+            draw.line((chart_left, y, chart_right, y), fill=BORDER)
+            draw.text((105, y), str(value), anchor="rm", font=font(15), fill=DIM)
+        if average is not None:
+            y = value_y(average)
+            for x in range(chart_left, chart_right, 14):
+                draw.line((x, y, min(x + 7, chart_right), y), fill=GOLD)
+
+        previous = None
+        for i, (index, value) in enumerate(points):
+            x = chart_left + (i + 0.5) * (chart_right - chart_left) / len(points)
+            draw.text((x, 434), f"#{index}", anchor="mt", font=font(17), fill=DIM)
+            if value is None:
+                draw.text((x, 408), "—", anchor="mm", font=font(19), fill=DIM)
+                previous = None
+                continue
+            y = value_y(value)
+            if previous is not None:
+                draw.line((*previous, x, y), fill=TEAL, width=3)
+            draw.ellipse((x - 5, y - 5, x + 5, y + 5), fill=TEAL)
+            draw.text((x, y - 10), str(value), anchor="mb", font=font(17, True), fill=TEXT)
+            previous = (x, y)
+
+        draw.text((65, 474), "旧 → 新 · # 为赛季对局序号 · 虚线为均值 · — 未激活或无层数",
+                  font=font(16), fill=DIM)
+        self._footer(draw, img, 523)
+        return _png(img)
+
     # ---------- 单局详情卡 ----------
     def render_match_card(self, player, record) -> bytes:
         members = self.squad_members(record)
@@ -595,19 +642,20 @@ class WeizhuRenderer:
                 for column, ((_, url), lines) in enumerate(zip(row, labels, strict=True)):
                     tiles.append((column * equipment_width, layout_height, url, lines))
                 layout_height += equipment_label_top + max(map(len, labels)) * equipment_line_height + 5
-            equipment_layouts.append((tiles, layout_height))
+            note_height = equipment_line_height if not member["equipment_known"] else 0
+            equipment_layouts.append((tiles, layout_height, note_height))
         row_offsets = []
         squad_height = 0
         for i in range(0, len(members), 5):
             row_offsets.append(squad_height)
-            row_height = max(height for _, height in equipment_layouts[i : i + 5])
+            row_height = max(height + note for _, height, note in equipment_layouts[i : i + 5])
             squad_height += max(150, 104 + row_height)
         if not members:
             squad_height = 64
         width = 1200
         bond_chips, bond_height, bond_summary = self._bond_layout(measure, record, width - 80)
         bond_height = max(bond_height, 42)
-        height = 172 + 100 + 22 + 2 * 104 + 22
+        height = 172 + 100 + 92 + 22 + 2 * 104 + 22
         height += 44 + squad_height + 10
         height += 44 + bond_height + 20
         if bosses:
@@ -628,22 +676,33 @@ class WeizhuRenderer:
         self._player_line(img, draw, y, player)
         y += 100
 
+        before, after = record.get("trophyBefore"), record.get("trophyAfter")
+        has_trophy = before not in (None, "") and after not in (None, "")
+        highlights = [
+            ("本场奖杯", f"{delta:+d}" if has_trophy else "—", GOLD_HI if delta >= 0 else RED),
+            ("总击杀", record.get("killCnt"), GREEN),
+            ("金币消耗", record.get("coinCost"), GOLD_HI),
+        ]
+        for i, (label, value, color) in enumerate(highlights):
+            x = 40 + i * 378
+            draw.rounded_rectangle((x, y, x + 364, y + 78), 12, fill=PANEL2, outline=BORDER_HI)
+            draw.text((x + 18, y + 13), label, font=font(15), fill=DIM)
+            draw.text((x + 18, y + 33), str(value) if value is not None else "—", font=font(28, True), fill=color)
+        y += 92
+
         info = [
             ("难度", self.diff_label(record), GOLD_HI),
             ("模式", self.mode_label(record), TEXT),
             ("分队", self.band_label(record.get("bandId")), TEXT),
-            ("奖杯变化", f"{record.get('trophyBefore')} → {record.get('trophyAfter')}（{'+' if delta >= 0 else ''}{delta}）", GOLD if delta >= 0 else RED),
-            ("击杀", str(record.get("killCnt") or 0), TEXT),
+            ("奖杯变化", f"{before} → {after}" if has_trophy else "—", TEXT),
             ("同步次数", str(record.get("syncCnt") or 0), TEXT),
-            ("金币消耗", str(record.get("coinCost") or 0), TEXT),
             ("回合", str(record.get("passRound") or 0), TEXT),
             ("时长", fmt_dur(duration_sec(record)), TEXT),
             ("Boss 击杀", f"{sum(1 for b in bosses if b.get('isKilled'))} / {len(bosses)}", TEXT),
         ]
-        cell_w = (width - 80 - 4 * 14) / 5
+        cell_w = (width - 80 - 3 * 14) / 4
         for i, (k, v, color) in enumerate(info):
-            col = i % 5
-            row = i // 5
+            row, col = divmod(i, 4)
             x0 = int(40 + col * (cell_w + 14))
             y0 = int(y + row * 104)
             draw.rounded_rectangle((x0, y0, x0 + cell_w, y0 + 92), 12, fill=PANEL, outline=BORDER, width=1)
@@ -701,7 +760,8 @@ class WeizhuRenderer:
             if tier > 0:
                 stars = "★" * min(6, tier)
                 draw.text((cx + 84, cy + 46), stars, font=font(12), fill=GOLD)
-            for left, top, url, lines in equipment_layouts[i][0]:
+            tiles, layout_height, note_height = equipment_layouts[i]
+            for left, top, url, lines in tiles:
                 center_x = cx + left + equipment_width // 2
                 tile_y = cy + 78 + top
                 icon_x = center_x - icon_size // 2
@@ -728,6 +788,9 @@ class WeizhuRenderer:
                         font=equipment_font,
                         fill=TEAL,
                     )
+            if note_height:
+                draw.text((cx + equipment_width, cy + 78 + layout_height), "装备数据缺失",
+                          anchor="mt", font=equipment_font, fill=DIM)
         y += squad_height + 10
 
         self._section(draw, y, "本局盟约", bond_summary)
@@ -899,9 +962,9 @@ class WeizhuRenderer:
         return _png(img)
 
     # ---------- 战绩列表卡 ----------
-    def render_list_card(self, player, records, limit=10) -> bytes:
-        rows = records[:limit]
-        passed = sum(1 for r in rows if self.is_success(r))
+    def render_list_card(self, player, cases, limit=10, scope="全部 / 全部") -> bytes:
+        rows = cases[:limit]
+        passed = sum(1 for _, r in rows if self.is_success(r))
         failed = len(rows) - passed
         pass_rate = passed / len(rows) * 100 if rows else 0
         width = 1200
@@ -911,7 +974,7 @@ class WeizhuRenderer:
         self._header(
             img,
             draw,
-            f"共 {len(records)} 局 · 显示最近 {len(rows)} 局",
+            f"{scope} · 共 {len(cases)} 局 · 显示最近 {len(rows)} 局",
             self.season_label(),
         )
         y = 172 + 14
@@ -926,22 +989,23 @@ class WeizhuRenderer:
         draw.text((360, y + 34), f"通过率 {pass_rate:.0f}%", font=font(18), fill=GOLD_HI)
         draw.text(
             (560, y + 34),
-            f"总击杀 {sum(int(r.get('killCnt') or 0) for r in rows)}",
+            f"总击杀 {sum(int(r.get('killCnt') or 0) for _, r in rows)}",
             font=font(18),
             fill=DIM,
         )
         y += 76
         draw.rounded_rectangle((40, y, width - 40, y + (len(rows) + 1) * 54 + 8), 12, fill=PANEL, outline=BORDER, width=1)
-        heads = ["时间", "模式", "难度", "结果", "分队", "击杀", "奖杯", "时长"]
-        xs = [58, 175, 290, 450, 570, 770, 870, 965]
+        heads = ["序号", "时间", "模式", "难度", "结果", "分队", "击杀", "奖杯", "时长"]
+        xs = [58, 124, 246, 362, 502, 594, 835, 935, 1030]
         for i, h in enumerate(heads):
             draw.text((xs[i], y + 16), h, font=font(16, True), fill=DIM)
-        for i, r in enumerate(rows):
+        for i, (index, r) in enumerate(rows):
             ry = y + 54 * (i + 1)
             draw.line((58, ry - 4, width - 58, ry - 4), fill=(32, 40, 36), width=1)
             ok = self.is_success(r)
             delta = self.trophy_delta(r)
             vals = [
+                f"#{index}",
                 fmt_date(r.get("gameEndTs")),
                 self.mode_label(r),
                 self.diff_label(r),
@@ -953,12 +1017,13 @@ class WeizhuRenderer:
             ]
             for j, v in enumerate(vals):
                 color = TEXT
-                if j == 3:
+                if j == 4:
                     color = GREEN if ok else RED
-                elif j == 6:
+                elif j == 7:
                     color = GREEN if delta >= 0 else RED
-                elif j == 0:
+                elif j == 1:
                     color = DIM
-                draw.text((xs[j], ry + 10), cut(draw, v, font(16), 190 if j == 4 else 120), font=font(16), fill=color)
+                max_width = (xs[j + 1] if j + 1 < len(xs) else width - 58) - xs[j] - 8
+                draw.text((xs[j], ry + 10), cut(draw, v, font(16), max_width), font=font(16), fill=color)
         self._footer(draw, img, height - 62)
         return _png(img)

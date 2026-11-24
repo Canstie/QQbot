@@ -13,6 +13,7 @@ import qrcode
 
 from qq_personal_bot.settings import AppSettings
 
+from .insights import FILTER_HELP, MODES, RESULTS, active_layers, rankings, select_history
 from .renderer import WeizhuRenderer
 from .skland import SklandAuthError, SklandClient, SklandError, qr_finish, qr_poll, qr_start
 from .store import Binding, Chat, WeizhuStore
@@ -21,7 +22,10 @@ log = logging.getLogger(__name__)
 HELP = (
     "卫戍协议助手（群内请先 @机器人）\n"
     "/卫戍 绑定 · 在当前会话获取森空岛登录二维码\n"
-    "/卫戍 查询 · 本赛季统计\n/卫戍 战绩 [场数] · 最近战绩，默认 10 场\n"
+    "/卫戍 查询 · 本赛季统计\n"
+    "/卫戍 战绩 [场数] [模式] [结果] · 最近战绩，默认 10 场\n"
+    "/卫戍 趋势 [盟约] [模式] · 最近 10 场叠层，如 /卫戍 趋势 灵巧 终极\n"
+    f"{FILTER_HELP}\n"
     "/卫戍 对局 [序号] · 单局详情，1 为最近一局\n"
     "/卫戍 推送 开/关 · 在当前会话订阅新战报\n"
     "/卫戍 状态 · 查看绑定和播报状态\n/卫戍 解绑 · 解除绑定或取消扫码"
@@ -37,6 +41,7 @@ ALIASES = {
     "统计": "查询",
     "stats": "查询",
     "history": "战绩",
+    "叠层": "趋势",
     "match": "对局",
     "detail": "对局",
     "查战绩": "查",
@@ -136,7 +141,7 @@ class WeizhuService:
                 self.client.drop_token(binding.cred)
                 return "已解绑卫戍协议账号。", None
             return ("已取消本次扫码绑定。" if pending else UNBOUND), None
-        if command not in {"查询", "战绩", "对局", "状态", "推送"}:
+        if command not in {"查询", "战绩", "趋势", "对局", "状态", "推送"}:
             return HELP, None
         if binding is None:
             return UNBOUND, None
@@ -154,7 +159,7 @@ class WeizhuService:
                 f"赛季 {binding.season or '暂无'} · 播报{'开启' if binding.push else '关闭'}\n"
                 f"上次播报 {last} · 轮询间隔 {self.settings.weizhu_poll_seconds} 秒"
             ), None
-        return await self._query(binding, command, arg)
+        return await self._query(binding, command, args)
 
     async def _login(self, chat: Chat):
         try:
@@ -252,7 +257,7 @@ class WeizhuService:
         return await self._query(
             matches[0],
             "查询" if command == "查统计" else "战绩",
-            args[1] if len(args) > 1 else "",
+            args[1:],
             admin=True,
         )
 
@@ -283,12 +288,13 @@ class WeizhuService:
             methods = {
                 "查询": renderer.render_stats_card,
                 "战绩": renderer.render_list_card,
+                "趋势": renderer.render_trend,
                 "对局": renderer.render_match_card,
                 "组队": renderer.render_multi_match_card,
             }
             return methods[kind](*args)
 
-    async def _query(self, binding: Binding, kind: str, arg: str, admin: bool = False):
+    async def _query(self, binding: Binding, kind: str, arguments: list[str], admin: bool = False):
         resource, season, records = await self._history(binding)
         current = self.store.get(binding.destination)
         if not current or current.cred != binding.cred:
@@ -297,22 +303,52 @@ class WeizhuService:
             self.store.save(replace(current, season=season))
         if not records:
             return "本赛季还没有卫戍协议战绩。", None
-        n = number(arg, 20 if admin else 10, 50 if admin else 20)
-        player = await self._player(binding)
+        arg = arguments[0] if arguments else ""
         caption = ""
-        if kind == "对局" or (kind == "战绩" and n == 1 and not admin):
+        n = number(arg, 20 if admin else 10, 50 if admin else 20)
+        if kind == "对局" or (kind == "战绩" and len(arguments) == n == 1 and not admin):
             index = number(arg, 1)
             if index > len(records):
                 return f"只有 {len(records)} 局战绩。", None
-            args = (player, records[index - 1])
+            args = (await self._player(binding), records[index - 1])
             kind = "对局"
         elif kind == "战绩":
-            args = (player, records, n)
-            caption = "查看单局详情请发送 /卫戍 对局 <序号>。"
+            filters = arguments if arg in MODES else arguments[1:]
+            if len(filters) > 2:
+                return FILTER_HELP, None
+            mode, result = (filters + ["全部", "全部"])[:2]
+            if mode not in MODES or result not in RESULTS:
+                return FILTER_HELP, None
+            selected = select_history(records, mode, result)
+            if not selected:
+                return "本赛季没有符合筛选条件的对局。", None
+            args = (await self._player(binding), selected, n, f"{mode} / {result}")
+            caption = "发送 /卫戍 对局 <序号> 查看表中对应单局。"
+        elif kind == "趋势":
+            name, mode = arg, arguments[1] if len(arguments) > 1 else "全部"
+            if len(arguments) == 1 and name in MODES:
+                name, mode = "", name
+            if len(arguments) > 2 or mode not in MODES:
+                return FILTER_HELP, None
+            games = select_history(records, mode)
+            ranked = rankings(record for _, record in games)
+            if not ranked:
+                return "该范围暂无激活盟约记录。", None
+            names = {
+                bond["bondId"]: bond.get("name") or bond["bondId"]
+                for bond in resource.get("bonds") or []
+                if bond.get("bondId")
+            }
+            candidates = {bid: names.get(bid, bid) for bid, *_ in ranked}
+            bond_id = next((bid for bid, label in candidates.items() if name in ("", bid, label)), None)
+            if bond_id is None:
+                return "该范围内可查的盟约：" + "、".join(candidates.values()), None
+            points = [(index, active_layers(record).get(bond_id)) for index, record in reversed(games[:10])]
+            args = (candidates[bond_id], mode, points)
         else:
-            args = (player, records)
+            args = (await self._player(binding), records)
         if admin:
-            rows = records[:n] if kind == "战绩" else records
+            rows = [record for _, record in selected[:n]] if kind == "战绩" else records
             passed = sum(bool(r.get("completeState")) for r in rows)
             caption = f"{binding.nickname} · 共 {len(rows)} 场，通过 {passed} 场（{passed / len(rows):.0%}）。"
         image = await asyncio.to_thread(self._render, kind, resource, *args)

@@ -22,6 +22,7 @@ from qq_personal_bot.settings import AppSettings
 from qq_personal_bot.web import create_app
 from qq_personal_bot.weizhu import service, skland
 from qq_personal_bot.weizhu.bonds import active_bonds
+from qq_personal_bot.weizhu.equipment import Equipment, read_equipment
 from qq_personal_bot.weizhu.renderer import BORDER, TEAL
 from qq_personal_bot.weizhu.service import WeizhuService
 from qq_personal_bot.weizhu.store import Binding, Chat, WeizhuStore
@@ -263,6 +264,66 @@ async def test_cards_from_saved_binding(svc, cmd, width):
 
 
 @pytest.mark.asyncio
+async def test_history_filter_trend_and_season_summary(svc, monkeypatch):
+    svc.store.save(bound())
+    svc.client.get_garrison_resource = AsyncMock(return_value={**SEASON, "bonds": [SKILLFUL]})
+    svc.client.get_garrison_history = AsyncMock(return_value=[
+        {"gameEndTs": 100, "modeType": "MULTI", "modeDifficulty": "ABYSS",
+         "trophyAfter": 71, "completeState": 1,
+         "bondInfo": [
+             {"bondId": "skillfulShip", "activate": True, "layer": "40"},
+             {"bondId": "skillfulShip", "activate": True, "layer": 20},
+             {"bondId": "otherShip", "activate": True, "layer": 999},
+         ]},
+        {"gameEndTs": 300, "modeType": "SINGLE", "modeDifficulty": "ABYSS",
+         "trophyAfter": 68, "bondInfo": [{"bondId": "skillfulShip", "activate": 1, "layer": 90}]},
+        {"gameEndTs": 200, "modeType": "MULTI", "modeDifficulty": "ABYSS",
+         "trophyAfter": 65, "completeState": 0, "coinCost": 16,
+         "bondInfo": [{"bondId": "skillfulShip", "activate": 1}]},
+    ])
+    drawn = []
+    original_text = ImageDraw.ImageDraw.text
+
+    def capture(draw, xy, text, *args, **kwargs):
+        drawn.append(text)
+        return original_text(draw, xy, text, *args, **kwargs)
+
+    monkeypatch.setattr(ImageDraw.ImageDraw, "text", capture)
+    await svc.handle(GROUP, "战绩 1 多人 中断")
+    assert "#2" in drawn and "#1" not in drawn and "#3" not in drawn
+    assert svc.send.await_args.args[2].startswith(b"\x89PNG")
+    drawn.clear()
+    await svc.handle(GROUP, "对局 2")
+    assert "金币消耗" in drawn and "16" in drawn
+
+    drawn.clear()
+    await svc.handle(GROUP, "叠层 灵巧 终极")
+    assert [value for value in drawn if value in ("#3", "#2", "#1", "—")] == ["#3", "#2", "—", "#1"]
+    assert "有层数 2 场 · 最高 90 · 平均 65.0" in drawn
+    assert svc.send.await_args.args[2].startswith(b"\x89PNG")
+    await svc.handle(GROUP, "趋势 不存在 终极")
+    assert "灵巧" in svc.send.await_args.args[1] and svc.send.await_args.args[2] is None
+    await svc.handle(GROUP, "战绩 10 极速 完成")
+    assert "没有符合" in svc.send.await_args.args[1]
+    await svc.handle(GROUP, "战绩 10 未知 完成")
+    assert "模式可选" in svc.send.await_args.args[1]
+
+    drawn.clear()
+    await svc.handle(GROUP, "查询")
+    assert any("当前奖杯 68" in value for value in drawn)
+    assert any("赛季最高奖杯 71" in value for value in drawn)
+    assert drawn.index("灵巧") < drawn.index("otherShip")
+    assert "3 局 · 最高 90 · 平均 65.0" in drawn
+
+
+def test_read_equipment_distinguishes_empty_and_unavailable():
+    nested = {"equips": [], "chessInfo": {"equipmentIds": [42, {"equipId": 42}, {"itemName": "测试装备"}]}}
+    assert read_equipment(nested) == [Equipment("42", ""), Equipment("42", ""), Equipment("", "测试装备")]
+    assert read_equipment({"chessInfo": {"equipList": []}}) == []
+    assert read_equipment({"equipments": [False, None, {}]}) is None
+
+
+@pytest.mark.asyncio
 async def test_match_card_displays_all_equipment_from_history(svc, monkeypatch):
     svc.store.save(bound())
     names = ["奥术法阵", "坚守盾牌", "精准狙击镜", "变形同构体", "维式重锤"]
@@ -299,11 +360,11 @@ async def test_match_card_displays_all_equipment_from_history(svc, monkeypatch):
     ]
     squad = [
         {
-            "chessInfo": {"charId": "char_618_acrbot", "charName": "“暴躁铁皮”"},
+            "chessInfo": {"charId": "char_618_acrbot", "charName": "“暴躁铁皮”", "equipList": first_loadout},
             "mergeLevel": 1,
-            "equips": first_loadout,
         },
-        *[{"chessInfo": {"charName": "无装备干员"}, "equips": []} for _ in range(4)],
+        *[{"chessInfo": {"charName": "无装备干员"}, "equips": []} for _ in range(3)],
+        {"chessInfo": {"charName": "无数据干员"}},
         {"chessInfo": {"charName": "干员乙"}, "equips": [{"equipId": "long_equipment"}]},
     ]
     svc.client.get_garrison_resource = AsyncMock(
