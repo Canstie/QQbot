@@ -23,7 +23,7 @@ from qq_personal_bot.web import create_app
 from qq_personal_bot.weizhu import service, skland
 from qq_personal_bot.weizhu.bonds import active_bonds
 from qq_personal_bot.weizhu.equipment import Equipment, read_equipment
-from qq_personal_bot.weizhu.renderer import BORDER, TEAL
+from qq_personal_bot.weizhu.renderer import BORDER, GOLD_HI, TEAL
 from qq_personal_bot.weizhu.service import WeizhuService
 from qq_personal_bot.weizhu.store import Binding, Chat, WeizhuStore
 
@@ -321,6 +321,60 @@ def test_read_equipment_distinguishes_empty_and_unavailable():
     assert read_equipment(nested) == [Equipment("42", ""), Equipment("42", ""), Equipment("", "测试装备")]
     assert read_equipment({"chessInfo": {"equipList": []}}) == []
     assert read_equipment({"equipments": [False, None, {}]}) is None
+
+
+@pytest.mark.asyncio
+async def test_match_card_uses_the_gold_equipment_sprite(svc, monkeypatch):
+    svc.store.save(bound())
+    icon_root = "https://web.hycdn.cn/arknights/game/assets/char_skill/"
+    svc.client.get_garrison_resource = AsyncMock(return_value={
+        **SEASON,
+        "items": [
+            {"itemId": "chess_item_1_01_e_a", "name": "维式重锤", "iconUrl": icon_root + "sktok_acarm041_1.png"},
+            {"itemId": "chess_item_1_02_e_a", "name": "坚守盾牌", "iconUrl": icon_root + "sktok_acarm047_1.png"},
+        ],
+    })
+    svc.client.get_garrison_history = AsyncMock(return_value=[{
+        "gameEndTs": 200,
+        "chessSquad": [
+            {"equips": ["chess_item_1_01_e_a", "chess_item_1_01_e_b"]},
+            {"equips": ["chess_item_1_02_e_b"]},
+        ],
+    }])
+    gray, gold = (100, 100, 100), (195, 139, 42)
+    requests = []
+
+    def serve_icon(request):
+        file = request.url.path.rsplit("/", 1)[-1]
+        requests.append(file)
+        if file == "sktok_acarm047_2.png":
+            return httpx.Response(404)
+        color = gold if file == "sktok_acarm041_2.png" else gray
+        buffer = BytesIO()
+        Image.new("RGB", (128, 128), color).save(buffer, format="PNG")
+        return httpx.Response(200, content=buffer.getvalue())
+
+    client = httpx.Client(transport=httpx.MockTransport(serve_icon))
+    monkeypatch.setattr(httpx, "Client", lambda **kwargs: client)
+    labels = {}
+    draw_text = ImageDraw.ImageDraw.text
+
+    def capture(draw, xy, text, *args, **kwargs):
+        if text in {"维式重锤", "坚守盾牌"}:
+            labels[text, kwargs["fill"]] = xy
+        return draw_text(draw, xy, text, *args, **kwargs)
+
+    monkeypatch.setattr(ImageDraw.ImageDraw, "text", capture)
+    await svc.handle(GROUP, "对局 1")
+    assert requests == [
+        "sktok_acarm041_1.png", "sktok_acarm041_2.png", "sktok_acarm047_2.png", "sktok_acarm047_1.png",
+    ]
+    with Image.open(BytesIO(svc.send.await_args.args[2])) as card:
+        for label, text_color, pixel_color in (
+            ("维式重锤", TEAL, gray), ("维式重锤", GOLD_HI, gold), ("坚守盾牌", GOLD_HI, gray),
+        ):
+            x, y = labels[label, text_color]
+            assert card.getpixel((x, y - 32)) == pixel_color
 
 
 @pytest.mark.asyncio

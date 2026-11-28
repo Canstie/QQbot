@@ -23,7 +23,7 @@ from qq_personal_bot.drawing import wrap_text
 from qq_personal_bot.image_utils import validate_dimensions
 
 from .bonds import active_bonds
-from .equipment import read_equipment
+from .equipment import EquipmentDisplay, equipment_display, read_equipment
 from .insights import rankings
 
 # Keep the Chinese glyphs available in headless Linux containers as well as Windows.
@@ -216,10 +216,7 @@ class WeizhuRenderer:
             cid = info.get("charId") or q.get("charId") or ""
             char = self.chars.get(cid) or {}
             loadout = read_equipment(q)
-            equips = []
-            for entry in loadout or ():
-                item = self.items.get(entry.id) or {}
-                equips.append((item.get("name") or entry.name or entry.id, item.get("iconUrl")))
+            equips = [equipment_display(entry, self.items) for entry in loadout or ()]
             # 卫戍的干员等级/精英化以「合成等级(mergeLevel)」对应的 traits 为准（官方卡片逻辑）
             try:
                 merge_level = int(q.get("mergeLevel") or 0)
@@ -632,15 +629,15 @@ class WeizhuRenderer:
                 is_elite = member["merge_level"] > 0 or member["level"] == 60
                 slot_count = 6 if is_elite or len(member["equips"]) > 4 else 4
             items = member["equips"][:slot_count]
-            items += [("", None)] * (slot_count - len(items))
+            items += [EquipmentDisplay("")] * (slot_count - len(items))
             for start in range(0, len(items), 2):
                 row = items[start : start + 2]
                 labels = [
-                    wrap_text(measure, name, equipment_font, equipment_width - 2) if name else ()
-                    for name, _ in row
+                    wrap_text(measure, item.name, equipment_font, equipment_width - 2) if item.name else ()
+                    for item in row
                 ]
-                for column, ((_, url), lines) in enumerate(zip(row, labels, strict=True)):
-                    tiles.append((column * equipment_width, layout_height, url, lines))
+                for column, (item, lines) in enumerate(zip(row, labels, strict=True)):
+                    tiles.append((column * equipment_width, layout_height, item, lines))
                 layout_height += equipment_label_top + max(map(len, labels)) * equipment_line_height + 5
             note_height = equipment_line_height if not member["equipment_known"] else 0
             equipment_layouts.append((tiles, layout_height, note_height))
@@ -761,17 +758,21 @@ class WeizhuRenderer:
                 stars = "★" * min(6, tier)
                 draw.text((cx + 84, cy + 46), stars, font=font(12), fill=GOLD)
             tiles, layout_height, note_height = equipment_layouts[i]
-            for left, top, url, lines in tiles:
+            for left, top, item, lines in tiles:
                 center_x = cx + left + equipment_width // 2
                 tile_y = cy + 78 + top
                 icon_x = center_x - icon_size // 2
                 draw.rounded_rectangle(
                     (icon_x, tile_y, icon_x + icon_size, tile_y + icon_size),
                     radius=6,
-                    fill=PANEL2,
-                    outline=BORDER,
+                    fill=BORDER_HI if item.elite else PANEL2,
+                    outline=GOLD if item.elite else BORDER,
                 )
-                icon = self._asset(url)
+                icon = None
+                for url in item.icon_urls:
+                    icon = self._asset(url)
+                    if icon is not None:
+                        break
                 if icon is not None:
                     icon = ImageOps.contain(icon, (icon_size - 6, icon_size - 6), Image.Resampling.LANCZOS)
                     icon_pos = (center_x - icon.width // 2, tile_y + (icon_size - icon.height) // 2)
@@ -786,7 +787,7 @@ class WeizhuRenderer:
                         line,
                         anchor="mt",
                         font=equipment_font,
-                        fill=TEAL,
+                        fill=GOLD_HI if item.elite else TEAL,
                     )
             if note_height:
                 draw.text((cx + equipment_width, cy + 78 + layout_height), "装备数据缺失",
